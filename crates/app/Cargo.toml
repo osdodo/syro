@@ -1,0 +1,41 @@
+[package]
+name = "syro"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gpui-kit.workspace = true
+rust-i18n.workspace = true
+sys-locale.workspace = true
+# The app paints straight from `TermSession::with_term`, so it sees alacritty's
+# `Cell`/`Color`/`Flags` the same way Zed's terminal_view does. Reusing those
+# types beats copying the grid into a parallel one every frame.
+alacritty_terminal.workspace = true
+syro-core = { path = "../core" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# The blur radius: gpui only knows blurred-or-not, so the app sets the window's
+# radius itself (see `settings_view::set_blur_radius`). Both are already in the
+# tree through gpui.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+raw-window-handle = "0.6"
+
+[dev-dependencies]
+# The headless window harness: a real GPUI window with no display, so the view
+# tests can drive a terminal end to end without a screen.
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+# `cargo bundle --release -p syro` reads this to build the .app.
+[package.metadata.bundle]
+name = "syro"
+identifier = "com.syro.app"
+# The Finder and Dock icon: cargo-bundle copies it to Contents/Resources and names it in
+# CFBundleIconFile.
+icon = ["crates/app/assets/app-icon.icns"]
+category = "Developer Tool"
+short_description = "Multi-repo worktrees with a terminal per agent."
+osx_minimum_system_version = "15.0"

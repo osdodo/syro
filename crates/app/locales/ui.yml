@@ -1,0 +1,872 @@
+_version: 2
+
+# syro's strings.
+common:
+  cancel:
+    en: Cancel
+    zh-CN: 取消
+  done:
+    en: Done
+    zh-CN: 完成
+  close:
+    en: Close
+    zh-CN: 关闭
+  on:
+    en: On
+    zh-CN: 开
+  off:
+    en: Off
+    zh-CN: 关
+
+status:
+  waiting:
+    en: Waiting for you
+    zh-CN: 等待你的输入
+  waiting_short:
+    en: Waiting
+    zh-CN: 待输入
+  stalled:
+    en: Working, but quiet
+    zh-CN: 在跑，但很久没出声
+  stalled_short:
+    en: Quiet
+    zh-CN: 静默
+  working:
+    en: Working
+    zh-CN: 工作中
+  working_short:
+    en: Running
+    zh-CN: 运行中
+  running:
+    en: A program is running
+    zh-CN: 有程序在运行
+  running_short:
+    en: Running
+    zh-CN: 运行中
+  idle:
+    en: Idle
+    zh-CN: 空闲
+  idle_short:
+    en: Idle
+    zh-CN: 空闲
+  done_short:
+    en: Done
+    zh-CN: 完成
+  failed_short:
+    en: Failed
+    zh-CN: 失败
+  no_agent:
+    en: No agent
+    zh-CN: 无 agent
+
+panel:
+  show:
+    en: "Show %{name}"
+    zh-CN: "显示 %{name}"
+  toggle:
+    en: Toggle right sidebar
+    zh-CN: 显示/隐藏右侧边栏
+
+pane:
+  terminal:
+    en: Terminal
+    zh-CN: 终端
+  diff:
+    en: Diff
+    zh-CN: 差异
+  copy:
+    en: Copy
+    zh-CN: 复制
+  paste:
+    en: Paste
+    zh-CN: 粘贴
+  split_right:
+    en: Split right
+    zh-CN: 向右拆分
+  split_down:
+    en: Split down
+    zh-CN: 向下拆分
+  close:
+    en: Close pane
+    zh-CN: 关闭窗格
+  no_changes:
+    en: No changes
+    zh-CN: 没有变更
+
+workspace:
+  new_terminal:
+    en: New terminal
+    zh-CN: 新建终端
+  close_all_files:
+    en: Close all files
+    zh-CN: 关闭所有文件
+  no_repo:
+    en: No repository yet. Add one to start.
+    zh-CN: 还没有仓库。添加一个即可开始。
+  no_active_worktree:
+    en: Pick a worktree on the left to start.
+    zh-CN: 在左侧选择一个工作树开始。
+  no_tabs:
+    en: Nothing open here. Open a terminal to start.
+    zh-CN: 这里还没有打开任何东西，新建一个终端开始。
+  opening:
+    en: Opening…
+    zh-CN: 正在打开…
+  empty_pane:
+    en: This pane has nothing in it.
+    zh-CN: 这个窗格里没有内容。
+  gone:
+    en: "%{path} is gone"
+    zh-CN: "%{path} 已不存在"
+  not_runnable:
+    en: "%{program} is not runnable"
+    zh-CN: "%{program} 无法运行"
+  save_failed:
+    en: "save failed: %{error}"
+    zh-CN: "保存失败：%{error}"
+  not_restored:
+    en: "%{what} was not restored: %{reason}"
+    zh-CN: "%{what} 未能恢复：%{reason}"
+  not_restored_more:
+    en: "%{what} was not restored: %{reason} (and %{rest} more)"
+    zh-CN: "%{what} 未能恢复：%{reason}（另有 %{rest} 个）"
+  no_worktree_resume:
+    en: "no worktree for %{path} — open it to resume this session"
+    zh-CN: "%{path} 没有对应的工作树 —— 打开它才能恢复此会话"
+  no_agent:
+    en: "no agent preset named %{id}"
+    zh-CN: "没有名为 %{id} 的 agent 预设"
+  no_resume_args:
+    en: "%{name} has no resume_args configured"
+    zh-CN: "%{name} 未配置 resume_args"
+  git_ls_files_failed:
+    en: "git ls-files: %{error}"
+    zh-CN: "git ls-files 失败：%{error}"
+  aria:
+    new_tab:
+      en: New tab
+      zh-CN: 新建标签页
+    in_split:
+      en: In a split
+      zh-CN: 在拆分窗格中
+    unsaved:
+      en: Unsaved changes
+      zh-CN: 未保存的更改
+    exited:
+      en: Exited
+      zh-CN: 已退出
+    restart:
+      en: Restart
+      zh-CN: 重启
+    close_tab:
+      en: Close tab
+      zh-CN: 关闭标签页
+    resize_panes:
+      en: Resize panes
+      zh-CN: 调整窗格大小
+    resize_sidebar:
+      en: Resize right sidebar
+      zh-CN: 调整右侧边栏宽度
+
+dialog:
+  new_worktree:
+    en: New worktree
+    zh-CN: 新建工作树
+  add_project:
+    en: Add project
+    zh-CN: 添加项目
+  remove_project:
+    en: Remove project
+    zh-CN: 移除项目
+  remove_worktree:
+    en: Remove worktree
+    zh-CN: 移除工作树
+  settings:
+    en: Settings
+    zh-CN: 设置
+  close_agent_tab:
+    en: Close agent tab?
+    zh-CN: 关闭 Agent 标签页？
+  close_agent_tab_question:
+    en: The agent in this tab is still running and will be stopped.
+    zh-CN: 此标签页中的 Agent 仍在运行，关闭后将被终止。
+  close:
+    en: Close
+    zh-CN: 关闭
+
+tree:
+  files:
+    en: Files
+    zh-CN: 文件
+  no_worktree:
+    en: No worktree
+    zh-CN: 没有工作树
+  refresh:
+    en: Refresh file tree
+    zh-CN: 刷新文件树
+  new_file:
+    en: New File
+    zh-CN: 新建文件
+  new_folder:
+    en: New Folder
+    zh-CN: 新建文件夹
+  rename:
+    en: Rename
+    zh-CN: 重命名
+  copy_name:
+    en: Copy File Name
+    zh-CN: 复制文件名
+  delete:
+    en: Delete
+    zh-CN: 删除
+  reveal:
+    en: Reveal in Finder
+    zh-CN: 在访达中显示
+  new_file_name:
+    en: New file name
+    zh-CN: 新文件名
+  new_folder_name:
+    en: New folder name
+    zh-CN: 新文件夹名
+  new_name:
+    en: New name
+    zh-CN: 新名称
+  need_name:
+    en: a name is needed
+    zh-CN: 需要输入名称
+  no_path_separator:
+    en: a name cannot contain a path separator
+    zh-CN: 名称不能包含路径分隔符
+  not_a_name:
+    en: "%{name} is not a name"
+    zh-CN: "%{name} 不是合法名称"
+  delete_dir:
+    en: "Delete %{name} and everything in it?"
+    zh-CN: "删除 %{name} 及其中的全部内容？"
+  delete_file:
+    en: "Delete %{name}?"
+    zh-CN: "删除 %{name}？"
+  ignored:
+    en: " (ignored by git)"
+    zh-CN: "（被 git 忽略）"
+
+sidebar:
+  filter:
+    en: Filter worktrees
+    zh-CN: 筛选工作树
+  add_repository:
+    en: Add repository
+    zh-CN: 添加仓库
+  empty_add:
+    en: Add a repository
+    zh-CN: 添加一个仓库
+  new_worktree:
+    en: New worktree
+    zh-CN: 新建工作树
+  repo_menu:
+    en: Project menu
+    zh-CN: 项目菜单
+  menu:
+    en: Sidebar menu
+    zh-CN: 侧边栏菜单
+  show_hidden:
+    en: Show all hidden projects
+    zh-CN: 显示所有隐藏项目
+  hide_asleep:
+    en: Hide sleeping worktrees
+    zh-CN: 隐藏休眠项
+  sort_by:
+    en: Sort by
+    zh-CN: 排序方式
+  sort_name:
+    en: Name
+    zh-CN: 名称
+  sort_activity:
+    en: Agent activity
+    zh-CN: 智能体活动
+  sort_recent:
+    en: Recent
+    zh-CN: 最近的
+  sort_project:
+    en: Project
+    zh-CN: 项目
+  hide_repo:
+    en: Hide project
+    zh-CN: 隐藏项目
+  shared_paths:
+    en: Worktree shared paths
+    zh-CN: 工作树共享路径
+  reveal_worktree:
+    en: Reveal in Finder
+    zh-CN: 在访达中显示
+  remove_worktree:
+    en: Remove worktree
+    zh-CN: 移除工作树
+  no_repositories:
+    en: No repositories
+    zh-CN: 还没有仓库
+  add_hint:
+    en: Add one to get started.
+    zh-CN: 添加一个即可开始。
+  no_match:
+    en: No other worktree matches the filter.
+    zh-CN: 没有符合筛选条件的工作树。
+  resize:
+    en: Resize sidebar
+    zh-CN: 调整侧边栏宽度
+
+git:
+  source_control:
+    en: Source Control
+    zh-CN: 源代码管理
+  refresh:
+    en: Refresh source control
+    zh-CN: 刷新源代码管理
+  sync:
+    en: Fetch, pull and push
+    zh-CN: 获取、拉取和推送
+  fetch:
+    en: Fetch
+    zh-CN: 获取
+  fetching:
+    en: Fetching…
+    zh-CN: 正在获取…
+  pull:
+    en: Pull
+    zh-CN: 拉取
+  pulling:
+    en: Pulling…
+    zh-CN: 正在拉取…
+  commit:
+    en: Commit
+    zh-CN: 提交
+  push:
+    en: Push
+    zh-CN: 推送
+  publish:
+    en: Publish branch
+    zh-CN: 发布分支
+  committing:
+    en: Committing…
+    zh-CN: 正在提交…
+  pushing:
+    en: Pushing…
+    zh-CN: 正在推送…
+  publishing:
+    en: Publishing…
+    zh-CN: 正在发布…
+  message:
+    en: Message
+    zh-CN: 提交信息
+  commit_message:
+    en: Commit message
+    zh-CN: 提交信息
+  view_all:
+    en: View all
+    zh-CN: 查看全部
+  more_view_all:
+    en: "%{count} more — View all"
+    zh-CN: "还有 %{count} 个 —— 查看全部"
+  committed_on:
+    en: "Committed on Branch %{count}"
+    zh-CN: "已在分支上提交 %{count}"
+  outgoing:
+    en: Outgoing Changes
+    zh-CN: 待推送更改
+  commits:
+    en: Commits
+    zh-CN: 提交
+  commits_count:
+    en: "Commits %{count}"
+    zh-CN: "提交 %{count}"
+  commits_count_more:
+    en: "Commits %{count} +"
+    zh-CN: "提交 %{count} +"
+  reading:
+    en: Reading…
+    zh-CN: 读取中…
+  no_commits:
+    en: No commits yet
+    zh-CN: 还没有提交
+  no_branch:
+    en: No branch
+    zh-CN: 没有分支
+  not_on_branch:
+    en: This worktree is not on a branch git can name.
+    zh-CN: 此工作树不在 git 能识别的分支上。
+  no_changes:
+    en: No changes on this branch
+    zh-CN: 此分支没有变更
+  clean_has:
+    en: "This workspace is clean and this branch has %{summary}"
+    zh-CN: "工作区是干净的，此分支%{summary}"
+  one_changed_file:
+    en: 1 changed file
+    zh-CN: 1 个文件已更改
+  changed_files:
+    en: "%{count} changed files"
+    zh-CN: "%{count} 个文件已更改"
+  commit_empty:
+    en: This commit changed no files
+    zh-CN: 此提交没有改动任何文件
+  more_files:
+    en: "%{count} more files"
+    zh-CN: "还有 %{count} 个文件"
+  against:
+    en: "Against %{base}, and this branch has %{summary}"
+    zh-CN: "与 %{base} 比较，此分支%{summary}"
+  open_in_editor:
+    en: "Open %{file} in the editor"
+    zh-CN: "在编辑器中打开 %{file}"
+  graph:
+    en: Git Graph
+    zh-CN: Git 图表
+  refresh_graph:
+    en: Refresh the graph
+    zh-CN: 刷新图表
+  close_graph:
+    en: Close the graph
+    zh-CN: 关闭图表
+  graph_summary:
+    en: "%{branches} branches · %{commits} commits"
+    zh-CN: "%{branches} 个分支 · %{commits} 个提交"
+  graph_description:
+    en: Description
+    zh-CN: 说明
+  graph_date:
+    en: Date
+    zh-CN: 日期
+  graph_author:
+    en: Author
+    zh-CN: 作者
+  graph_commit:
+    en: Commit
+    zh-CN: 提交
+  delete_branch:
+    en: "Delete branch %{branch}"
+    zh-CN: "删除分支 %{branch}"
+  delete_remote_branch:
+    en: "Delete remote branch %{branch}"
+    zh-CN: "删除远端分支 %{branch}"
+  delete_remote_branch_question:
+    en: "The branch is deleted on %{remote}, and this machine pushes the deletion. Everybody working from it loses the branch."
+    zh-CN: "将在 %{remote} 上删除该分支，本次操作会把删除推送到远端。基于它工作的人都会失去这个分支。"
+  delete_branch_question:
+    en: "The branch %{branch} is deleted. The commits it points at are kept under every other name for them."
+    zh-CN: "将删除分支 %{branch}。它指向的提交仍会保留在其他名字下。"
+  delete:
+    en: Delete
+    zh-CN: 删除
+  deleting:
+    en: "Deleting %{branch}…"
+    zh-CN: "正在删除 %{branch}…"
+  delete_anyway:
+    en: "Delete %{branch} anyway"
+    zh-CN: "仍要删除 %{branch}"
+  branch_deleted:
+    en: "Deleted %{branch}"
+    zh-CN: "已删除 %{branch}"
+
+sessions:
+  title:
+    en: Sessions
+    zh-CN: 会话
+  search:
+    en: Search sessions
+    zh-CN: 搜索会话
+  refresh:
+    en: Refresh session history
+    zh-CN: 刷新会话历史
+  messages:
+    en: "%{count} messages"
+    zh-CN: "%{count} 条消息"
+  group:
+    en: "%{name} sessions"
+    zh-CN: "%{name} 的会话"
+  scanning:
+    en: Scanning past sessions…
+    zh-CN: 正在扫描历史会话…
+  shown_newest:
+    en: "%{shown} shown · newest %{newest}"
+    zh-CN: "显示 %{shown} 条 · 最新 %{newest} 条"
+  found:
+    en: "%{count} found"
+    zh-CN: "找到 %{count} 条"
+  empty:
+    en: No agent sessions
+    zh-CN: 没有 agent 会话
+  no_match:
+    en: No sessions match these filters
+    zh-CN: 没有符合筛选条件的会话
+
+resource:
+  unavailable:
+    en: "Resources: unavailable"
+    zh-CN: "资源：不可用"
+  app:
+    en: "Resources: %{count}"
+    zh-CN: "资源：%{count}"
+  measuring:
+    en: "Resources: measuring"
+    zh-CN: "资源：测量中"
+  error:
+    en: "unavailable: %{error}"
+    zh-CN: "不可用：%{error}"
+  # The names over a terminal row's columns, drawn on the worktree's own line.
+  # The length is a duration, not a clock: "Time" rather than "Uptime", which
+  # is what the row's own doc comment calls it.
+  column_status:
+    en: Status
+    zh-CN: 状态
+  column_cpu:
+    en: CPU
+    zh-CN: CPU
+  column_rss:
+    en: RSS
+    zh-CN: RSS
+  column_uptime:
+    en: Time
+    zh-CN: 时长
+
+add_project:
+  url_or_name:
+    en: URL or name
+    zh-CN: URL 或名称
+  host:
+    en: Host
+    zh-CN: 主机
+  local_mac:
+    en: Local Mac
+    zh-CN: 本机 Mac
+  other_ways:
+    en: Other ways to add
+    zh-CN: 其他添加方式
+  browse:
+    en: Browse folders
+    zh-CN: 浏览文件夹
+  browse_hint:
+    en: A local project, a Git repository, or a folder of repositories
+    zh-CN: 本地项目、Git 仓库，或包含多个仓库的文件夹
+  clone:
+    en: Clone from URL
+    zh-CN: 从 URL 克隆
+  clone_hint:
+    en: Clone a remote Git repository
+    zh-CN: 克隆远程 Git 仓库
+  create:
+    en: Create new project
+    zh-CN: 新建项目
+  create_hint:
+    en: Start from an empty folder
+    zh-CN: 从空文件夹开始
+  repo_url:
+    en: Repository URL
+    zh-CN: 仓库 URL
+  project_name:
+    en: Project name
+    zh-CN: 项目名称
+  in:
+    en: In
+    zh-CN: 位置
+  cloning:
+    en: Cloning…
+    zh-CN: 正在克隆…
+  creating:
+    en: Creating…
+    zh-CN: 正在创建…
+  clone_btn:
+    en: Clone
+    zh-CN: 克隆
+  create_btn:
+    en: Create
+    zh-CN: 创建
+  will_add:
+    en: will be added to the sidebar
+    zh-CN: 将添加到侧边栏
+  will_add_path:
+    en: "%{path} will be added to the sidebar"
+    zh-CN: "%{path} 将添加到侧边栏"
+  needs_url:
+    en: a clone needs a URL
+    zh-CN: 克隆需要 URL
+  needs_name:
+    en: a new project needs a name
+    zh-CN: 新项目需要名称
+
+new_worktree:
+  project:
+    en: Project
+    zh-CN: 项目
+  agent:
+    en: Agent
+    zh-CN: Agent
+  shell:
+    en: Shell
+    zh-CN: Shell
+  create_more:
+    en: Create more
+    zh-CN: 继续创建
+  creating:
+    en: Creating…
+    zh-CN: 正在创建…
+  create:
+    en: Create worktree
+    zh-CN: 创建工作树
+  advanced:
+    en: Advanced
+    zh-CN: 高级
+  start_from:
+    en: Start from
+    zh-CN: 起始分支
+  start_from_hint:
+    en: empty = the default
+    zh-CN: 留空则使用默认
+  run_agent:
+    en: "Run %{name}"
+    zh-CN: "运行 %{name}"
+  needs_name:
+    en: a worktree needs a name
+    zh-CN: 工作树需要名称
+  name_is_one_dir:
+    en: a worktree name is one directory name, not a path
+    zh-CN: 工作树名称只能是一个目录名，不能是路径
+  needs_alnum:
+    en: needs at least one letter or digit, so there is a branch to make
+    zh-CN: 至少需要一个字母或数字，以便生成分支
+  remove_question:
+    en: "Remove %{name}?"
+    zh-CN: "移除 %{name}？"
+  remove_aria:
+    en: "Remove %{name}"
+    zh-CN: "移除 %{name}"
+  remove_with_branch:
+    en: "its directory and the branch %{branch} go with it"
+    zh-CN: "其目录和分支 %{branch} 将一并删除"
+  remove_own_checkout:
+    en: "%{name} is the repository's own checkout, so git will not remove it. Removing the project takes it out of the sidebar and leaves its files and the branch %{branch} alone."
+    zh-CN: "%{name} 是仓库自身的检出目录，git 不会移除它。移除项目只会把它从侧边栏移除，其文件和分支 %{branch} 保持不变。"
+  runs_on:
+    en: "Local Mac · %{target}"
+    zh-CN: "本机 Mac · %{target}"
+  branch:
+    en: "branch %{branch}"
+    zh-CN: "分支 %{branch}"
+  remove_anyway:
+    en: Remove anyway
+    zh-CN: 仍然移除
+  removing:
+    en: Removing…
+    zh-CN: 正在移除…
+  remove:
+    en: Remove
+    zh-CN: 移除
+
+palette:
+  open_file:
+    en: Open file
+    zh-CN: 打开文件
+  worktrees:
+    en: Worktrees
+    zh-CN: 工作树
+  search_files:
+    en: Search files…
+    zh-CN: 搜索文件…
+  jump_worktree:
+    en: Jump to a worktree…
+    zh-CN: 跳转到工作树…
+  no_file:
+    en: No file matches.
+    zh-CN: 没有匹配的文件。
+  no_worktree:
+    en: No worktree matches.
+    zh-CN: 没有匹配的工作树。
+  count:
+    en: "%{shown} of %{total}"
+    zh-CN: "共 %{total} 条，显示 %{shown} 条"
+  count_capped:
+    en: "%{shown} of %{total} — the first %{max}; keep typing to narrow"
+    zh-CN: "共 %{total} 条，显示前 %{max} 条 —— 继续输入以缩小范围"
+  active:
+    en: "%{name} (active)"
+    zh-CN: "%{name}（当前）"
+  group:
+    file:
+      en: File
+      zh-CN: 文件
+    worktree:
+      en: Worktree
+      zh-CN: 工作树
+    error:
+      en: Error
+      zh-CN: 错误
+
+settings:
+  appearance:
+    en: Appearance
+    zh-CN: 外观
+  terminal:
+    en: Terminal
+    zh-CN: 终端
+  general:
+    en: General
+    zh-CN: 通用
+  light:
+    en: Light
+    zh-CN: 浅色
+  dark:
+    en: Dark
+    zh-CN: 深色
+  language:
+    en: Language
+    zh-CN: 语言
+  language_system:
+    en: System
+    zh-CN: 跟随系统
+  computer_awake:
+    en: Prevent computer sleep
+    zh-CN: 防止电脑休眠
+  computer_awake_active:
+    en: "%{mode} · active"
+    zh-CN: "%{mode} · 生效中"
+  computer_awake_on:
+    en: On
+    zh-CN: 开启
+  computer_awake_on_desc:
+    en: Always prevent this computer from sleeping
+    zh-CN: 始终防止此电脑进入睡眠状态
+  computer_awake_auto:
+    en: Agent
+    zh-CN: 智能体
+  computer_awake_auto_desc:
+    en: Prevent sleep while an agent is working
+    zh-CN: 智能体工作时防止电脑进入睡眠状态
+  computer_awake_off:
+    en: Off
+    zh-CN: 关闭
+  computer_awake_off_desc:
+    en: Allow the system to sleep normally
+    zh-CN: 允许系统正常进入睡眠状态
+  font_size:
+    en: Editor font size
+    zh-CN: 编辑器字号
+  opacity:
+    en: Transparency
+    zh-CN: 透明度
+  blur:
+    en: Background blur
+    zh-CN: 背景模糊
+  scrollback:
+    en: Scrollback
+    zh-CN: 回滚行数
+  lines:
+    en: "%{count} lines"
+    zh-CN: "%{count} 行"
+  note:
+    en: The font size applies to the editor right away and to terminals opened after the change; the scrollback applies to new terminals.
+    zh-CN: 字号立即作用于编辑器，对更改之后打开的终端生效；回滚行数对新终端生效。
+  write_failed:
+    en: "could not write settings.toml: %{error}"
+    zh-CN: "无法写入 settings.toml：%{error}"
+
+state:
+  agent_waiting_title:
+    en: An agent is waiting for you
+    zh-CN: 有 agent 正在等待你
+  agent_waiting_body:
+    en: "%{who} needs your input"
+    zh-CN: "%{who} 需要你的输入"
+  a_worktree:
+    en: a worktree
+    zh-CN: 某个工作树
+  creating:
+    en: "creating %{name}"
+    zh-CN: "正在创建 %{name}"
+  removing:
+    en: "removing %{name}"
+    zh-CN: "正在移除 %{name}"
+  own_checkout:
+    en: that is the repository's own checkout
+    zh-CN: 这是仓库自身的检出目录
+  hook_start_failed:
+    en: "%{run} could not be started: %{error}"
+    zh-CN: "无法启动 %{run}：%{error}"
+  hook_failed:
+    en: "%{run} failed (%{status}): %{line}"
+    zh-CN: "%{run} 失败（%{status}）：%{line}"
+  hook_failed_nothing:
+    en: "%{run} failed (%{status}) and printed nothing"
+    zh-CN: "%{run} 失败（%{status}），没有任何输出"
+  ended_exit:
+    en: "exit %{code}"
+    zh-CN: "退出码 %{code}"
+  ended_signal:
+    en: killed by a signal
+    zh-CN: 被信号终止
+  add_git_repository:
+    en: Add a git repository
+    zh-CN: 添加 git 仓库
+
+editor:
+  reloaded:
+    en: reloaded from disk
+    zh-CN: 已从磁盘重新加载
+  changed_on_disk:
+    en: changed on disk — your edits are kept
+    zh-CN: 磁盘上的文件已更改 —— 你的修改已保留
+  preview:
+    en: Preview
+    zh-CN: 预览
+  edit:
+    en: Edit
+    zh-CN: 编辑
+
+opener:
+  too_large:
+    en: "%{name} is %{mb} MB — over the %{limit} MB editor limit"
+    zh-CN: "%{name} 为 %{mb} MB —— 超过 %{limit} MB 的编辑器上限"
+  not_text:
+    en: "%{name} is not text"
+    zh-CN: "%{name} 不是文本文件"
+
+restore:
+  terminal_in:
+    en: "terminal in %{path}"
+    zh-CN: "%{path} 中的终端"
+  diff_tab:
+    en: the diff tab
+    zh-CN: 差异标签页
+
+shared_paths:
+  description:
+    en: "When a new worktree is created, each path listed here is copied from the main checkout with an APFS clone where macOS can make one; otherwise it is symlinked from the main checkout."
+    zh-CN: "创建新工作树时，此处列出的每个路径会在可能时通过 macOS 上的 APFS clone-copy 复制；否则，会从主检出目录创建符号链接。"
+  add:
+    en: Add path
+    zh-CN: 添加路径
+  remove:
+    en: Remove path
+    zh-CN: 移除路径
+  linked:
+    en: Linked paths
+    zh-CN: 链接路径
+  count:
+    en: "%{count} paths"
+    zh-CN: "%{count} 路径"
+  empty:
+    en: No shared paths configured for this project.
+    zh-CN: 此项目还没有配置共享路径。
+  placeholder:
+    en: "Type a path (e.g. .env or node_modules)…"
+    zh-CN: "输入路径（例如 .env 或 node_modules）…"
+  add_literal:
+    en: Add
+    zh-CN: 添加
+  added:
+    en: added
+    zh-CN: 已添加
+  no_matches:
+    en: No matches. Keep typing to add a custom path.
+    zh-CN: 没有匹配项。继续输入以添加自定义路径。
+  invalid:
+    en: "%{path} is not a path inside the project"
+    zh-CN: "%{path} 不是项目内的路径"

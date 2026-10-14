@@ -1,0 +1,99 @@
+# Builtin agent presets, compiled into the binary via include_str!.
+
+[[agent]]
+id = "pi"
+name = "Pi"
+command = "pi"
+# Pi resumes by transcript, not by id: `--session <path>`.
+resume_args = ["--session", "{path}"]
+new_args = ["--session-id", "{id}"]
+status = [
+  # Pi/OMP encode the turn in the separator after the brand — `π ! label` is blocked on the user,
+    # `π > label` is the user's turn, `π : label` is a running one.
+  { match = '(?:^|[\s|])(?:π|Pi|OMP)[ \t]+!(?:\s|$)', state = "permission" },
+  { match = '(?:^|[\s|])(?:π|Pi|OMP)[ \t]+>(?:\s|$)', state = "idle" },
+  { match = '(?:^|[\s|])(?:π|Pi|OMP)[ \t]+:(?:\s|$)', state = "working" },
+  { match = '[\x{2800}-\x{28FF}]', state = "working" },
+  { match = '[\x{25D0}-\x{25D3}]', state = "working" },
+  # The bare label forms, which is what a collapsed π frame leaves behind.
+  { match = '(?i)^\s*(?:[\x{2800}-\x{28FF}]\s+)?(?:pi|omp)\s+-\s+action required\s*$', state = "permission" },
+  { match = '(?i)^\s*(?:[\x{2800}-\x{28FF}]\s+)?(?:pi|omp)(?:\s+(?:ready|idle|done))?\s*$', state = "idle" },
+  # The legacy branded form: `π - my-project`, `π: my-project`, and the same with
+  # an OMP/Pi brand and an attached colon, which is idle rather than a state.
+  { match = '^\s*(?:[\x{2800}-\x{28FF}]\s+)?\x{03C0}(?:\s*[-:]|\s)\s*.*$', state = "idle" },
+  { match = '^\s*(?:π|Pi|OMP):(?:\s|$)', state = "idle" },
+  { match = '(?i)(?:action required|permission|waiting)', requires = "pi", state = "permission" },
+]
+
+[[agent]]
+id = "claude"
+name = "Claude Code"
+command = "claude"
+args = ["--dangerously-skip-permissions"]
+resume_args = ["--resume", "{id}"]
+new_args = ["--session-id", "{id}"]
+status = [
+  # ✳ marks idle on both "✳ Claude Code" and a task description ("✳ Fix the
+  # build"), which is the only idle marker Claude Code reliably emits.
+  { match = '^\x{2733}(?: |$)', state = "idle" },
+  # Claude Code 2.1.228 moved its busy frame from braille to quarter circles;
+  # both are accepted so neither version reads as "no agent".
+  { match = '[\x{2800}-\x{28FF}]', state = "working" },
+  { match = '[\x{25D0}-\x{25D3}]', state = "working" },
+  { match = '(?i)(?:action required|permission|waiting)', requires = "claude", state = "permission" },
+  { match = '(?i)(?:^|[^\w./\\-])(?:ready|idle|done)(?:$|[^\w-])', requires = "claude", state = "idle" },
+  { match = '(?i)(?:^|[^\w./\\-])(?:working|thinking|running)(?:$|[^\w-])', requires = "claude", state = "working" },
+  # Claude Code's own title prefixes, ungated: they are this agent's vocabulary,
+  # not a word another agent could plausibly use.
+  { match = '^\. ', state = "working" },
+  { match = '^\* ', state = "idle" },
+  # The title is the agent and nothing else. Anchored deliberately: `claude
+  # agents` is Claude Code's agent-management screen, which is not an agent
+  # at all, so the idle fallback may not swallow anything but the bare name.
+  { match = '(?i)^\s*claude(?:\s+code)?(?:\.(?:exe|cmd|bat|ps1))?\s*$', state = "idle" },
+]
+
+[[agent]]
+id = "codex"
+name = "Codex"
+command = "codex"
+resume_args = ["resume", "{id}"]
+status = [
+  { match = '[\x{2800}-\x{28FF}]', state = "working" },
+  { match = '[\x{25D0}-\x{25D3}]', state = "working" },
+  { match = '(?i)(?:action required|permission|waiting)', requires = "codex", state = "permission" },
+  { match = '(?i)(?:^|[^\w./\\-])(?:ready|idle|done)(?:$|[^\w-])', requires = "codex", state = "idle" },
+  { match = '(?i)(?:^|[^\w./\\-])(?:working|thinking|running)(?:$|[^\w-])', requires = "codex", state = "working" },
+  # A title that names Codex and says nothing else — "Codex: fix cursor offsets"
+  # — is idle, which is the fallback once an agent name is known.
+  { match = '(?s).', requires = "codex", state = "idle" },
+]
+
+[[agent]]
+id = "opencode"
+name = "OpenCode"
+command = "opencode"
+resume_args = ["--session", "{id}"]
+status = [
+  { match = '[\x{2800}-\x{28FF}]', state = "working" },
+  { match = '[\x{25D0}-\x{25D3}]', state = "working" },
+  { match = '(?i)(?:action required|permission|waiting)', requires = "opencode", state = "permission" },
+  { match = '(?i)(?:^|[^\w./\\-])(?:ready|idle|done)(?:$|[^\w-])', requires = "opencode", state = "idle" },
+  { match = '(?i)(?:^|[^\w./\\-])(?:working|thinking|running)(?:$|[^\w-])', requires = "opencode", state = "working" },
+  { match = '(?s).', requires = "opencode", state = "idle" },
+]
+
+[[agent]]
+id = "gemini"
+name = "Gemini CLI"
+command = "gemini"
+resume_args = ["--resume", "{id}"]
+status = [
+  { match = '\x{270B}', state = "permission" },
+  { match = '[\x{2726}\x{23F2}]', state = "working" },
+  { match = '\x{25C7}', state = "idle" },
+  { match = '(?i)(?:action required|permission|waiting)', requires = "gemini", state = "permission" },
+  { match = '(?i)(?:^|[^\w./\\-])(?:ready|idle|done)(?:$|[^\w-])', requires = "gemini", state = "idle" },
+  { match = '(?i)(?:^|[^\w./\\-])(?:working|thinking|running)(?:$|[^\w-])', requires = "gemini", state = "working" },
+  { match = '(?s).', requires = "gemini", state = "idle" },
+]

@@ -1,0 +1,58 @@
+_version: 2
+
+# syro-core's own strings: the few sentences this crate writes that reach the
+# screen. Everything else it returns is a path, a git transcript, or an error a
+# developer reads in a log, and stays in English.
+session:
+  just_now:
+    en: just now
+    zh-CN: 刚刚
+  minutes_ago:
+    en: "%{n}m ago"
+    zh-CN: "%{n} 分钟前"
+  hours_ago:
+    en: "%{n}h ago"
+    zh-CN: "%{n} 小时前"
+  days_ago:
+    en: "%{n}d ago"
+    zh-CN: "%{n} 天前"
+  months_ago:
+    en: "%{n}mo ago"
+    zh-CN: "%{n} 个月前"
+
+git:
+  no_changes_ahead:
+    en: no changes ahead of %{upstream}
+    zh-CN: 与 %{upstream} 一致
+  ahead:
+    en: "%{ahead} ahead of %{upstream}"
+    zh-CN: 领先 %{upstream} %{ahead} 个提交
+  behind:
+    en: "%{behind} behind %{upstream}"
+    zh-CN: 落后 %{upstream} %{behind} 个提交
+  ahead_behind:
+    en: "%{ahead} ahead, %{behind} behind %{upstream}"
+    zh-CN: 领先 %{upstream} %{ahead} 个提交，落后 %{behind} 个提交
+  no_upstream:
+    en: no upstream branch
+    zh-CN: 没有上游分支
+  clone_needs_url:
+    en: a clone needs a URL
+    zh-CN: 克隆需要 URL
+  not_a_clone_dir:
+    en: "%{path} is not a directory to clone into"
+    zh-CN: "%{path} 不是可用于克隆的目录"
+  worktree_add_failed:
+    en: "git worktree add %{path} failed: %{error}"
+    zh-CN: "git worktree add %{path} 失败：%{error}"
+  share_failed:
+    en: "could not copy or link %{path}"
+    zh-CN: "无法复制或链接 %{path}"
+
+fs:
+  already_exists:
+    en: "%{path} already exists"
+    zh-CN: "%{path} 已存在"
+  not_same_dir:
+    en: "%{to} is not in the same directory as %{path}"
+    zh-CN: "%{to} 与 %{path} 不在同一目录"
