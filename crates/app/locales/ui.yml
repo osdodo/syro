@@ -808,6 +808,12 @@ state:
   agent_waiting_body:
     en: "%{who} needs your input"
     zh-CN: "%{who} 需要你的输入"
+  agent_done_title:
+    en: An agent has finished
+    zh-CN: 有 agent 已完成
+  agent_done_body:
+    en: "%{who} is done"
+    zh-CN: "%{who} 已完成"
   a_worktree:
     en: a worktree
     zh-CN: 某个工作树

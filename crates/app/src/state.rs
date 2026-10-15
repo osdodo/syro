@@ -628,7 +628,7 @@ impl AppState {
         if let Some(status) = status
             && previous != Some(status)
         {
-            self.announce_status(worktree_id, terminal_id, status, cx);
+            self.announce_status(worktree_id, terminal_id, previous, status, cx);
         }
         // An agent starting or stopping is what `auto` mode is about.
         self.refresh_awake();
@@ -702,15 +702,17 @@ impl AppState {
         );
     }
 
-    /// Tell the operating system that an agent is waiting for the user.
+    /// Tell the operating system that an agent is waiting for the user, or has
+    /// finished the turn it was working on.
     fn announce_status(
         &self,
         worktree_id: &WorktreeId,
         terminal_id: &TerminalId,
+        previous: Option<AgentStatus>,
         status: AgentStatus,
         cx: &mut Context<Self>,
     ) {
-        if status != AgentStatus::Permission {
+        if !wants_notification(previous, status) {
             return;
         }
         // Already on screen: the app is focused and this terminal's worktree is
@@ -729,12 +731,25 @@ impl AppState {
             .map(|worktree| worktree.name.clone())
             .unwrap_or_else(|| t!("state.a_worktree").to_string());
 
+        let (title, body) = match status {
+            AgentStatus::Permission => (
+                t!("state.agent_waiting_title").to_string(),
+                t!("state.agent_waiting_body", who = who).to_string(),
+            ),
+            // Only these two reach here (`wants_notification`).
+            AgentStatus::Idle => (
+                t!("state.agent_done_title").to_string(),
+                t!("state.agent_done_body", who = who).to_string(),
+            ),
+            AgentStatus::Working => return,
+        };
+
         cx.show_system_notification(SystemNotification {
             // Per terminal, so a second notification for the same terminal
             // replaces the first rather than stacking up.
             tag: notification_tag(terminal_id).into(),
-            title: t!("state.agent_waiting_title").to_string().into(),
-            body: t!("state.agent_waiting_body", who = who).to_string().into(),
+            title: title.into(),
+            body: body.into(),
             actions: Vec::new(),
         });
     }
@@ -1331,6 +1346,16 @@ fn wants_awake(mode: ComputerAwakeMode, working: bool) -> bool {
     }
 }
 
+/// Whether a status transition is worth a system notification: the agent now needs the user, or
+/// it stopped working. Idle on first sight, and idle after a question, are not news.
+fn wants_notification(previous: Option<AgentStatus>, status: AgentStatus) -> bool {
+    match status {
+        AgentStatus::Permission => true,
+        AgentStatus::Idle => previous == Some(AgentStatus::Working),
+        AgentStatus::Working => false,
+    }
+}
+
 /// Whether a `[[hook]].on` name asks for `status`. The two names no `CoreEvent` carries: the
 /// event is `agent_status_changed` for all of them.
 fn wants_status(on: &str, status: AgentStatus) -> bool {
@@ -1495,7 +1520,7 @@ mod tests {
     use syro_core::model::{AgentStatus, HookSpec, State, TabLayout, TabSpec, Worktree};
     use syro_core::store::Store;
 
-    use super::{AppState, branch_or_name, wants_awake};
+    use super::{AppState, branch_or_name, wants_awake, wants_notification};
     use crate::state::fixture::{scratch_repo, temp_store};
 
     /// The one line a worktree is called by, which is the line both the sidebar
@@ -1534,6 +1559,23 @@ mod tests {
         // `auto` is exactly "an agent is working".
         assert!(!wants_awake(ComputerAwakeMode::Auto, false));
         assert!(wants_awake(ComputerAwakeMode::Auto, true));
+    }
+
+    /// A notification is for "you are needed" and "the turn is over", not for every status.
+    #[test]
+    fn a_notification_is_for_waiting_and_for_finishing() {
+        use AgentStatus::{Idle, Permission, Working};
+
+        assert!(wants_notification(None, Permission));
+        assert!(wants_notification(Some(Working), Permission));
+        // The agent was working and stopped: that is the turn ending.
+        assert!(wants_notification(Some(Working), Idle));
+        // First sight of an idle agent, and the answer to its own question.
+        assert!(!wants_notification(None, Idle));
+        assert!(!wants_notification(Some(Permission), Idle));
+        // Starting, or repeating, is not worth a notification.
+        assert!(!wants_notification(None, Working));
+        assert!(!wants_notification(Some(Idle), Working));
     }
 
     /// `[[hook]]`s named after a *status* — the `agent_idle` / `agent_needs_input` — run when
