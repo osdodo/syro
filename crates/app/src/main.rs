@@ -3422,6 +3422,7 @@ mod startable_tests {
 /// ships with).
 pub fn app_keymap(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-s", editor::Save, None),
         // The "New terminal" key (`Mod+T`), which is the tab bar's `+` as well.
         KeyBinding::new("cmd-t", terminal::Add, None),
@@ -3467,6 +3468,31 @@ pub fn app_keymap(cx: &mut App) {
         KeyBinding::new("tab", NoAction {}, Some("terminal")),
         KeyBinding::new("shift-tab", NoAction {}, Some("terminal")),
     ]);
+}
+
+/// `app::Quit` — `cmd-q`. gpui-kit leaves quitting to the application, and with no
+/// menu bar nothing else would ever end the process: the close button only hides.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = app, no_json)]
+pub struct Quit;
+
+/// What the close button does: hide the app instead of closing the window, so the
+/// terminals and their agents keep running and the Dock icon brings them back.
+/// Closing the only window would leave a process with nothing to show and no way
+/// to show it.
+fn hide_on_close(window: &mut Window, cx: &mut App) {
+    window.on_window_should_close(cx, |_, cx| {
+        cx.hide();
+        false
+    });
+}
+
+/// The Dock icon (or a second launch) while the window is not on screen: bring it back.
+fn reopen_windows(cx: &mut App) {
+    cx.activate(true);
+    for window in cx.windows() {
+        let _ = window.update(cx, |_, window, _| window.activate_window());
+    }
 }
 
 /// The workspace's own actions.
@@ -3663,99 +3689,97 @@ fn main() {
         .init();
 
     // The default gpui-kit icon set, so the chrome can draw icons instead of glyphs.
-    gpui_kit::application()
-        // macOS's own default is Explicit: the X leaves the process alive with no
-        // window, and clicking the Dock icon cannot reopen one. This app has a
-        // single window, so closing it is leaving: quit and let a launch start fresh.
-        .with_quit_mode(gpui_kit::QuitMode::LastWindowClosed)
-        .with_assets(gpui_kit::assets::Assets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            // Before anything can try to notify: gpui drops every system
-            // notification when the app has no identity, and says nothing about it.
-            cx.set_app_identity(BUNDLE_ID, APP_NAME);
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
+    app.on_reopen(reopen_windows);
+    app.run(move |cx| {
+        gpui_kit::init(cx);
+        // Before anything can try to notify: gpui drops every system
+        // notification when the app has no identity, and says nothing about it.
+        cx.set_app_identity(BUNDLE_ID, APP_NAME);
 
-            // A broken settings.toml is said out loud and then ignored: it is the
-            // user's file and the app still has to open.
-            let settings = match Settings::load() {
-                Ok(settings) => settings,
-                Err(error) => {
-                    eprintln!("syro: settings.toml ignored: {error:#}");
-                    Settings::default()
-                }
-            };
-
-            // How the app looks, before the window opens: the appearance and the terminal's type from
-            // `settings.toml`.
-            settings_view::apply(cx, &settings);
-            // And what it speaks, before the window draws a word of it. Separate
-            // from `apply`: that one is the appearance and the type, and a test
-            // that clicks a font button must not switch the test process's locale.
-            i18n::apply(settings.language.as_deref());
-
-            // The app's own keys first, then the user's on top — later bindings win
-            // for the same keystroke, which is what makes an override an override.
-            app_keymap(cx);
-            for name in palette::apply_keymap(cx, &settings.keymap) {
-                // Said out loud at startup: a binding that does nothing is the
-                // worst answer a keymap can give, and the user is not looking at
-                // a terminal when they type it.
-                let detail = format!("syro: [keymap] names an action that does not exist: {name}");
-                tracing::warn!("{detail}");
-                eprintln!("{detail}");
+        // A broken settings.toml is said out loud and then ignored: it is the
+        // user's file and the app still has to open.
+        let settings = match Settings::load() {
+            Ok(settings) => settings,
+            Err(error) => {
+                eprintln!("syro: settings.toml ignored: {error:#}");
+                Settings::default()
             }
+        };
 
-            let (_window, workspace) = gpui_kit::open_window(
-                WindowOptions {
-                    // gpui has no default here, and a window shrunk into the panel
-                    // edges is a window this layout cannot draw.
-                    window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
-                    // The setting's platform background from the first frame: the fills are
-                    // already at its alpha, and this is the half of the transparency that
-                    // needs a window to set (see `settings_view::apply_opacity`).
-                    window_background: settings_view::window_background(
-                        settings.background_opacity,
-                        settings.background_blur,
-                    ),
-                    ..Default::default()
-                },
-                cx,
-                |window, cx| {
-                    let state = cx.new(|cx| {
-                        AppState::open(Store::default(), syro_core::workspaces_root(), cx)
-                            .with_settings(settings)
-                    });
-                    // A window that follows the system follows it while it is open, not
-                    // only at start-up.
-                    let follows = state.downgrade();
-                    window
-                        .observe_window_appearance(move |_, cx| {
-                            let Some(state) = follows.upgrade() else {
-                                return;
-                            };
-                            let settings = state.read(cx).settings().clone();
-                            if settings.appearance.is_none() {
-                                settings_view::apply(cx, &settings);
-                            }
-                        })
-                        .detach();
-                    // Actions are the single command channel and are handled
-                    // app-wide, not on one view: the state is what they act on.
-                    state::register_actions(&state, cx);
+        // How the app looks, before the window opens: the appearance and the terminal's type from
+        // `settings.toml`.
+        settings_view::apply(cx, &settings);
+        // And what it speaks, before the window draws a word of it. Separate
+        // from `apply`: that one is the appearance and the type, and a test
+        // that clicks a font button must not switch the test process's locale.
+        i18n::apply(settings.language.as_deref());
 
-                    let workspace = cx.new(|cx| Workspace::new(cx, state));
-                    register_workspace_actions(&workspace, cx);
-                    workspace
-                },
-            )
-            .expect("Failed to open window");
-            // The window exists now, so it can be measured against the screen it
-            // landed on. Nothing to do about one that is already gone.
-            let _ = _window.update(cx, |_, window, cx| fit_to_display(window, cx));
-            // Kept alive by the window's root view; this binding is what lets the
-            // unused-variable check see that nothing else needs it here.
-            let _ = workspace;
-        });
+        // The app's own keys first, then the user's on top — later bindings win
+        // for the same keystroke, which is what makes an override an override.
+        app_keymap(cx);
+        cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+        for name in palette::apply_keymap(cx, &settings.keymap) {
+            // Said out loud at startup: a binding that does nothing is the
+            // worst answer a keymap can give, and the user is not looking at
+            // a terminal when they type it.
+            let detail = format!("syro: [keymap] names an action that does not exist: {name}");
+            tracing::warn!("{detail}");
+            eprintln!("{detail}");
+        }
+
+        let (_window, workspace) = gpui_kit::open_window(
+            WindowOptions {
+                // gpui has no default here, and a window shrunk into the panel
+                // edges is a window this layout cannot draw.
+                window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
+                // The setting's platform background from the first frame: the fills are
+                // already at its alpha, and this is the half of the transparency that
+                // needs a window to set (see `settings_view::apply_opacity`).
+                window_background: settings_view::window_background(
+                    settings.background_opacity,
+                    settings.background_blur,
+                ),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                hide_on_close(window, cx);
+                let state = cx.new(|cx| {
+                    AppState::open(Store::default(), syro_core::workspaces_root(), cx)
+                        .with_settings(settings)
+                });
+                // A window that follows the system follows it while it is open, not
+                // only at start-up.
+                let follows = state.downgrade();
+                window
+                    .observe_window_appearance(move |_, cx| {
+                        let Some(state) = follows.upgrade() else {
+                            return;
+                        };
+                        let settings = state.read(cx).settings().clone();
+                        if settings.appearance.is_none() {
+                            settings_view::apply(cx, &settings);
+                        }
+                    })
+                    .detach();
+                // Actions are the single command channel and are handled
+                // app-wide, not on one view: the state is what they act on.
+                state::register_actions(&state, cx);
+
+                let workspace = cx.new(|cx| Workspace::new(cx, state));
+                register_workspace_actions(&workspace, cx);
+                workspace
+            },
+        )
+        .expect("Failed to open window");
+        // The window exists now, so it can be measured against the screen it
+        // landed on. Nothing to do about one that is already gone.
+        let _ = _window.update(cx, |_, window, cx| fit_to_display(window, cx));
+        // Kept alive by the window's root view; this binding is what lets the
+        // unused-variable check see that nothing else needs it here.
+        let _ = workspace;
+    });
 }
 
 /// The tab bar, the file tree and the panes, in a real (headless) window, driven the way a user
