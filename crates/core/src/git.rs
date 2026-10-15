@@ -729,7 +729,43 @@ pub fn checkout(root: &Path, branch: &str) -> Result<String> {
 /// delete that changes something on somebody else's machine, which is why the
 /// question asked before it says so.
 pub fn remote_branch_delete(root: &Path, remote: &str, branch: &str) -> Result<String> {
-    run_git_reporting(root, &["push", remote, "--delete", branch])
+    let refname = format!("refs/remotes/{remote}/{branch}");
+    // A ref under `refs/remotes` whose first segment is not a remote at all — the
+    // shape `git fetch origin pull/12/head:pr/12` leaves behind — is local. There
+    // is no remote to push a deletion to, and no remote's refspec owns the ref,
+    // so no fetch would ever prune it: dropping it is the whole delete.
+    if !remotes(root)?.iter().any(|name| name == remote) {
+        run_git_ok(root, &["update-ref", "-d", &refname])?;
+        return Ok(format!(
+            "{remote}/{branch} was a local ref, not a branch on a remote — dropped it"
+        ));
+    }
+    let args = ["push", remote, "--delete", branch];
+    let out = run_git(root, &args)?;
+    let said = said(&out);
+    if out.status.success() {
+        return Ok(said);
+    }
+    // Nothing left on the remote to delete, and a remote-tracking ref here that
+    // says otherwise: the branch went — a merged PR, another machine — and this
+    // checkout never pruned. git cannot delete what is not there, so the stale
+    // ref is the thing to drop; left alone it is a branch the graph keeps
+    // drawing, and a delete that fails the same way every time it is asked.
+    if said.contains("remote ref does not exist") {
+        run_git_ok(root, &["update-ref", "-d", &refname])?;
+        return Ok(format!("{branch} was already gone from {remote}"));
+    }
+    anyhow::bail!("git {} failed: {said}", args.join(" "));
+}
+
+/// The configured remotes' names.
+fn remotes(root: &Path) -> Result<Vec<String>> {
+    Ok(run_git_ok(root, &["remote"])?
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 /// Fetch every remote, and drop the remote-tracking refs whose branch is gone
@@ -754,24 +790,28 @@ pub fn pull(root: &Path) -> Result<String> {
 /// nothing at all about the one thing the reader just did.
 fn run_git_reporting(dir: &Path, args: &[&str]) -> Result<String> {
     let out = run_git(dir, args)?;
-    // Progress lines arrive on one rewriting line and end in `\r`, so both
-    // separators are line breaks here, and the blank lines between git's blocks
-    // are not worth keeping.
-    let both = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let said = both
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ");
+    let said = said(&out);
     if !out.status.success() {
         anyhow::bail!("git {} failed: {said}", args.join(" "));
     }
     Ok(said)
+}
+
+/// What git said, both streams as one line.
+fn said(out: &Output) -> String {
+    // Progress lines arrive on one rewriting line and end in `\r`, so both
+    // separators are line breaks here, and the blank lines between git's blocks
+    // are not worth keeping.
+    format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .collect::<Vec<_>>()
+    .join(" · ")
 }
 
 /// Changed files against `base_ref`: uncommitted (`git status`) merged with committed (`git diff`), by path.
@@ -1065,6 +1105,83 @@ mod tests {
         // And git's own refusal — the remote will not lose its current branch —
         // comes back as an error rather than as silence.
         assert!(remote_branch_delete(&mine, "origin", "main").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `git fetch origin pull/12/head:pr/12` leaves a ref under `refs/remotes`
+    /// whose first segment is not a remote, and no remote's refspec owns it —
+    /// no fetch would ever prune it. Deleting it is a local delete, not a push.
+    #[test]
+    fn deleting_a_ref_that_is_not_a_remote_branch_drops_it_locally() {
+        let repo = scratch_repo("pr-ref", "main");
+        git_in(&repo, &["update-ref", "refs/remotes/pr/1", "HEAD"]);
+        assert!(
+            branches(&repo)
+                .unwrap()
+                .iter()
+                .any(|branch| branch.name == "pr/1")
+        );
+
+        let said = remote_branch_delete(&repo, "pr", "1").unwrap();
+        assert!(said.contains("pr/1"), "the delete said nothing: {said:?}");
+        assert!(
+            !branches(&repo)
+                .unwrap()
+                .iter()
+                .any(|branch| branch.name == "pr/1"),
+            "the ref outlived the delete"
+        );
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// A branch somebody deleted on the remote — a merged PR, another machine —
+    /// leaves a remote-tracking ref here that is the only thing still saying the
+    /// branch exists. There is nothing left on the remote to delete, so git
+    /// refuses; the stale ref is what goes, and it goes quietly.
+    #[test]
+    fn deleting_a_remote_branch_already_gone_drops_the_stale_ref() {
+        let dir = temp_dir("stale-remote-branch");
+        let origin = dir.join("origin.git");
+        git_in(
+            &dir,
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                &origin.to_string_lossy(),
+            ],
+        );
+        git_in(&dir, &["clone", "-q", &origin.to_string_lossy(), "mine"]);
+        let mine = dir.join("mine");
+        git_in(&mine, &["config", "user.email", "test@syro.invalid"]);
+        git_in(&mine, &["config", "user.name", "Syro Test"]);
+        std::fs::write(mine.join("one.txt"), "one\n").unwrap();
+        git_in(&mine, &["add", "."]);
+        git_in(&mine, &["commit", "-q", "-m", "the first"]);
+        git_in(&mine, &["push", "-q", "origin", "main:spike"]);
+        git_in(&mine, &["fetch", "-q", "origin"]);
+        assert!(
+            branches(&mine)
+                .unwrap()
+                .iter()
+                .any(|branch| branch.name == "origin/spike")
+        );
+
+        // The branch goes at the remote end, without this checkout pruning.
+        git_in(&origin, &["update-ref", "-d", "refs/heads/spike"]);
+        let said = remote_branch_delete(&mine, "origin", "spike").unwrap();
+        assert!(said.contains("spike"), "the delete said nothing: {said:?}");
+        assert!(
+            !branches(&mine)
+                .unwrap()
+                .iter()
+                .any(|branch| branch.name == "origin/spike"),
+            "the stale remote-tracking ref outlived the delete"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
