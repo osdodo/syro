@@ -305,6 +305,12 @@ pub fn diff_text(root: &Path, base_ref: &str, change: &FileChange) -> Result<Str
     }
 
     let absolute = root.join(path);
+    if absolute.is_dir() {
+        // An untracked directory that git will not open up even under
+        // `--untracked-files=all` — a nested repository — has no file to diff,
+        // and `--no-index` on a directory instead looks for a `null` inside it.
+        return Ok(String::new());
+    }
     let untracked = run_git(
         root,
         &[
@@ -643,7 +649,12 @@ pub fn parse_log(text: &str) -> Vec<Commit> {
 /// The uncommitted files of `worktree_path`, which is also the answer to "is there anything to commit".
 pub fn worktree_changes(worktree_path: &Path) -> Result<Vec<FileChange>> {
     let mut out: Vec<FileChange> = Vec::new();
-    let status = run_git_ok(worktree_path, &["status", "--porcelain=v1"])?;
+    // Every untracked file by name, so a new directory is rows a reader can open
+    // and diff rather than one row git would refuse to diff.
+    let status = run_git_ok(
+        worktree_path,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    )?;
     for line in status.lines() {
         if line.len() < 4 {
             continue;
@@ -1628,6 +1639,31 @@ bare
         assert!(files.contains(&"src/main.rs".to_string()), "{files:?}");
         assert!(files.contains(&"README.md".to_string()), "{files:?}");
         assert!(!files.contains(&"untracked.txt".to_string()), "{files:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_untracked_directory_is_listed_as_the_files_inside_it() {
+        let dir = scratch_repo("untracked-dir", "main");
+        std::fs::create_dir_all(dir.join("web")).unwrap();
+        std::fs::write(dir.join("web/page.html"), "hi\n").unwrap();
+
+        // Not one `web/` row, which git will not diff; the files themselves.
+        let changes = changed_files(&dir, "HEAD").unwrap();
+        assert!(
+            !changes.iter().any(|c| c.path.ends_with('/')),
+            "{changes:?}"
+        );
+        let page = changes.iter().find(|c| c.path == "web/page.html").unwrap();
+        assert!(diff_text(&dir, "HEAD", page).unwrap().contains("+hi"));
+
+        // The one directory that survives: a nested repository. It is a row with
+        // nothing to show, not an error git prints into the diff pane.
+        git_in(&dir.join("web"), &["init", "-q"]);
+        let changes = changed_files(&dir, "HEAD").unwrap();
+        let nested = changes.iter().find(|c| c.path == "web/").unwrap();
+        assert_eq!(diff_text(&dir, "HEAD", nested).unwrap(), "");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
