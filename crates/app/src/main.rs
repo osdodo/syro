@@ -3624,6 +3624,10 @@ fn main() {
 
     // The default gpui-kit icon set, so the chrome can draw icons instead of glyphs.
     gpui_kit::application()
+        // macOS's own default is Explicit: the X leaves the process alive with no
+        // window, and clicking the Dock icon cannot reopen one. This app has a
+        // single window, so closing it is leaving: quit and let a launch start fresh.
+        .with_quit_mode(gpui_kit::QuitMode::LastWindowClosed)
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
