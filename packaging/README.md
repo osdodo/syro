@@ -49,6 +49,24 @@ notification by looking up the second one. If they disagree the app runs fine
 and every notification is dropped without a word. `bundle.sh` therefore refuses
 to build when they drift, and re-checks the built plist.
 
+The plist is necessary but not sufficient. `cargo-bundle` leaves the app
+linker-signed: the signature has no bound `Info.plist`, and its identifier comes
+from the executable (`syro-<hash>`), not the bundle. `usernotificationsd`
+identifies the process by that signature and rejects the authorization request:
+
+```
+usernotificationsd  [syro-ab44add7a4f6578e] Entitlement 'com.apple.private.usernotifications.bundle-identifiers'
+                                             required to request user notifications
+                    requestAuthorization not allowed: com.syro.app
+```
+
+No prompt, no notification — the app runs, the plist says `com.syro.app`, and
+nothing is delivered. `bundle.sh` re-signs ad-hoc (`codesign --force --sign -`)
+after `cargo bundle`; with the bundle in place, codesign binds the plist and takes
+`com.syro.app` as the identifier, and the script re-reads the signature to
+confirm it. macOS is unforgiving here: the same binary, only the signature
+differing, is accepted or rejected.
+
 Evidence — the **same binary** (byte-identical, `cmp` clean), launched twice,
 only the path differing:
 
@@ -138,8 +156,11 @@ window, which the app's own tests can do and this script cannot. When that
 harness exists its numbers belong in this file, from the harness, not from
 here.
 
-**Notification delivery**, as above: the path is live in the bundle, the first
-notification raises a permission prompt nobody has answered.
+**Notification delivery**, as above: the authorization request now reaches
+`usernotificationsd` (the linker-signed bundle was rejected outright), but the
+framework here is lazy — it asks for authorization only when the app posts its
+first notification — and no agent has been driven to a permission state from the
+UI. Whether the banner is delivered and the click handled is still unverified.
 
 **The config every number ran on.** Each scene above
 used a fresh `HOME`, so no usage source was signed in and nothing was fetched. One smaller gap from the last
@@ -147,10 +168,10 @@ round is now closed: the app restores tabs, so a saved layout with terminals in
 it is reachable — but still only through the UI.
 
 
-- No codesigning and no notarization: the bundle runs on this machine and would
-  be refused by Gatekeeper anywhere else. `ponytail:` a release needs a
-  Developer ID and `codesign --deep`, and that is a decision about an account,
-  not about this script.
+- Ad-hoc code signing (so notifications work), but no Developer ID and no
+  notarization: the bundle runs on this machine and would be refused by
+  Gatekeeper anywhere else. `ponytail:` a release needs a Developer ID and
+  notarization, and that is a decision about an account, not about this script.
 - One mark, two files, both transparent: `crates/app/assets/logo.png` is the
   1024pt canvas with the mark where it always sat and the panel it used to sit on
   keyed out to alpha; `app-icon.icns` is that logo with the mark trimmed and

@@ -63,6 +63,20 @@ if [ -x "$plist" ]; then
     fi
 fi
 
+# `cargo-bundle` leaves the app linker-signed: the signature has no bound
+# `Info.plist`, and its identifier comes from the executable name (`syro-<hash>`)
+# rather than the bundle. `usernotificationsd` then rejects every authorization
+# request — "Entitlement 'com.apple.private.usernotifications.bundle-identifiers'
+# required to request user notifications" — so the permission prompt never
+# appears and no notification is delivered. Re-signing ad-hoc with the bundle in
+# place binds the plist and the identifier macOS reads.
+codesign --force --sign - "$bundle"
+signed_id=$(codesign -dv "$bundle" 2>&1 | sed -n 's/^Identifier=//p' | head -1)
+if [ "$signed_id" != "$declared" ]; then
+    echo "bundle.sh: the signature says '$signed_id', main.rs says '$declared'" >&2
+    exit 1
+fi
+
 # The drag-to-install disk image: logo behind the two icons, app on the left,
 # Applications on the right. `hdiutil` and `sips` are in the base system, so
 # this is the whole installer: no create-dmg, no pkgbuild, no extra run of
