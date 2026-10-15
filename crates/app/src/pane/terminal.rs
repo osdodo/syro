@@ -1777,9 +1777,6 @@ fn paint_cursor(
         return None;
     }
     let cursor = content.cursor;
-    if cursor.shape == CursorShape::Hidden {
-        return None;
-    }
     let row = cursor.point.line.0;
     let column = cursor.point.column.0;
     let grid = term.grid();
@@ -1788,6 +1785,13 @@ fn paint_cursor(
     }
 
     let cell = layout.cells(metrics, row as usize, column, 1);
+    // A hidden cursor is not drawn, but it still answers where the IME goes: TUIs
+    // that draw their own cursor (pi among them) hide the terminal's and park it
+    // at the insertion point for exactly this. Without an answer the platform
+    // puts the candidate window in the corner of the screen.
+    if cursor.shape == CursorShape::Hidden {
+        return Some(cell);
+    }
     let block = match cursor.shape {
         CursorShape::Beam => Bounds::new(cell.origin, size(px(2.), metrics.cell.height)),
         CursorShape::Underline => Bounds::new(
