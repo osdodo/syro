@@ -11,8 +11,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::model::{RepoId, WorktreeId};
+use syro_core::session::Session;
 
 use crate::Workspace;
+use crate::session_panel;
 use crate::state::{diff, editor, repo, tab, terminal, worktree};
 
 /// How many rows are drawn.
@@ -378,6 +380,69 @@ pub fn worktree_items(
         .collect()
 }
 
+/// The past agent sessions the last scan found, for the global search: the
+/// session's own title, with the agent and the directory it worked in as the
+/// detail — two sessions can share a title, and the directory is what tells
+/// them apart.
+pub fn session_items(sessions: Vec<Session>) -> Vec<Item> {
+    sessions
+        .into_iter()
+        .map(|session| {
+            let title = if session.title.trim().is_empty() {
+                session.id.clone()
+            } else {
+                session.title.clone()
+            };
+            let detail = format!("{} · {}", session.agent.display(), session.cwd.display());
+            Item::new(SharedString::from(title), move |window, cx| {
+                window.dispatch_action(
+                    Box::new(session_panel::Resume {
+                        session: session.clone(),
+                    }),
+                    cx,
+                );
+            })
+            .group(t!("palette.group.session"))
+            .detail(SharedString::from(detail))
+        })
+        .collect()
+}
+
+/// The projects, for the global search. Selecting one goes to it, which is its
+/// own checkout where it has one and its first worktree otherwise — the closest
+/// a flat list comes to opening a project.
+pub fn repo_items(
+    ctx: &Ctx,
+    repos: Vec<(RepoId, String, String, Option<WorktreeId>)>,
+) -> Vec<Item> {
+    repos
+        .into_iter()
+        .filter_map(|(id, name, path, target)| {
+            let active = ctx.active_repo.as_deref() == Some(id.as_str());
+            let target = target?;
+            Some(
+                Item::new(
+                    SharedString::from(if active {
+                        t!("palette.active", name = name).to_string()
+                    } else {
+                        name.clone()
+                    }),
+                    move |window, cx| {
+                        window.dispatch_action(
+                            Box::new(worktree::Activate {
+                                worktree_id: target.clone(),
+                            }),
+                            cx,
+                        );
+                    },
+                )
+                .group(t!("palette.group.project"))
+                .detail(SharedString::from(path)),
+            )
+        })
+        .collect()
+}
+
 fn file_name_of(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
@@ -437,22 +502,14 @@ pub fn apply_keymap(cx: &mut App, settings: &BTreeMap<String, String>) -> Vec<St
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Files,
-    Worktrees,
+    All,
 }
 
 impl Kind {
-    pub fn title(self) -> String {
-        match self {
-            Kind::Files => t!("palette.open_file"),
-            Kind::Worktrees => t!("palette.worktrees"),
-        }
-        .to_string()
-    }
-
     fn placeholder(self) -> String {
         match self {
             Kind::Files => t!("palette.search_files"),
-            Kind::Worktrees => t!("palette.jump_worktree"),
+            Kind::All => t!("palette.search_all_hint"),
         }
         .to_string()
     }
@@ -461,7 +518,7 @@ impl Kind {
     fn empty(self) -> String {
         match self {
             Kind::Files => t!("palette.no_file"),
-            Kind::Worktrees => t!("palette.no_worktree"),
+            Kind::All => t!("palette.no_match_all"),
         }
         .to_string()
     }
@@ -565,9 +622,9 @@ impl Palette {
             .h_flex()
             .items_center()
             .justify_between()
-            .gap_2()
+            .gap_3()
             .px_2()
-            .py_1()
+            .py_1p5()
             .rounded_sm()
             .cursor_pointer()
             .when(selected, |el| el.bg(colors.muted))
@@ -580,23 +637,37 @@ impl Palette {
                 this.run_selected(window, cx);
             }));
 
-        let mut left = div().h_flex().items_center().gap_2().min_w_0().child(
-            div()
-                .text_sm()
-                .text_color(colors.foreground)
-                .child(item.title.clone()),
-        );
+        // The name and the line beside it share one shrinking box: a long path
+        // is cut with an ellipsis rather than running under the group word on
+        // the right.
+        let mut left = div()
+            .h_flex()
+            .items_center()
+            .gap_2()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.foreground)
+                    .min_w_0()
+                    .truncate()
+                    .child(item.title.clone()),
+            );
         if let Some(detail) = item.detail.clone() {
             left = left.child(
                 div()
                     .text_xs()
                     .text_color(colors.muted_foreground)
+                    .min_w_0()
+                    .truncate()
                     .child(detail),
             );
         }
         row = row.child(left);
 
-        let mut right = div().h_flex().items_center().gap_2();
+        let mut right = div().h_flex().items_center().gap_2().flex_shrink_0();
         if !item.group.is_empty() {
             right = right.child(
                 div()
@@ -621,6 +692,16 @@ impl Render for Palette {
         let colors = Theme::global(cx).tokens.colors.clone();
         let drawn = self.shown.len().min(MAX_ROWS);
 
+        // The list takes the height the window can spare: it is the tallest part
+        // of the dialog, and a fixed one would put the footer past the bottom of
+        // a short window — the dialog clips its content rather than scrolling it.
+        // What is left after the dialog's own chrome (its margins, the field, the
+        // footer: ~180 px), between a floor that still shows a few rows and the
+        // height a roomy window gives it.
+        let list_height = (window.viewport_size().height - px(180.))
+            .max(px(200.))
+            .min(px(620.));
+
         let mut list = div().id("palette-list").v_flex().gap_0p5().w_full();
         for position in 0..drawn {
             let index = self.shown[position];
@@ -631,9 +712,11 @@ impl Render for Palette {
                 div()
                     .id("palette-empty")
                     .test_support()
-                    .px_2()
-                    .py_2()
-                    .text_xs()
+                    .h_flex()
+                    .items_center()
+                    .justify_center()
+                    .py_6()
+                    .text_sm()
                     .text_color(colors.muted_foreground)
                     .child(self.kind.empty()),
             );
@@ -656,16 +739,27 @@ impl Render for Palette {
             .id("palette-footer")
             .test_support()
             .aria_label(SharedString::from(counted.clone()))
+            .h_flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .w_full()
             .px_2()
-            .pt_1()
+            .pt_2()
+            .pb_1()
+            .border_t_1()
+            .border_color(colors.border)
             .text_xs()
             .text_color(colors.muted_foreground)
-            .child(SharedString::from(counted));
+            .child(SharedString::from(counted))
+            // The keys the list answers to, where a reader looks for them: the
+            // palette is opened by a key and driven by three more.
+            .child(div().flex_shrink_0().child(t!("palette.hint")));
 
         div()
             .id("palette")
             .v_flex()
-            .gap_1()
+            .gap_2()
             .w_full()
             // The keys are bound in this context (see `app_keymap`), because the
             // dialog this sits in binds Enter for its own Confirm and a bound key
@@ -674,13 +768,20 @@ impl Render for Palette {
             .on_action(cx.listener(Self::handle_next))
             .on_action(cx.listener(Self::handle_previous))
             .on_action(cx.listener(Self::handle_confirm))
-            .child(Input::new(&self.query).id("palette-input").w_full())
+            .child(
+                // The same xs the rows read at, over the component's own
+                // medium: `refine_style` lands after the input's size does.
+                Input::new(&self.query)
+                    .id("palette-input")
+                    .text_xs()
+                    .w_full(),
+            )
             .child(
                 // A long file list is the normal case, so the list scrolls and
                 // the field and the footer do not.
                 div()
                     .id("palette-rows")
-                    .max_h(px(360.))
+                    .max_h(list_height)
                     .overflow_y_scroll()
                     .w_full()
                     .child(list),

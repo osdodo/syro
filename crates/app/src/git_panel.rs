@@ -1781,16 +1781,13 @@ impl Render for GitPanel {
                     .id("git-summary")
                     .test_support()
                     .v_flex()
-                    .gap_1()
+                    .gap_0p5()
                     .w_full()
                     .px_2()
-                    .pb_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(SharedString::from(headline)),
-                    )
+                    // Even air above and below: the divider above and the message
+                    // box below are the same distance from the two sentences.
+                    .py_2()
+                    .child(div().text_xs().child(SharedString::from(headline)))
                     .child(
                         div()
                             .text_xs()

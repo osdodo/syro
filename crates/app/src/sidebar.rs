@@ -3,8 +3,7 @@
 use std::collections::HashSet;
 
 use gpui_kit::base::{ColorTokens, StyledExt as _, TestSupportExt as _, Theme};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Icon, IconName, Sizable as _};
+use gpui_kit::component::{Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
@@ -19,9 +18,9 @@ use crate::state::{AppState, branch_or_name, worktree};
 const WIDTH: f32 = 240.;
 const MIN_WIDTH: f32 = 220.;
 const MAX_WIDTH: f32 = 500.;
-/// The header's height: an `h-8` row, which is what its action button is
-/// vertically centred in.
-const HEADER_HEIGHT: f32 = 32.;
+/// The header's height: the 24 px search field plus 12 px above and below, so
+/// the field sits well clear of the window's top edge.
+const HEADER_HEIGHT: f32 = 48.;
 /// One row of a menu, so that the submenu beside it can be put on the row that
 /// opened it rather than a guess away from it.
 const MENU_ROW_HEIGHT: f32 = 23.;
@@ -239,9 +238,6 @@ pub struct Sidebar {
     focus: FocusHandle,
     /// The width the drag handle set.
     width: WidthDrag,
-    /// The filter field and what it says.
-    filter: Option<Entity<InputState>>,
-    query: String,
     /// Re-renders on every `CoreEvent`, which is how a worktree created
     /// elsewhere (a refresh, a removal) reaches the list.
     _events: Subscription,
@@ -252,8 +248,6 @@ pub struct Sidebar {
     /// And on every sweep the readout makes, which is where a row's numbers come
     /// from.
     _resources: Subscription,
-    /// The filter's own events, once it exists.
-    _filter_events: Option<Subscription>,
     /// The repositories whose worktrees are folded away. A view preference, so
     /// it lives with the view and not in `state.json` — the list is the same
     /// list either way.
@@ -303,12 +297,9 @@ impl Sidebar {
             resources,
             focus: cx.focus_handle(),
             width: WidthDrag::new(widened, MIN_WIDTH, MAX_WIDTH),
-            filter: None,
-            query: String::new(),
             _events: events,
             _changes: changes,
             _resources: resources_changed,
-            _filter_events: None,
             collapsed: HashSet::new(),
             sort: Sort::default(),
             hide_asleep: false,
@@ -322,26 +313,6 @@ impl Sidebar {
     #[cfg(test)]
     pub fn width(&self) -> f32 {
         self.width.width()
-    }
-
-    /// Build the filter field on the first frame that has a window, and listen
-    /// to it. Called from `render`, which is the first place a window exists.
-    fn ensure_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.filter.is_some() {
-            return;
-        }
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder(t!("sidebar.filter")));
-        // The field's own event is the only thing that says the text changed;
-        // the view redraws from it rather than polling the state every frame.
-        let events = cx.subscribe(&filter, |this, input, _event: &InputEvent, cx| {
-            let query = input.read(cx).value().to_string();
-            if this.query != query {
-                this.query = query;
-                cx.notify();
-            }
-        });
-        self.filter = Some(filter);
-        self._filter_events = Some(events);
     }
 
     /// Follow the pointer while the drag handle is held. `None` is the release.
@@ -366,23 +337,6 @@ impl Sidebar {
                 }
             }
         }
-    }
-
-    /// Whether a worktree survives the filter. The active one always does: a
-    /// filter that hides what is on screen is a filter that looks broken.
-    fn matches(&self, name: &str, repo: &str, active: bool) -> bool {
-        active || self.filter_hits(name, repo)
-    }
-
-    /// Whether the filter matches a row on its own merits, without the
-    /// always-keep-the-active-one rule. A row the keep-rule saved is not a row
-    /// the filter found, and the "nothing matches" line is about the filter.
-    fn filter_hits(&self, name: &str, repo: &str) -> bool {
-        if self.query.is_empty() {
-            return true;
-        }
-        let query = self.query.to_lowercase();
-        name.to_lowercase().contains(&query) || repo.to_lowercase().contains(&query)
     }
 
     /// Whether a worktree is asleep: nothing in it is working. An agent that is
@@ -809,9 +763,10 @@ impl Sidebar {
             // The row as one thing, and the one line it draws: the branch, or the
             // worktree's own name where there is no branch.
             .aria_label(SharedString::from(branch_or_name(&worktree).to_string()))
+            // A card, not a band: the wrapper below insets it from the panel's
+            // edges, so the highlight stops short instead of running under the
+            // rows beside it.
             .w_full()
-            // A card, not a band: the gutter it floats in belongs to the list
-            // (`render`), and the inset on the left is where the marker lives.
             .px_2()
             .py_1p5()
             // `md` rather than `lg`: a wide radius on a short card reads as a
@@ -877,7 +832,7 @@ impl Sidebar {
             card = card.child(terminals);
         }
 
-        card
+        let card = card
             // The row's menu, on the right button. What the row *is* is the
             // left-click; everything that can be done to it is this, which is
             // what every file manager does and what leaves the row itself
@@ -911,7 +866,12 @@ impl Sidebar {
                     }),
                     cx,
                 );
-            }))
+            }));
+
+        // The margin that keeps the highlight off the panel's edges is this
+        // wrapper's padding: a `w_full` card with a margin of its own would
+        // overflow the row it sits in.
+        div().w_full().px_1p5().child(card)
     }
 }
 
@@ -1247,10 +1207,6 @@ fn breathing_dot(colour: Hsla) -> impl IntoElement {
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The one place a window exists, so it is where the filter field is
-        // built (see the field's note).
-        self.ensure_filter(window, cx);
-
         // This frame's drag listeners, registered while the frame is painted:
         let tracker_view = cx.entity().downgrade();
         let tracker = canvas(
@@ -1339,12 +1295,9 @@ impl Render for Sidebar {
             );
         }
 
-        let filtering = !self.query.is_empty();
-        let any_repos = !repos.is_empty();
         // Read once: a hidden repository is not drawn at all, and what is left of
         // the list is what the count at the bottom is about.
         let hidden = self.state.read(cx).hidden_repos().to_vec();
-        let mut hit = false;
         for repo in repos {
             if hidden.contains(&repo.id) {
                 continue;
@@ -1361,37 +1314,27 @@ impl Render for Sidebar {
                 .read(cx)
                 .pending_for(&repo.id)
                 .map(str::to_string);
-            for worktree in &worktrees {
-                hit |= self.filter_hits(&worktree.name, &repo.name);
-            }
             let mut matching: Vec<Worktree> = worktrees
                 .into_iter()
                 .filter(|worktree| {
                     let is_active = active.as_deref() == Some(worktree.id.as_str());
-                    self.matches(&worktree.name, &repo.name, is_active)
-                        // A sleeping worktree is one nothing is working in, and
-                        // hiding those is all that setting does. The one on screen
-                        // stays, like the filter's own match: a list that hides
-                        // what you are looking at looks broken.
-                        && (is_active || !self.hide_asleep || !self.is_asleep(worktree, cx))
+                    // A sleeping worktree is one nothing is working in, and
+                    // hiding those is all that setting does. The one on screen
+                    // stays: a list that hides what you are looking at looks
+                    // broken.
+                    is_active || !self.hide_asleep || !self.is_asleep(worktree, cx)
                 })
                 .collect();
             self.sort_worktrees(&mut matching, cx);
             // A repository with nothing left to show is not a heading with nothing
-            // under it: whatever narrowed the list — the filter, or the sleeping
-            // ones being hidden — narrows it rather than annotating it.
-            if matching.is_empty()
-                && (filtering || self.hide_asleep)
-                && error.is_none()
-                && pending.is_none()
-            {
+            // under it: hiding the sleeping ones narrows the list rather than
+            // annotating it.
+            if matching.is_empty() && self.hide_asleep && error.is_none() && pending.is_none() {
                 continue;
             }
 
-            // Folded away: the repository is its heading and nothing under it. A
-            // filter opens every one of them, because a search that hides its own
-            // match is a search that looks broken.
-            let folded = self.collapsed.contains(&repo.id) && !filtering;
+            // Folded away: the repository is its heading and nothing under it.
+            let folded = self.collapsed.contains(&repo.id);
 
             let mut group = div()
                 .id(SharedString::from(format!("repo-{}", repo.id)))
@@ -1431,7 +1374,7 @@ impl Render for Sidebar {
                                 // The repository is what the rows under it belong
                                 // to, so it reads as a heading rather than as a
                                 // fourth worktree: a folder, and the name a step
-                                // up and weighted. The folder is also the fold:
+                                // down and unweighted. The folder is also the fold:
                                 // closed while the worktrees are away.
                                 .child(
                                     Icon::new(if folded {
@@ -1443,8 +1386,7 @@ impl Render for Sidebar {
                                 )
                                 .child(
                                     div()
-                                        .text_sm()
-                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_xs()
                                         .text_color(colors.foreground)
                                         .truncate()
                                         .child(SharedString::from(repo.name.clone())),
@@ -1522,22 +1464,6 @@ impl Render for Sidebar {
             list = list.child(group);
         }
 
-        // A filter that matched nothing anywhere says so, rather than leaving a
-        // list that looks like a repository with no worktrees. "Other", because
-        // the worktree on screen is kept whether it matched or not.
-        if filtering && !hit && any_repos {
-            list = list.child(
-                div()
-                    .id("filter-empty")
-                    .test_support()
-                    .px_2()
-                    .py_4()
-                    .text_xs()
-                    .text_color(colors.muted_foreground)
-                    .child(t!("sidebar.no_match")),
-            );
-        }
-
         let mut panel = div()
             .id("sidebar")
             .test_support()
@@ -1562,11 +1488,6 @@ impl Render for Sidebar {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::handle_escape))
             .child(tracker)
-            // The search box first, because it is the one thing here that is about
-            // the whole list, and the heading under it is about the projects — with
-            // air between the three, so the box, the heading and the rows do not
-            // read as one block.
-            .child(self.filter_row(&colors))
             .child(self.header(&colors, cx))
             .child(list)
             .child(self.resize_handle(&colors, cx));
@@ -1581,23 +1502,28 @@ impl Render for Sidebar {
 }
 
 impl Sidebar {
-    /// The header row: the section title and the two actions that belong to the panel as a whole,
-    /// in the shape an `h-8` header has: the title on the left, an action cluster on the right).
+    /// The header row: the global search on the left, drawn as the field it opens,
+    /// and the two actions that belong to the panel as a whole on the right.
     fn header(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
-        // Two actions: a repository, and the panel's own menu. A new worktree
-        // belongs to a repository, and the `...` on that repository's own heading
-        // is where it lives — a `+` up here would be the same action about
-        // whichever repository happened to be active.
-        let actions = div()
+        div()
+            .id("sidebar-header")
+            .test_support()
             .h_flex()
             .items_center()
             .gap_1()
+            // The field's box starts where the row cards' column begins, 12 px in:
+            // the list's own gutter plus the margin a card keeps. The buttons keep
+            // that same 12 px on the right, so both edges of the panel line up
+            // with the search box rather than the search box reaching past them.
+            .px_3()
+            .h(px(HEADER_HEIGHT))
+            .child(self.search_input(colors))
             .child(self.header_button(
                 "repo-add",
                 &t!("sidebar.add_repository"),
-                // `FolderPlus`, which this icon set does not have: a folder is
-                // what the platform's picker asks for, and the label says the rest.
-                IconName::Folder,
+                // A plus: the action is adding a repository, whatever the
+                // platform's picker then asks for.
+                IconName::Plus,
                 colors,
                 |window, cx| {
                     // The Add-project dialog's three doors, one of which is
@@ -1631,22 +1557,50 @@ impl Sidebar {
                         };
                         this.open_menu(Target::Sidebar, at, window, cx);
                     })),
-            );
+            )
+            .into_any_element()
+    }
 
+    /// The global search, drawn as the field it opens: a search icon, the hint in
+    /// small muted type, and a click anywhere in the box that opens the search
+    /// overlay. The text is typed there, not here.
+    fn search_input(&self, colors: &ColorTokens) -> AnyElement {
         div()
-            .id("sidebar-header")
+            .id("sidebar-search")
             .test_support()
+            .aria_label(t!("sidebar.search"))
             .h_flex()
             .items_center()
-            // The buttons only: what the panel holds is said by the list under
-            // them, and a word for it here was a label on the obvious.
-            .justify_end()
-            .gap_1()
-            // The same 12 px the list's own rows are inset by (its gutter plus a
-            // row's inset), so the heading's buttons line up with a repository's.
-            .px_3()
-            .h(px(HEADER_HEIGHT))
-            .child(actions)
+            .gap_1p5()
+            .flex_1()
+            .min_w_0()
+            .h(px(24.))
+            .px_2()
+            .rounded_md()
+            .bg(colors.background)
+            .border_1()
+            .border_color(colors.input)
+            .cursor_pointer()
+            .text_color(colors.muted_foreground)
+            .hover(|el| el.bg(colors.muted))
+            .child(Icon::new(IconName::Search).size(px(14.)).flex_shrink_0())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_xs()
+                    .child(t!("palette.search_all_hint")),
+            )
+            .on_click(move |_event, window, cx| {
+                window.dispatch_action(
+                    Box::new(crate::palette::Open {
+                        kind: crate::palette::Kind::All,
+                    }),
+                    cx,
+                );
+            })
             .into_any_element()
     }
 
@@ -1673,57 +1627,6 @@ impl Sidebar {
             .hover(|el| el.bg(colors.muted))
             .child(Icon::new(icon).size(px(14.)))
             .on_click(move |_event, window, cx| on_click(window, cx))
-            .into_any_element()
-    }
-
-    /// The filter row under the header.
-    fn filter_row(&self, colors: &ColorTokens) -> AnyElement {
-        let Some(filter) = self.filter.as_ref() else {
-            // Only before the first frame, and a first frame is drawn before
-            // anything can be clicked.
-            return div().into_any_element();
-        };
-        div()
-            .id("sidebar-filter")
-            .test_support()
-            .w_full()
-            // The list's own gutter (4) plus a row's inset (8): the search box, the
-            // heading and the rows all start on the same line, and the two `...`
-            // buttons at the other end do too.
-            .px_3()
-            // Air above the box and more under it: it is the top of the panel, and
-            // the heading under it is a different thing.
-            .pt_2()
-            .pb_3()
-            .child(
-                div()
-                    .h_flex()
-                    .items_center()
-                    .w_full()
-                    .h(px(28.))
-                    .px_2()
-                    .rounded_md()
-                    .bg(colors.muted)
-                    .border_1()
-                    .border_color(colors.border)
-                    .child(
-                        Icon::new(IconName::Search)
-                            .size(px(12.))
-                            .text_color(colors.muted_foreground),
-                    )
-                    .child(
-                        Input::new(filter)
-                            .id("sidebar-filter-input")
-                            .appearance(false)
-                            .bordered(false)
-                            .cleanable(false)
-                            // The smallest the component goes: a 20 px field at
-                            // the sidebar's own type size.
-                            .xsmall()
-                            .flex_1()
-                            .min_w_0(),
-                    ),
-            )
             .into_any_element()
     }
 
@@ -2216,6 +2119,57 @@ mod window_tests {
         assert!(
             (left - right).abs() < 2.,
             "the row's hover is lopsided: {left} on the left against {right} on the right"
+        );
+    }
+
+    /// The row's highlight is a card, not a band: it keeps a margin from the
+    /// panel's own edges, so a row never looks like it was painted edge to edge.
+    #[gpui_kit::test]
+    fn a_rows_card_stops_short_of_the_panels_edges(cx: &mut TestAppContext) {
+        let fixture = open(cx, "row-inset");
+        let (active, _other) = active_and_other(cx, &fixture);
+        assert!(
+            draw_until(cx, &fixture, |cx| found(
+                cx,
+                &fixture,
+                &format!("worktree-{active}")
+            )),
+            "the worktree never got a card"
+        );
+        let panel = bounds(cx, &fixture, "sidebar");
+        let card = bounds(cx, &fixture, &format!("worktree-{active}"));
+        let panel_right = panel.origin.x + panel.size.width;
+        let card_right = card.origin.x + card.size.width;
+        assert!(
+            card.origin.x > panel.origin.x,
+            "the card is flush with the panel's left edge: {card:?} in {panel:?}"
+        );
+        assert!(
+            card_right < panel_right,
+            "the card runs past the panel's right edge: {card:?} in {panel:?}"
+        );
+    }
+
+    /// The search box starts at the same column the rows are drawn in, so it
+    /// never reaches past the line the list is inset to.
+    #[gpui_kit::test]
+    fn the_search_box_starts_no_further_out_than_the_rows_column(cx: &mut TestAppContext) {
+        let fixture = open(cx, "search-column");
+        let (active, _other) = active_and_other(cx, &fixture);
+        assert!(
+            draw_until(cx, &fixture, |cx| found(
+                cx,
+                &fixture,
+                &format!("worktree-{active}")
+            )),
+            "the worktree never got a card"
+        );
+        let search = bounds(cx, &fixture, "sidebar-search").origin.x;
+        let panel = bounds(cx, &fixture, "sidebar").origin.x;
+        let card = bounds(cx, &fixture, &format!("worktree-{active}")).origin.x;
+        assert!(
+            search >= card && search > panel,
+            "the search box reaches past the rows' column: search {search}, card {card}, panel {panel}"
         );
     }
 
@@ -3049,66 +3003,6 @@ mod window_tests {
         );
     }
 
-    /// The filter narrows the list, and never hides what is on screen.
-    #[gpui_kit::test]
-    fn the_filter_narrows_the_list_and_clearing_it_restores_it(cx: &mut TestAppContext) {
-        let fixture = open(cx, "sidebar-filter");
-        let (active, other) = active_and_other(cx, &fixture);
-        assert!(row_is_listed(cx, &fixture, Path::new(&other)));
-
-        let name = Path::new(&other)
-            .file_name()
-            .expect("a worktree row has a name")
-            .to_string_lossy()
-            .to_string();
-        let hidden = fixture
-            .worktrees
-            .iter()
-            .map(|path| path.display().to_string())
-            .find(|id| *id != other)
-            .expect("the fixture makes two worktrees");
-
-        type_into(cx, &fixture, "sidebar-filter-input", &name);
-        assert!(
-            row_is_listed(cx, &fixture, Path::new(&other)),
-            "the filter hid the worktree it matched"
-        );
-        assert!(
-            row_is_listed(cx, &fixture, Path::new(&active)),
-            "the filter hid the worktree on screen"
-        );
-        assert!(
-            !row_is_listed(cx, &fixture, Path::new(&hidden)),
-            "the filter did not narrow the list"
-        );
-        assert!(
-            !found(cx, &fixture, "filter-empty"),
-            "a filter with a match says nothing matched"
-        );
-
-        // Clearing it brings the rest back. Backspace, because that is what a
-        // user has.
-        for _ in 0..name.len() {
-            press(cx, &fixture, "backspace");
-        }
-        assert!(
-            row_is_listed(cx, &fixture, Path::new(&hidden)),
-            "clearing the filter did not bring the row back"
-        );
-
-        // A filter that matches nothing anywhere says so, rather than leaving a
-        // list that reads like a repository with no worktrees.
-        type_into(cx, &fixture, "sidebar-filter-input", "zzz-nothing");
-        assert!(
-            found(cx, &fixture, "filter-empty"),
-            "a filter with no matches said nothing"
-        );
-        assert!(
-            row_is_listed(cx, &fixture, Path::new(&active)),
-            "the worktree on screen went with the filter"
-        );
-    }
-
     /// A `[[hook]]` that failed says so where the worktrees are: a hook is the
     /// user's own command, and the panel that shows their worktrees is where
     /// they look for what happened to one.
@@ -3263,18 +3157,17 @@ mod window_tests {
         // The overlay drawn when the list has nothing in it: centred, with
         // a line saying what to do about it.
         assert!(found(cx, &fixture, "repo-empty"));
-        // The search box is the top of the panel and the heading is under it,
-        // with air between the two: the box is about the whole list, and the
-        // heading is about the projects.
-        let search = bounds(cx, &fixture, "sidebar-filter-input");
+        // The header is the top of the panel and the list is under it.
         let header = bounds(cx, &fixture, "sidebar-header");
+        let list = bounds(cx, &fixture, "sidebar-list");
         assert!(
-            search.origin.y < header.origin.y,
-            "the heading is above the search box: {header:?}, {search:?}"
+            header.origin.y + header.size.height <= list.origin.y,
+            "the list is above the header: {header:?}, {list:?}"
         );
+        // And the search button is in it: the way to the global search.
         assert!(
-            header.origin.y - (search.origin.y + search.size.height) >= px(4.),
-            "the search box and the heading are touching: {search:?}, {header:?}"
+            found(cx, &fixture, "sidebar-search"),
+            "the sidebar has no search button"
         );
         assert_eq!(
             label(cx, &fixture, "repo-add").as_deref(),

@@ -14,7 +14,9 @@ use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::model::AgentStatus;
 use syro_core::resource::{ProcessTable, ResourceSnapshot};
-use syro_core::session::{self, Cache, DEFAULT_LIMIT, SessionRoots, USAGE_DAYS, UsageSummary};
+use syro_core::session::{
+    self, Cache, DEFAULT_LIMIT, Session, SessionRoots, USAGE_DAYS, UsageSummary,
+};
 
 use crate::usage_chart::{DaySpend, ModelBars, ModelSpend};
 
@@ -129,6 +131,10 @@ pub struct ResourceBar {
     usage_cache: Cache,
     /// What the agents have spent lately. `None` until the first usage sweep lands.
     usage: Option<UsageSummary>,
+    /// The sessions the same sweep found, newest first. Kept because the scan
+    /// that produces the usage already reads them, and the global search lists
+    /// them without a second read of every transcript.
+    sessions: Vec<Session>,
     /// Whether the usage panel is open.
     chart_open: bool,
     /// How many times it has been opened: the charts' appear key, so a panel that
@@ -178,6 +184,7 @@ impl ResourceBar {
             roots: SessionRoots::default(),
             usage_cache: Cache::default(),
             usage: None,
+            sessions: Vec::new(),
             chart_open: false,
             charts_opened: 0,
             swept_at: None,
@@ -204,16 +211,17 @@ impl ResourceBar {
         let roots = self.roots.clone();
         let mut cache = std::mem::take(&mut self.usage_cache);
         let task = cx.spawn(async move |this, cx| {
-            let (usage, cache) = cx
+            let (usage, sessions, cache) = cx
                 .background_executor()
                 .spawn(async move {
                     let scan = session::scan(&roots, &mut cache, DEFAULT_LIMIT);
-                    (scan.usage, cache)
+                    (scan.usage, scan.sessions, cache)
                 })
                 .await;
             this.update(cx, |bar, cx| {
                 bar.usage_cache = cache;
                 bar.usage = Some(usage);
+                bar.sessions = sessions;
                 bar._sweep = None;
                 cx.notify();
             })
@@ -503,6 +511,19 @@ impl ResourceBar {
     #[cfg(test)]
     pub fn set_usage(&mut self, usage: UsageSummary) {
         self.usage = Some(usage);
+    }
+
+    /// The sessions the last sweep found, for the global search: what it lists
+    /// as past sessions, without a scan of its own.
+    pub fn sessions(&self) -> &[Session] {
+        &self.sessions
+    }
+
+    /// A session in the search without waiting for the poll's first sweep, for a
+    /// test that asserts on the list rather than on the scan.
+    #[cfg(test)]
+    pub fn set_sessions(&mut self, sessions: Vec<Session>) {
+        self.sessions = sessions;
     }
 }
 
@@ -1037,6 +1058,7 @@ mod tests {
             roots: SessionRoots::default(),
             usage_cache: Cache::default(),
             usage: None,
+            sessions: Vec::new(),
             chart_open: false,
             charts_opened: 0,
             swept_at: None,

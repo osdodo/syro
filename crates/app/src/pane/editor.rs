@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use gpui_kit::base::{StyledExt as _, Theme};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
-use gpui_kit::component::text::TextView;
+use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::model::TabSpec;
@@ -331,7 +331,19 @@ impl Render for EditorView {
                     // A document reads better with a margin around it than
                     // against the pane's own edges.
                     .p_4()
-                    .child(TextView::markdown("editor-preview-text", text).scrollable(true)),
+                    // One step under the 16 px the rest of the app reads at:
+                    // a page of prose is scanned, not studied line by line.
+                    .text_sm()
+                    .child(
+                        TextView::markdown("editor-preview-text", text)
+                            .style(TextViewStyle {
+                                // Paragraphs closer than a full rem, which at body
+                                // size left a gap wider than the text it broke.
+                                paragraph_gap: rems(0.75),
+                                ..Default::default()
+                            })
+                            .scrollable(true),
+                    ),
             )
         } else {
             root.child(

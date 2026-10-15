@@ -39,7 +39,7 @@ use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::config::Settings;
 use syro_core::event::CoreEvent;
-use syro_core::model::{AgentSpec, TabLayout, TabSpec, WorktreeId};
+use syro_core::model::{AgentSpec, RepoId, TabLayout, TabSpec, Worktree, WorktreeId};
 use syro_core::session;
 use syro_core::store::Store;
 use syro_core::term::{TermSize, TermSpec};
@@ -1951,15 +1951,28 @@ impl Workspace {
                 },
                 None => Vec::new(),
             },
-            palette::Kind::Worktrees => palette::worktree_items(&ctx, self.worktree_rows(cx)),
+            palette::Kind::All => {
+                let mut items = palette::repo_items(&ctx, self.repo_rows(cx));
+                items.extend(palette::worktree_items(&ctx, self.worktree_rows(cx)));
+                // The sessions the readout's last sweep read, rather than a
+                // second scan of every transcript: the search lists what the
+                // sweep already found, and its own cache keeps that fresh.
+                items.extend(palette::session_items(
+                    self.resource_bar.read(cx).sessions().to_vec(),
+                ));
+                items
+            }
         };
 
         let form = cx.new(|cx| palette::Palette::new(kind, items, window, cx));
         window.open_dialog(cx, move |dialog, _, cx| {
             let form = form.clone();
             dialog
-                .title(kind.title())
-                .w(px(560.))
+                // No title and no close corner: the field says what the list is,
+                // and with no heading the X would float over the input. Escape
+                // and a click outside still close it — the footer says so.
+                .close_button(false)
+                .w(px(840.))
                 .bg(dialog_background(cx))
                 .content(move |content, _, _| content.child(form.clone()))
         });
@@ -1997,6 +2010,30 @@ impl Workspace {
             .read(cx)
             .active()
             .map(|worktree| worktree.path.clone())
+    }
+
+    /// Every project, with the worktree that going to it means: the
+    /// repository's own checkout, or the first worktree it has.
+    fn repo_rows(&self, cx: &App) -> Vec<(RepoId, String, String, Option<WorktreeId>)> {
+        let state = self.state.read(cx);
+        state
+            .repos()
+            .iter()
+            .map(|repo| {
+                let worktrees: Vec<&Worktree> = state.worktrees_of(&repo.id).collect();
+                let target = worktrees
+                    .iter()
+                    .find(|worktree| state.is_own_checkout(&worktree.id))
+                    .or_else(|| worktrees.first())
+                    .map(|worktree| worktree.id.clone());
+                (
+                    repo.id.clone(),
+                    repo.name.clone(),
+                    repo.path.display().to_string(),
+                    target,
+                )
+            })
+            .collect()
     }
 
     /// Every worktree of every repository, as the jump lists them.
@@ -3444,8 +3481,9 @@ pub fn app_keymap(cx: &mut App) {
         KeyBinding::new("cmd-d", split::Right, None),
         KeyBinding::new("cmd-shift-d", split::Down, None),
         KeyBinding::new("cmd-w", split::ClosePane, None),
-        // `cmd-p` opens the files and `cmd-j` the worktrees: the two lists the
-        // keyboard asks for.
+        // `cmd-j` jumps, and `cmd-shift-p` is the same search under the key a
+        // command palette usually has: both open the one global list — projects,
+        // worktrees and past sessions — and `cmd-p` stays the file quick open.
         KeyBinding::new(
             "cmd-p",
             palette::Open {
@@ -3456,7 +3494,14 @@ pub fn app_keymap(cx: &mut App) {
         KeyBinding::new(
             "cmd-j",
             palette::Open {
-                kind: palette::Kind::Worktrees,
+                kind: palette::Kind::All,
+            },
+            None,
+        ),
+        KeyBinding::new(
+            "cmd-shift-p",
+            palette::Open {
+                kind: palette::Kind::All,
             },
             None,
         ),
@@ -7449,17 +7494,18 @@ mod window_tests {
     fn the_arrow_keys_move_the_selection(cx: &mut TestAppContext) {
         let fixture = open(cx, "palette-arrows");
         activate(cx, &fixture);
-        // The worktree jump, because it lists the fixture's three worktrees and
-        // running a row is a change of its own.
+        // The global search, because it lists the fixture's three worktrees
+        // (and the project above them) and running a row is a change of its own.
         press(cx, &fixture, "cmd-j");
         assert!(draw_until(cx, &fixture, |cx| palette_row(cx, &fixture, 0).is_some()));
-        let rows: Vec<String> = (0..3)
+        // The project, and the three worktrees under it.
+        let rows: Vec<String> = (0..4)
             .filter_map(|position| palette_row(cx, &fixture, position))
             .collect();
         assert_eq!(
             rows.len(),
-            3,
-            "the jump did not list three worktrees: {rows:?}"
+            4,
+            "the search did not list the project and its worktrees: {rows:?}"
         );
         let before = cx.update(|cx| fixture.state.read(cx).active_id().cloned());
         assert_ne!(
@@ -7591,7 +7637,7 @@ mod window_tests {
     }
 
     #[gpui_kit::test]
-    fn the_worktree_jump_lists_every_repository_and_activates_one(cx: &mut TestAppContext) {
+    fn the_search_lists_every_project_and_activates_a_worktree(cx: &mut TestAppContext) {
         let fixture = open(cx, "palette-worktrees");
         let second = add_second_repo(cx, &fixture);
         activate(cx, &fixture);
@@ -7599,14 +7645,14 @@ mod window_tests {
         press(cx, &fixture, "cmd-j");
         assert!(
             draw_until(cx, &fixture, |cx| palette_row(cx, &fixture, 0).is_some()),
-            "cmd-j did not open the jump"
+            "cmd-j did not open the search"
         );
-        // Three worktrees in the fixture's repository and one in the second:
-        // both repositories are listed.
+        // Two projects and four worktrees: both repositories are listed, and so
+        // are the worktrees under them.
         assert_eq!(
             palette_count(cx, &fixture).as_deref(),
-            Some("4 of 4"),
-            "the jump did not list both repositories"
+            Some("6 of 6"),
+            "the search did not list both repositories"
         );
 
         type_text(cx, &fixture, "wt-two");
@@ -7624,6 +7670,81 @@ mod window_tests {
         // The second repository is still there: the jump moved the selection
         // rather than replacing the list.
         assert!(second.exists());
+    }
+
+    /// The global search is the old worktree jump with the projects above the
+    /// worktrees and the past sessions beside them: a session row resumes, and
+    /// `cmd-shift-p` is one of the ways in.
+    #[gpui_kit::test]
+    fn the_global_search_lists_projects_worktrees_and_sessions(cx: &mut TestAppContext) {
+        // A preset that can actually run in a test, so the resume is visible.
+        let settings = Settings {
+            agents: vec![AgentSpec {
+                id: "pi".into(),
+                name: "Pi (test)".into(),
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), "sleep 30".into()],
+                resume_args: vec!["--session".into(), "{path}".into()],
+                new_args: Vec::new(),
+                env: Default::default(),
+                status: Vec::new(),
+            }],
+            ..Settings::default()
+        };
+        let fixture = open_with_settings(cx, "palette-global", settings);
+        add_second_repo(cx, &fixture);
+        // One past session, in the worktree on screen.
+        let roots = pi_history(
+            &fixture._dir.join("home"),
+            &fixture.root,
+            "aaaa1111",
+            "carry on",
+        );
+        let panel = open_sessions(cx, &fixture, roots);
+        // The search lists what the readout's sweep found, so the test hands it
+        // the same sessions the panel's scan just read.
+        let sessions = cx.update(|cx| panel.read(cx).sessions().to_vec());
+        let bar = cx.update(|cx| fixture.workspace.read(cx).resource_bar().clone());
+        cx.update(|cx| bar.update(cx, |bar, _cx| bar.set_sessions(sessions)));
+
+        activate(cx, &fixture);
+        press(cx, &fixture, "cmd-shift-p");
+        assert!(
+            draw_until(cx, &fixture, |cx| palette_row(cx, &fixture, 0).is_some()),
+            "cmd-shift-p did not open the global search"
+        );
+        // Two projects, four worktrees and the one session.
+        assert_eq!(
+            palette_count(cx, &fixture).as_deref(),
+            Some("7 of 7"),
+            "the search did not list everything"
+        );
+
+        // The session's title finds it, and Enter resumes it.
+        type_text(cx, &fixture, "carry on");
+        draw(cx, &fixture);
+        assert_eq!(palette_count(cx, &fixture).as_deref(), Some("1 of 1"));
+        press(cx, &fixture, "enter");
+        let workspace = fixture.workspace.clone();
+        assert!(
+            draw_until(cx, &fixture, |cx| cx.update(|cx| workspace
+                .read(cx)
+                .active_terminal(cx)
+                .is_some_and(|terminal| terminal.read(cx).resume().is_some()))),
+            "the search did not resume the session"
+        );
+    }
+
+    /// The sidebar's search button opens the same global search the keys do.
+    #[gpui_kit::test]
+    fn the_sidebar_search_button_opens_the_global_search(cx: &mut TestAppContext) {
+        let fixture = open(cx, "sidebar-search-button");
+        activate(cx, &fixture);
+        click(cx, &fixture, "sidebar-search".to_string());
+        assert!(
+            draw_until(cx, &fixture, |cx| found(cx, &fixture, "palette-input")),
+            "the search button did not open the search"
+        );
     }
 
     #[gpui_kit::test]
@@ -8228,7 +8349,7 @@ mod window_tests {
 
         let installed = gpui_kit::assets::Assets;
         let drawn = [
-            ("Add repository", IconName::Folder),
+            ("Add repository", IconName::Plus),
             ("New worktree", IconName::Plus),
             ("Close", IconName::Close),
             ("Restart", IconName::RotateCw),

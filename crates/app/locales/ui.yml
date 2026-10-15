@@ -251,9 +251,9 @@ tree:
     zh-CN: "（被 git 忽略）"
 
 sidebar:
-  filter:
-    en: Filter worktrees
-    zh-CN: 筛选工作树
+  search:
+    en: Search everything
+    zh-CN: 全局搜索
   add_repository:
     en: Add repository
     zh-CN: 添加仓库
@@ -308,9 +308,6 @@ sidebar:
   add_hint:
     en: Add one to get started.
     zh-CN: 添加一个即可开始。
-  no_match:
-    en: No other worktree matches the filter.
-    zh-CN: 没有符合筛选条件的工作树。
   resize:
     en: Resize sidebar
     zh-CN: 调整侧边栏宽度
@@ -710,30 +707,27 @@ new_worktree:
     zh-CN: 移除
 
 palette:
-  open_file:
-    en: Open file
-    zh-CN: 打开文件
-  worktrees:
-    en: Worktrees
-    zh-CN: 工作树
   search_files:
     en: Search files…
     zh-CN: 搜索文件…
-  jump_worktree:
-    en: Jump to a worktree…
-    zh-CN: 跳转到工作树…
+  search_all_hint:
+    en: Search projects, worktrees and sessions…
+    zh-CN: 搜索项目、工作树、会话…
   no_file:
     en: No file matches.
     zh-CN: 没有匹配的文件。
-  no_worktree:
-    en: No worktree matches.
-    zh-CN: 没有匹配的工作树。
+  no_match_all:
+    en: No project, worktree or session matches.
+    zh-CN: 没有匹配的项目、工作树或会话。
   count:
     en: "%{shown} of %{total}"
     zh-CN: "共 %{total} 条，显示 %{shown} 条"
   count_capped:
     en: "%{shown} of %{total} — the first %{max}; keep typing to narrow"
     zh-CN: "共 %{total} 条，显示前 %{max} 条 —— 继续输入以缩小范围"
+  hint:
+    en: "↑↓ move · ↵ open · esc close"
+    zh-CN: "↑↓ 选择 · ↵ 打开 · esc 关闭"
   active:
     en: "%{name} (active)"
     zh-CN: "%{name}（当前）"
@@ -741,9 +735,15 @@ palette:
     file:
       en: File
       zh-CN: 文件
+    project:
+      en: Project
+      zh-CN: 项目
     worktree:
       en: Worktree
       zh-CN: 工作树
+    session:
+      en: Session
+      zh-CN: 会话
     error:
       en: Error
       zh-CN: 错误
