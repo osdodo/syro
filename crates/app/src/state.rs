@@ -112,6 +112,11 @@ pub mod terminal {
         /// The past session to re-enter, when this terminal is a resume rather
         /// than a fresh start. `None` is every other way a terminal is opened.
         pub resume: Option<crate::pane::terminal::SessionRef>,
+        /// The first message a fresh agent is started with, when this is a
+        /// handoff from a past session rather than a blank start. Substituted
+        /// into the preset's `{prompt}` `new_args`; ignored by a preset with no
+        /// such argument.
+        pub seed: Option<String>,
     }
 
     /// A new shell tab in the worktree on screen. The tab bar's `+` and `cmd-t`

@@ -178,6 +178,7 @@ pub fn actions() -> Vec<&'static ActionSpec> {
                         worktree_id,
                         agent: None,
                         resume: None,
+                        seed: None,
                     }),
                     cx,
                 );

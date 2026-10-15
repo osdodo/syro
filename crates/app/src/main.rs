@@ -587,7 +587,7 @@ impl Workspace {
             return;
         }
         let terminal = cx.new(|cx| {
-            TerminalView::new(cx, spec, None, None)
+            TerminalView::new(cx, spec, None, None, None)
                 .expect("the shell and the directory were checked")
         });
         let view = self.wire_terminal(&worktree.id, terminal, cx);
@@ -735,7 +735,7 @@ impl Workspace {
             }
         };
         let terminal = cx.new(|cx| {
-            TerminalView::new(cx, spec, preset, resume)
+            TerminalView::new(cx, spec, preset, resume, None)
                 .expect("the command and the directory were checked")
         });
         let view = self.wire_terminal(worktree_id, terminal, cx);
@@ -982,6 +982,7 @@ impl Workspace {
                 id: session.id.clone(),
                 path: session.path.clone(),
             }),
+            seed: None,
         };
         self.start_terminal(&action, cx);
     }
@@ -1049,7 +1050,7 @@ impl Workspace {
 
         let resume = action.resume.clone();
         let terminal = cx.new(|cx| {
-            TerminalView::new(cx, spec, agent, resume)
+            TerminalView::new(cx, spec, agent, resume, action.seed.as_deref())
                 .expect("the command and the directory were checked")
         });
         self.terminal_error = None;
@@ -1067,6 +1068,7 @@ impl Workspace {
             worktree_id,
             agent: None,
             resume: None,
+            seed: None,
         };
         self.start_terminal(&action, cx);
     }
@@ -1087,6 +1089,7 @@ impl Workspace {
             worktree_id: worktree_id.clone(),
             agent: None,
             resume: None,
+            seed: None,
         };
         let Some(view) = self.open_terminal(&action, cx) else {
             return;
@@ -1189,7 +1192,7 @@ impl Workspace {
             }
         };
         let terminal = cx.new(|cx| {
-            TerminalView::new(cx, spec, agent, resume)
+            TerminalView::new(cx, spec, agent, resume, None)
                 .expect("the command and the directory were checked")
         });
         let replacement = self.wire_terminal(&action.worktree_id, terminal, cx);
@@ -1293,6 +1296,7 @@ impl Workspace {
                 worktree_id: worktree_id.clone(),
                 agent: None,
                 resume: None,
+                seed: None,
             },
         )];
         for spec in self.state.read(cx).agents() {
@@ -1304,6 +1308,7 @@ impl Workspace {
                     worktree_id: worktree_id.clone(),
                     agent: Some(spec.id.clone()),
                     resume: None,
+                    seed: None,
                 },
             ));
         }
@@ -6860,6 +6865,7 @@ mod window_tests {
                 worktree_id: worktree_id.clone(),
                 agent: Some("quitter".to_string()),
                 resume: None,
+                seed: None,
             },
         );
 
@@ -7109,7 +7115,18 @@ mod window_tests {
         let panel = open_sessions(cx, &fixture, roots);
         let _ = panel;
 
+        // The row opens first: restarting a conversation is a deliberate click
+        // on the word, not the side effect of looking at the row.
         click(cx, &fixture, "session-aaaa1111".to_string());
+        assert!(
+            draw_until(cx, &fixture, |cx| found(
+                cx,
+                &fixture,
+                "session-aaaa1111-resume"
+            )),
+            "the row did not open"
+        );
+        click_visible(cx, &fixture, "session-aaaa1111-resume");
         let workspace = fixture.workspace.clone();
         assert!(
             draw_until(cx, &fixture, |cx| cx.update(|cx| workspace
@@ -7153,6 +7170,161 @@ mod window_tests {
                     ))
                     .join("2026-10-12T01-00-01-191Z_aaaa1111.jsonl")
             )
+        );
+    }
+
+    /// A row opens onto more of itself — where it worked and which transcript
+    /// it is — and three words: continue, start over, delete.
+    #[gpui_kit::test]
+    fn a_session_row_opens_onto_its_details_and_its_buttons(cx: &mut TestAppContext) {
+        let fixture = open(cx, "sessions-expand");
+        let roots = pi_history(
+            &fixture._dir.join("home"),
+            &fixture.root,
+            "aaaa1111",
+            "carry on",
+        );
+        let _ = open_sessions(cx, &fixture, roots);
+
+        // Shut until asked: a list where every row drew three buttons would be a
+        // list of buttons.
+        draw(cx, &fixture);
+        assert!(!found(cx, &fixture, "session-aaaa1111-resume"));
+        assert!(!found(cx, &fixture, "session-aaaa1111-cwd"));
+
+        click(cx, &fixture, "session-aaaa1111".to_string());
+        assert!(
+            draw_until(cx, &fixture, |cx| found(
+                cx,
+                &fixture,
+                "session-aaaa1111-resume"
+            )),
+            "the row did not open"
+        );
+        assert!(found(cx, &fixture, "session-aaaa1111-new"));
+        assert!(found(cx, &fixture, "session-aaaa1111-delete"));
+        assert!(found(cx, &fixture, "session-aaaa1111-cwd"));
+        assert!(found(cx, &fixture, "session-aaaa1111-id"));
+
+        // And the same click shuts it.
+        click(cx, &fixture, "session-aaaa1111".to_string());
+        assert!(
+            draw_until(cx, &fixture, |cx| !found(
+                cx,
+                &fixture,
+                "session-aaaa1111-resume"
+            )),
+            "the row did not close"
+        );
+    }
+
+    /// "Start a new session" opens a fresh agent — the same worktree, the same
+    /// preset, no resume flags — seeded with a handoff from the transcript it came
+    /// from.
+    #[gpui_kit::test]
+    fn a_new_session_button_starts_a_fresh_agent_in_the_worktree(cx: &mut TestAppContext) {
+        let settings = Settings {
+            agents: vec![AgentSpec {
+                id: "pi".into(),
+                name: "Pi (test)".into(),
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), "echo carried=\"$1\"; sleep 30".into()],
+                resume_args: vec!["--session".into(), "{path}".into()],
+                new_args: vec!["{id}".into(), "{prompt}".into()],
+                env: Default::default(),
+                status: Vec::new(),
+            }],
+            ..Settings::default()
+        };
+        let fixture = open_with_settings(cx, "sessions-new", settings);
+        let roots = pi_history(
+            &fixture._dir.join("home"),
+            &fixture.root,
+            "aaaa1111",
+            "carry on",
+        );
+        let _ = open_sessions(cx, &fixture, roots);
+
+        click(cx, &fixture, "session-aaaa1111".to_string());
+        assert!(draw_until(cx, &fixture, |cx| found(
+            cx,
+            &fixture,
+            "session-aaaa1111-new"
+        )));
+        click_visible(cx, &fixture, "session-aaaa1111-new");
+
+        let workspace = fixture.workspace.clone();
+        assert!(
+            draw_until(cx, &fixture, |cx| cx.update(|cx| workspace
+                .read(cx)
+                .active_terminal(cx)
+                .is_some_and(|terminal| {
+                    let view = terminal.read(cx);
+                    view.agent_id().map(String::as_str) == Some("pi") && view.resume().is_none()
+                }))),
+            "the button did not start a fresh agent"
+        );
+        let terminal = cx
+            .update(|cx| fixture.workspace.read(cx).active_terminal(cx))
+            .expect("the new terminal");
+        let (resume, agent) = cx.update(|cx| {
+            let view = terminal.read(cx);
+            (view.resume().cloned(), view.agent_id().cloned())
+        });
+        assert!(resume.is_none(), "a fresh session is not a resume");
+        assert_eq!(agent.as_deref(), Some("pi"));
+        // And the fresh session was seeded with what the transcript carried: the
+        // original request, handed to the child as its first message.
+        assert!(
+            draw_until(cx, &fixture, |cx| cx.update(|cx| fixture
+                .workspace
+                .read(cx)
+                .active_terminal(cx)
+                .is_some_and(|terminal| terminal
+                    .read(cx)
+                    .screen()
+                    .text()
+                    .contains("Original request: carry on")))),
+            "the handoff never reached the new session"
+        );
+    }
+
+    /// "Delete" asks first, then removes the transcript from disk and from the
+    /// list.
+    #[gpui_kit::test]
+    fn a_delete_button_removes_the_transcript_after_a_confirmation(cx: &mut TestAppContext) {
+        let fixture = open(cx, "sessions-delete");
+        let roots = pi_history(
+            &fixture._dir.join("home"),
+            &fixture.root,
+            "aaaa1111",
+            "throw me away",
+        );
+        let panel = open_sessions(cx, &fixture, roots);
+        let path = cx.update(|cx| panel.read(cx).sessions()[0].path.clone());
+        assert!(path.is_file());
+
+        click(cx, &fixture, "session-aaaa1111".to_string());
+        assert!(draw_until(cx, &fixture, |cx| found(
+            cx,
+            &fixture,
+            "session-aaaa1111-delete"
+        )));
+        click_visible(cx, &fixture, "session-aaaa1111-delete");
+        assert!(
+            draw_until(cx, &fixture, |cx| found(cx, &fixture, "ok")),
+            "the delete did not ask"
+        );
+        assert!(path.is_file(), "the transcript went before the answer");
+
+        click_visible(cx, &fixture, "ok");
+        assert!(
+            draw_until(cx, &fixture, |_cx| !path.exists()),
+            "the transcript was not removed"
+        );
+        assert!(
+            draw_until(cx, &fixture, |cx| !found(cx, &fixture, "session-aaaa1111")),
+            "the row stayed after its transcript went"
         );
     }
 
@@ -8002,6 +8174,7 @@ mod window_tests {
                     worktree_id,
                     agent: Some("chatty".into()),
                     resume: None,
+                    seed: None,
                 }),
                 cx,
             );
@@ -9805,7 +9978,7 @@ mod window_tests {
                 .map(|_| {
                     let spec = spec.clone();
                     cx.new(|cx| {
-                        TerminalView::new(cx, spec, None, None).expect("a scratch terminal")
+                        TerminalView::new(cx, spec, None, None, None).expect("a scratch terminal")
                     })
                 })
                 .collect()
@@ -9855,6 +10028,7 @@ mod window_tests {
                     worktree_id,
                     agent: None,
                     resume: None,
+                    seed: None,
                 }),
                 cx,
             );

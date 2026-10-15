@@ -671,6 +671,7 @@ impl NewWorktree {
             worktree_id,
             agent: Some(agent),
             resume: None,
+            seed: None,
         };
         cx.defer(move |cx| {
             workspace.update(cx, |workspace, cx| workspace.start_terminal(&action, cx));

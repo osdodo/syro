@@ -388,6 +388,7 @@ impl TerminalView {
         spec: TermSpec,
         agent: Option<AgentSpec>,
         resume: Option<SessionRef>,
+        seed: Option<&str>,
     ) -> anyhow::Result<Self> {
         let cwd = spec.cwd.clone();
         let mut spec = spec;
@@ -397,8 +398,16 @@ impl TerminalView {
             .filter(|agent| resume.is_none() && !agent.new_args.is_empty())
             .map(|agent| {
                 let id = new_session_id();
-                spec.args
-                    .extend(agent.new_args.iter().map(|arg| arg.replace("{id}", &id)));
+                spec.args.extend(agent.new_args.iter().filter_map(|arg| {
+                    if arg.contains("{prompt}") {
+                        // Only a handoff carries a first message; a plain new
+                        // session drops the placeholder rather than send an
+                        // empty argument.
+                        seed.map(|seed| arg.replace("{prompt}", seed))
+                    } else {
+                        Some(arg.replace("{id}", &id))
+                    }
+                }));
                 id
             });
         let session = Rc::new(TermSession::spawn(spec)?);
@@ -2556,6 +2565,16 @@ mod window_tests {
         spec: TermSpec,
         agent: Option<AgentSpec>,
     ) -> (WindowHandle<Root>, Entity<TerminalView>) {
+        open_seeded(cx, spec, agent, None)
+    }
+
+    /// The same window, with the first message a seeded start carries.
+    fn open_seeded(
+        cx: &mut TestAppContext,
+        spec: TermSpec,
+        agent: Option<AgentSpec>,
+        seed: Option<&str>,
+    ) -> (WindowHandle<Root>, Entity<TerminalView>) {
         cx.update(|cx| {
             let bounds = Bounds {
                 origin: Point::default(),
@@ -2569,7 +2588,7 @@ mod window_tests {
                 cx,
                 |_, cx| {
                     cx.new(|cx| {
-                        TerminalView::new(cx, spec, agent, None).expect("spawn the terminal")
+                        TerminalView::new(cx, spec, agent, None, seed).expect("spawn the terminal")
                     })
                 },
             )
@@ -2749,6 +2768,32 @@ mod window_tests {
             matches!(&spec, TabSpec::Terminal { session: Some(saved), .. } if saved == &id),
             "{spec:?}"
         );
+    }
+
+    /// A `{prompt}` in `new_args` is the first message a seeded start carries; a
+    /// blank start draws none.
+    #[gpui_kit::test]
+    fn a_new_session_carries_the_handoff_it_was_given(cx: &mut TestAppContext) {
+        let mut agent = title_agent("echo carried=\"$1\"; sleep 30");
+        agent.new_args = vec!["{id}".to_string(), "{prompt}".to_string()];
+        let spec = term_spec_for_agent(&agent, std::env::temp_dir(), TermSize::new(80, 24), None);
+        let (window, view) =
+            open_seeded(cx, spec, Some(agent.clone()), Some("handoff from before"));
+        assert!(
+            draw_until(cx, window, &view, "carried=handoff from before"),
+            "the seed never reached the child"
+        );
+
+        // The same preset with no seed: the placeholder goes away, so `$1` is
+        // unset and the child draws no handoff.
+        let spec = term_spec_for_agent(&agent, std::env::temp_dir(), TermSize::new(80, 24), None);
+        let (window, view) = open(cx, spec, Some(agent));
+        assert!(
+            draw_until(cx, window, &view, "carried="),
+            "the blank start never ran"
+        );
+        let drawn = cx.update(|cx| view.read(cx).screen().text());
+        assert!(!drawn.contains("handoff from before"), "{drawn}");
     }
 
     /// `pi` typed at a shell prompt is still Pi, and its title's session name is its task.
@@ -3605,7 +3650,7 @@ mod window_tests {
                 move |_, cx| {
                     let tree = cx.new(|cx| FileTreeView::new(state, cx));
                     let terminal = cx.new(|cx| {
-                        TerminalView::new(cx, cat, None, None).expect("spawn the terminal")
+                        TerminalView::new(cx, cat, None, None, None).expect("spawn the terminal")
                     });
                     slot.borrow_mut().replace((tree.clone(), terminal.clone()));
                     cx.new(|_| Pair { tree, terminal })

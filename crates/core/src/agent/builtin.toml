@@ -6,7 +6,9 @@ name = "Pi"
 command = "pi"
 # Pi resumes by transcript, not by id: `--session <path>`.
 resume_args = ["--session", "{path}"]
-new_args = ["--session-id", "{id}"]
+# A new session is seeded with a handoff as its first message, where there is
+# one; the placeholder is dropped for a blank start.
+new_args = ["--session-id", "{id}", "{prompt}"]
 status = [
   # Pi/OMP encode the turn in the separator after the brand — `π ! label` is blocked on the user,
     # `π > label` is the user's turn, `π : label` is a running one.
@@ -31,7 +33,7 @@ name = "Claude Code"
 command = "claude"
 args = ["--dangerously-skip-permissions"]
 resume_args = ["--resume", "{id}"]
-new_args = ["--session-id", "{id}"]
+new_args = ["--session-id", "{id}", "{prompt}"]
 status = [
   # ✳ marks idle on both "✳ Claude Code" and a task description ("✳ Fix the
   # build"), which is the only idle marker Claude Code reliably emits.

@@ -25,8 +25,8 @@ pub enum Panel {
 }
 
 impl Panel {
-    /// In strip order, which is also the order the palette lists them in.
-    pub const ALL: [Panel; 3] = [Panel::Files, Panel::Sessions, Panel::Git];
+    /// In strip order.
+    pub const ALL: [Panel; 3] = [Panel::Files, Panel::Git, Panel::Sessions];
 
     pub fn label(self) -> String {
         match self {

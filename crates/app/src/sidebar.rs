@@ -2273,6 +2273,7 @@ mod window_tests {
                 worktree_id: id.clone(),
                 agent: Some("title-agent".to_string()),
                 resume: None,
+                seed: None,
             },
         );
 
@@ -2403,6 +2404,7 @@ mod window_tests {
                 worktree_id: id.clone(),
                 agent: Some("width-agent".to_string()),
                 resume: None,
+                seed: None,
             },
         );
         // Read back through the readout rather than guessed from the fixture: the
@@ -3140,6 +3142,7 @@ mod window_tests {
                 worktree_id: id.clone(),
                 agent: Some("title-agent".to_string()),
                 resume: None,
+                seed: None,
             },
         );
 

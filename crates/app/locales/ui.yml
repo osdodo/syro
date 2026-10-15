@@ -504,6 +504,21 @@ sessions:
   no_match:
     en: No sessions match these filters
     zh-CN: 没有符合筛选条件的会话
+  continue:
+    en: Continue from session
+    zh-CN: 基于会话继续
+  new:
+    en: Start a new session
+    zh-CN: 在新会话开始
+  delete:
+    en: Delete
+    zh-CN: 删除
+  delete_title:
+    en: Delete session
+    zh-CN: 删除会话
+  delete_question:
+    en: "Delete %{title}? The transcript is removed from disk and cannot be undone."
+    zh-CN: "删除“%{title}”？会话记录会从磁盘删除，无法恢复。"
 
 resource:
   unavailable:

@@ -3,9 +3,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use gpui_kit::base::{ColorTokens, StyledExt as _, TestSupportExt as _, Theme};
+use gpui_kit::base::{ColorTokens, ObservedElement, StyledExt as _, TestSupportExt as _, Theme};
+use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Icon, IconName};
+use gpui_kit::component::{Icon, IconName, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
@@ -13,7 +14,7 @@ use syro_core::session::{self, Cache, DEFAULT_LIMIT, Session, SessionRoots};
 
 use syro_core::event::CoreEvent;
 
-use crate::state::AppState;
+use crate::state::{AppState, terminal};
 
 /// The header's height, which is the tab bar's and the activity strip's: the
 /// three are stacked, and a control that jumps between them is a control nobody
@@ -55,6 +56,9 @@ pub struct SessionPanel {
     input: Option<Entity<InputState>>,
     _input_events: Option<Subscription>,
     collapsed: BTreeSet<String>,
+    /// The rows a click has opened: the ones showing their details and their
+    /// buttons.
+    expanded: BTreeSet<String>,
     /// The running scan. Held so that a second one replaces the first.
     _scan: Option<Task<()>>,
     /// What makes the panel redraw when the state moves under it: the list is the repository
@@ -82,6 +86,7 @@ impl SessionPanel {
             input: None,
             _input_events: None,
             collapsed: BTreeSet::new(),
+            expanded: BTreeSet::new(),
             _scan: None,
             _events: events,
         }
@@ -186,7 +191,8 @@ impl SessionPanel {
         self._input_events = Some(events);
     }
 
-    /// One session, as the row a click resumes.
+    /// One session: a header that opens onto its details and its three ways
+    /// forward — the row's own click, and the words inside it once it is open.
     fn session_row(
         &self,
         index: usize,
@@ -194,9 +200,7 @@ impl SessionPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let session = &self.sessions[index];
-        let action = Resume {
-            session: session.clone(),
-        };
+        let expanded = self.expanded.contains(&session.id);
         let mut meta = vec![
             session.agent.display().to_string(),
             t!("sessions.messages", count = session.messages).to_string(),
@@ -205,7 +209,8 @@ impl SessionPanel {
         if let Some(model) = &session.model {
             meta.push(model.clone());
         }
-        div()
+        let toggled = session.id.clone();
+        let head = div()
             .id(SharedString::from(format!("session-{}", session.id)))
             .test_support()
             .aria_label(SharedString::from(session.title.clone()))
@@ -245,9 +250,140 @@ impl SessionPanel {
                     .text_color(colors.muted_foreground)
                     .child(SharedString::from(meta.join(" · "))),
             )
-            .on_click(cx.listener(move |_this, _event, window, cx| {
-                window.dispatch_action(Box::new(action.clone()), cx);
-            }))
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                if !this.expanded.remove(&toggled) {
+                    this.expanded.insert(toggled.clone());
+                }
+                cx.notify();
+            }));
+
+        let mut row = div()
+            .id(SharedString::from(format!("session-row-{}", session.id)))
+            .w_full()
+            .child(head);
+        if expanded {
+            row = row.child(self.expanded_block(session, colors, cx));
+        }
+        row.into_any_element()
+    }
+
+    /// What an opened row adds: where the agent worked, which transcript it is,
+    /// and the three things to do with it.
+    fn expanded_block(
+        &self,
+        session: &Session,
+        colors: &ColorTokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = session.id.clone();
+        let resume = Resume {
+            session: session.clone(),
+        };
+        let for_new = session.clone();
+        let for_delete = session.clone();
+        div()
+            .id(SharedString::from(format!("session-details-{id}")))
+            .v_flex()
+            .w_full()
+            .gap_1()
+            .px_2()
+            .pb_1p5()
+            .child(detail(
+                format!("session-{id}-cwd"),
+                session.cwd.display().to_string(),
+                colors,
+            ))
+            .child(detail(
+                format!("session-{id}-id"),
+                session.id.clone(),
+                colors,
+            ))
+            .child(
+                div()
+                    .h_flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .w_full()
+                    .pt_1()
+                    .child(
+                        action_button(
+                            format!("session-{id}-resume"),
+                            t!("sessions.continue").to_string(),
+                            colors,
+                        )
+                        .on_click(cx.listener(
+                            move |_this, _event, window, cx| {
+                                window.dispatch_action(Box::new(resume.clone()), cx);
+                            },
+                        )),
+                    )
+                    .child(
+                        action_button(
+                            format!("session-{id}-new"),
+                            t!("sessions.new").to_string(),
+                            colors,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _event, window, cx| {
+                                let agent = for_new.agent.id().to_string();
+                                let target = {
+                                    let state = this.state.read(cx);
+                                    session::resume_target(&for_new, state.worktrees())
+                                        .map(|worktree| worktree.id.clone())
+                                };
+                                let Some(worktree_id) = target else {
+                                    return;
+                                };
+                                // A compact handoff from the transcript, so the
+                                // fresh context window starts on the work already done.
+                                let seed = session::handoff(for_new.agent, &for_new.path);
+                                window.dispatch_action(
+                                    Box::new(terminal::New {
+                                        worktree_id,
+                                        agent: Some(agent),
+                                        resume: None,
+                                        seed,
+                                    }),
+                                    cx,
+                                );
+                            },
+                        )),
+                    )
+                    .child(
+                        action_button(
+                            format!("session-{id}-delete"),
+                            t!("sessions.delete").to_string(),
+                            colors,
+                        )
+                        .on_click(cx.listener(
+                            move |_this, _event, window, cx| {
+                                let session = for_delete.clone();
+                                let path = session.path.clone();
+                                let title = session.title.clone();
+                                let panel = cx.weak_entity();
+                                window.open_alert_dialog(cx, move |alert, _, _| {
+                                    let path = path.clone();
+                                    let panel = panel.clone();
+                                    alert
+                                        .title(t!("sessions.delete_title").to_string())
+                                        .description(
+                                            t!("sessions.delete_question", title = title)
+                                                .to_string(),
+                                        )
+                                        .confirm()
+                                        .ok_text(t!("sessions.delete"))
+                                        .ok_variant(ButtonVariant::Danger)
+                                        .on_ok(move |_, _, cx| {
+                                            let _ = std::fs::remove_file(&path);
+                                            let _ = panel.update(cx, |panel, cx| panel.refresh(cx));
+                                            true
+                                        })
+                                });
+                            },
+                        )),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -451,6 +587,44 @@ fn matches(session: &Session, needle: &str) -> bool {
         session.id.to_lowercase(),
     ];
     haystacks.iter().any(|text| text.contains(needle))
+}
+
+/// One line of an opened row's details: quiet, small, and never wider than the
+/// panel.
+fn detail(id: String, text: String, colors: &ColorTokens) -> AnyElement {
+    div()
+        .id(SharedString::from(id))
+        .test_support()
+        .w_full()
+        .overflow_hidden()
+        .text_ellipsis()
+        .text_xs()
+        .text_color(colors.muted_foreground)
+        .child(SharedString::from(text))
+        .into_any_element()
+}
+
+/// One of the words an opened row offers, with the caller attaching what it
+/// does.
+fn action_button(
+    id: String,
+    label: String,
+    colors: &ColorTokens,
+) -> ObservedElement<Stateful<Div>> {
+    div()
+        .id(SharedString::from(id))
+        .test_support()
+        .aria_label(SharedString::from(label.clone()))
+        .px_2()
+        .py_1()
+        .rounded_sm()
+        .border_1()
+        .border_color(colors.border)
+        .text_xs()
+        .text_color(colors.foreground)
+        .cursor_pointer()
+        .hover(|el| el.bg(colors.muted))
+        .child(SharedString::from(label))
 }
 
 #[cfg(test)]

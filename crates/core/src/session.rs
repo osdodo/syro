@@ -38,6 +38,15 @@ const TAIL_LINES: usize = 16;
 /// How many characters of a turn's text the preview keeps.
 const PREVIEW_CHARS: usize = 240;
 
+/// How much of a transcript's tail a handoff reads, and how many characters it
+/// keeps. A handoff is a first message, not a transcript: it carries the task and
+/// the newest turns, and everything older is dropped.
+const HANDOFF_TAIL_BYTES: u64 = 128 * 1024;
+const HANDOFF_CHARS: usize = 4000;
+
+/// How many characters one turn contributes to a handoff before it is cut.
+const HANDOFF_TURN_CHARS: usize = 400;
+
 /// The agent a transcript belongs to; its spelling is the `AgentSpec` id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -472,6 +481,12 @@ pub fn transcript_of(
 /// The first thing the user asked in a transcript, cut to the panel's title length. Reads the head zone only, so a long transcript costs no more
 /// than a short one.
 pub fn first_prompt(agent: SessionAgent, path: &Path) -> Option<String> {
+    first_prompt_cut(agent, path, PREVIEW_CHARS)
+}
+
+/// The same read, cut to `limit`: the panel wants a title, a handoff wants the
+/// whole request.
+fn first_prompt_cut(agent: SessionAgent, path: &Path, limit: usize) -> Option<String> {
     use std::io::Read as _;
     let mut reader = BufReader::new(File::open(path).ok()?.take(HEAD_BYTES));
     let (mut fold, mut tail) = (Fold::default(), VecDeque::new());
@@ -491,7 +506,123 @@ pub fn first_prompt(agent: SessionAgent, path: &Path) -> Option<String> {
             &mut HashSet::new(),
         );
     }
-    text_of(agent, &first_user).map(|text| one_line(&text, PREVIEW_CHARS))
+    text_of(agent, &first_user).map(|text| one_line(&text, limit))
+}
+
+/// A compact handoff for continuing a transcript in a fresh session: the first
+/// thing the user asked, then the newest turns that fit a budget, oldest first.
+/// `None` when there is nothing readable to carry.
+///
+/// This is selection, not summarization — the newest turns are kept whole (cut to
+/// one line each) rather than rewritten by a model. That is what makes "start a
+/// new session" cost no model call and need no credentials. shortcut: selection
+/// only, so a very long recent turn is cut; call an agent to summarise if a real
+/// compression is wanted.
+pub fn handoff(agent: SessionAgent, path: &Path) -> Option<String> {
+    let first = first_prompt_cut(agent, path, 2 * PREVIEW_CHARS);
+    let turns = recent_turns(agent, path, HANDOFF_CHARS);
+    if first.is_none() && turns.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "Continuing a previous session in a fresh context window. Below is what \
+         carried over.\n\n",
+    );
+    if let Some(first) = first {
+        out.push_str("Original request: ");
+        out.push_str(&first);
+        out.push_str("\n\n");
+    }
+    if !turns.is_empty() {
+        out.push_str("Recent turns (oldest first):\n");
+        for (role, text) in turns {
+            out.push_str(&role);
+            out.push_str(": ");
+            out.push_str(&text);
+            out.push('\n');
+        }
+    }
+    out.push_str("\nPick up where this left off.");
+    Some(out)
+}
+
+/// The newest readable turns in a transcript's tail, oldest first, each cut to one
+/// line and all of them kept under `budget` characters.
+fn recent_turns(agent: SessionAgent, path: &Path, budget: usize) -> Vec<(String, String)> {
+    let Ok(mut file) = File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(len) = file.metadata().map(|metadata| metadata.len()) else {
+        return Vec::new();
+    };
+    let start = len.saturating_sub(HANDOFF_TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    // The tail may begin mid-record; that partial line is not one to read.
+    if start > 0 {
+        let _ = reader.read_line(&mut line);
+    }
+    let mut turns: VecDeque<(String, String)> = VecDeque::new();
+    let mut total = 0usize;
+    loop {
+        line.clear();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        let Some((role, text)) = turn_of(agent, &line) else {
+            continue;
+        };
+        let cut = one_line(&text, HANDOFF_TURN_CHARS);
+        total += cut.chars().count() + role.chars().count() + 2;
+        turns.push_back((role, cut));
+        while total > budget && turns.len() > 1 {
+            let (role, text) = turns.pop_front().expect("more than one turn");
+            total -= text.chars().count() + role.chars().count() + 2;
+        }
+    }
+    turns.into_iter().collect()
+}
+
+/// One readable turn from a transcript line: who said it and what they said.
+/// Textless records — tool traffic, usage, model changes — are not turns.
+fn turn_of(agent: SessionAgent, line: &str) -> Option<(String, String)> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let (role, content) = match agent {
+        SessionAgent::Pi => {
+            if value.get("type")?.as_str()? != "message" {
+                return None;
+            }
+            let message = value.get("message")?;
+            (
+                message.get("role")?.as_str()?.to_string(),
+                message.get("content")?,
+            )
+        }
+        SessionAgent::Claude => {
+            let kind = value.get("type")?.as_str()?;
+            if kind != "user" && kind != "assistant" {
+                return None;
+            }
+            (kind.to_string(), value.get("message")?.get("content")?)
+        }
+        SessionAgent::Codex => {
+            let payload = value.get("payload")?;
+            if payload.get("type")?.as_str()? != "message" {
+                return None;
+            }
+            (
+                payload.get("role")?.as_str()?.to_string(),
+                payload.get("content")?,
+            )
+        }
+    };
+    if role != "user" && role != "assistant" {
+        return None;
+    }
+    texts(content).map(|text| (role, text))
 }
 
 /// The `<root>/<bucket>/*.jsonl` files under one agent's root — one level of subdirectory is
@@ -1544,6 +1675,73 @@ mod tests {
             first_prompt(SessionAgent::Codex, &rollout).as_deref(),
             Some("fix the build")
         );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// A handoff carries the task and the newest turns, in order, and leaves the
+    /// tool traffic behind.
+    #[test]
+    fn a_handoff_carries_the_task_and_the_newest_turns() {
+        let home = home("handoff-pi");
+        let path = write_pi(
+            &home,
+            "/Users/ada/code/syro",
+            "hoff",
+            &[
+                &pi_user("fix the flaky test"),
+                &pi_assistant("On it."),
+                &pi_tool(),
+                &pi_user("it still fails"),
+                &pi_assistant("Looking again."),
+            ],
+        );
+        let text = handoff(SessionAgent::Pi, &path).expect("a handoff");
+        assert!(
+            text.contains("Original request: fix the flaky test"),
+            "{text}"
+        );
+        assert!(text.contains("assistant: Looking again."), "{text}");
+        // Oldest first: the newest turn is last, and the original request is not
+        // repeated as a turn before its own place in the tail.
+        let earlier = text.find("user: fix the flaky test").expect("a turn");
+        let later = text.find("user: it still fails").expect("a newer turn");
+        assert!(earlier < later, "{text}");
+        assert!(!text.contains("tool output that is not a turn"), "{text}");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// The same read against Claude's and Codex's records, whose role is the
+    /// record type rather than a field inside the message.
+    #[test]
+    fn a_handoff_reads_claude_and_codex_turns() {
+        let home = home("handoff-agents");
+        let claude = write_claude(
+            &home,
+            "--x--",
+            "8f2c",
+            &[
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"ship it\"}}",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Doing it.\"}]}}",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"noise\"}]}}",
+            ],
+        );
+        let text = handoff(SessionAgent::Claude, &claude).expect("a Claude handoff");
+        assert!(text.contains("Original request: ship it"), "{text}");
+        assert!(text.contains("assistant: Doing it."), "{text}");
+        assert!(!text.contains("noise"), "{text}");
+
+        let codex = write_codex(
+            &home,
+            "01a2b3c4",
+            &[
+                &codex_meta("/Users/ada/code", "01a2b3c4"),
+                &codex_message("2026-10-15T01:00:02.000Z", "user", "fix the build"),
+                &codex_message("2026-10-15T01:00:03.000Z", "assistant", "On it."),
+            ],
+        );
+        let text = handoff(SessionAgent::Codex, &codex).expect("a Codex handoff");
+        assert!(text.contains("Original request: fix the build"), "{text}");
+        assert!(text.contains("assistant: On it."), "{text}");
         let _ = fs::remove_dir_all(&home);
     }
 
