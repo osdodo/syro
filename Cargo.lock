@@ -6797,6 +6797,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
+ "chrono",
  "portable-pty",
  "regex",
  "rust-i18n",

@@ -12,8 +12,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::event::CoreEvent;
-use syro_core::git::{self, BranchStatus, Commit, FileChange};
-use syro_core::model::AgentStatus;
+use syro_core::git::{self, Branch, BranchStatus, Commit, FileChange};
+use syro_core::model::{AgentStatus, WorktreeId};
 use syro_core::session;
 
 use crate::state::{AppState, diff, editor};
@@ -172,6 +172,22 @@ struct OpenCommit {
     files: Result<Vec<FileChange>, String>,
 }
 
+/// Which menu is up, and where it was opened: the header's git operations, or
+/// the branches the branch line offers to switch to.
+enum Menu {
+    Sync(Point<Pixels>),
+    Branch(Point<Pixels>),
+}
+
+impl Menu {
+    /// Where it was opened, which is where it is drawn from.
+    fn at(&self) -> Point<Pixels> {
+        match self {
+            Self::Sync(at) | Self::Branch(at) => *at,
+        }
+    }
+}
+
 pub struct GitPanel {
     state: Entity<AppState>,
     /// The branch on screen. `None` until the first read lands, and after one
@@ -200,9 +216,11 @@ pub struct GitPanel {
     /// changes these; a remembered per-panel option needs somewhere else to live.
     files_collapsed: bool,
     commits_collapsed: bool,
-    /// Where the header's menu was opened, in window coordinates. `None` is no
-    /// menu, which is the same shape the pane's menu and the tab bar's use.
-    menu: Option<Point<Pixels>>,
+    /// The menu that is up, and where it was opened. `None` is no menu, which is
+    /// the same shape the pane's menu and the tab bar's use.
+    menu: Option<Menu>,
+    /// Every local branch this checkout can switch to, read with the rest.
+    branches: Vec<Branch>,
     /// The commit message, mirrored from the field on every keystroke.
     message: String,
     input: Option<Entity<InputState>>,
@@ -210,6 +228,9 @@ pub struct GitPanel {
     /// git's own words after a commit or a push, or why there was no commit.
     /// Drawn under the button until the next read replaces it.
     notice: Option<String>,
+    /// The worktree the notice came from. git's words are about one repository,
+    /// and they are the panel's only while that one is the one on screen.
+    notice_worktree: Option<WorktreeId>,
     /// A commit that finished wants the message box empty, and clearing an
     /// `InputState` takes a window — which is the next frame, not the task.
     clear_message: bool,
@@ -285,10 +306,12 @@ impl GitPanel {
             files_collapsed: false,
             commits_collapsed: false,
             menu: None,
+            branches: Vec::new(),
             message: String::new(),
             input: None,
             _input_events: None,
             notice: None,
+            notice_worktree: None,
             clear_message: false,
             busy: false,
             error: None,
@@ -303,6 +326,13 @@ impl GitPanel {
 
     /// Read the branch, the changes and the history again.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        // git's own words are about the worktree they were said in, and they are
+        // the panel's only while that worktree is the one on screen: a push that
+        // lands after the reader has moved on is not this repository's news.
+        if self.notice_worktree != self.state.read(cx).active_id().cloned() {
+            self.notice = None;
+            self.notice_worktree = None;
+        }
         let Some(worktree) = self.state.read(cx).active().cloned() else {
             self.status = None;
             self.commits.clear();
@@ -438,11 +468,50 @@ impl GitPanel {
         self.run_operation(sync.working(), false, cx, move || sync.run(&root));
     }
 
+    /// Switch this checkout to `branch`, on the background executor: the branch,
+    /// the files and the history all move, so it goes through the same door a
+    /// commit does. git decides whether the tree is clean enough, and its refusal
+    /// is the notice.
+    fn switch_branch(&mut self, branch: String, cx: &mut Context<Self>) {
+        self.menu = None;
+        let root = self.root.clone();
+        let working = t!("git.switching", branch = branch).to_string();
+        self.run_operation(working, false, cx, move || git::checkout(&root, &branch));
+    }
+
     /// Open the header's menu where its button was clicked.
     fn open_menu(&mut self, event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        self.menu = Some(event.position());
+        self.menu = Some(Menu::Sync(event.position()));
         // The keyboard goes to the panel so Escape can close it, which is the
         // same road the pane's menu takes.
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Open the branch list where the branch line was clicked. Nothing while a
+    /// git operation is running: it would switch under the menu.
+    fn open_branch_menu(
+        &mut self,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        // Read the branches here, on the click: the menu is the only thing that
+        // needs them, and a `for-each-ref` on every tick would be a process
+        // nobody asked for. A remote-tracking branch is not one to switch to —
+        // checking it out would leave a detached HEAD — so only the local ones
+        // are kept.
+        self.branches = git::branches(&self.root)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|branch| branch.remote.is_none())
+            .collect();
+        self.menu = Some(Menu::Branch(event.position()));
+        // The keyboard goes to the panel so Escape can close it, the same road
+        // the header's menu takes.
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -479,12 +548,17 @@ impl GitPanel {
         work: impl FnOnce() -> anyhow::Result<String> + Send + 'static,
     ) {
         self.busy = true;
+        // Whose words these are, so that a slow push landing after a switch is
+        // filed under the worktree it was about rather than the one on screen.
+        let owner = self.state.read(cx).active_id().cloned();
         self.notice = Some(working);
+        self.notice_worktree = owner.clone();
         cx.notify();
         let task = cx.spawn(async move |this, cx| {
             let result = cx.background_executor().spawn(async move { work() }).await;
             this.update(cx, |panel, cx| {
                 panel.busy = false;
+                panel.notice_worktree = owner;
                 match result {
                     // git's own summary of what it did, which for a commit is
                     // the message that is now in the log.
@@ -639,11 +713,61 @@ impl GitPanel {
     /// exactly where a menu in a narrow sidebar has to go.
     fn menu_overlay(
         &self,
-        at: Point<Pixels>,
         window_size: Size<Pixels>,
         colors: &ColorTokens,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let Some(menu) = self.menu.as_ref() else {
+            return div().into_any_element();
+        };
+        let at = menu.at();
+        let panel = match menu {
+            Menu::Sync(_) => self.sync_menu(colors, cx),
+            Menu::Branch(_) => self.branch_menu(colors, cx),
+        };
+        let this = cx.entity().downgrade();
+
+        // The scrim: a click anywhere outside the menu, on either button, closes
+        // it — which is what makes the menu feel like a menu.
+        let dismiss = this.clone();
+        deferred(
+            // The scrim needs a size of its own: an `anchored` box is as big as
+            // its child, and a `size_full` child inside it is a percentage of
+            // nothing — a scrim written that way covers no pixels and closes
+            // nothing.
+            anchored().position(point(px(0.), px(0.))).child(
+                div()
+                    .id("git-sync-scrim")
+                    .test_support()
+                    .w(window_size.width)
+                    .h(window_size.height)
+                    // Blocks the mouse from everything behind it: the rows under
+                    // the menu are not hovered and not clicked while it is up.
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                        dismiss.update(cx, |panel, cx| panel.close_menu(cx)).ok();
+                    })
+                    .on_mouse_down(MouseButton::Right, {
+                        let dismiss = this.clone();
+                        move |_event, _window, cx| {
+                            dismiss.update(cx, |panel, cx| panel.close_menu(cx)).ok();
+                        }
+                    })
+                    .child(
+                        anchored()
+                            .position(at)
+                            .anchor(Anchor::TopLeft)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(panel),
+                    ),
+            ),
+        )
+        .with_priority(gpui_kit::base::POPUP_PRIORITY)
+        .into_any_element()
+    }
+
+    /// The header's operations as a menu: the ones the branch can run.
+    fn sync_menu(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
         let this = cx.entity().downgrade();
         let mut panel = div()
             .id("git-sync-menu")
@@ -689,48 +813,97 @@ impl GitPanel {
                     .child(SharedString::from(sync.label())),
             );
         }
+        panel.into_any_element()
+    }
 
-        // The scrim: a click anywhere outside the menu, on either button, closes
-        // it — which is what makes the menu feel like a menu.
-        let dismiss = this.clone();
-        deferred(
-            // The scrim needs a size of its own: an `anchored` box is as big as
-            // its child, and a `size_full` child inside it is a percentage of
-            // nothing — a scrim written that way covers no pixels and closes
-            // nothing.
-            anchored().position(point(px(0.), px(0.))).child(
+    /// Every local branch as a menu, with the one this checkout is on marked:
+    /// picking another switches to it. A remote-tracking branch is not here —
+    /// switching to it would leave a detached HEAD — and the current one has
+    /// nothing to switch to, so it only carries the mark.
+    fn branch_menu(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity().downgrade();
+        let current = self
+            .status
+            .as_ref()
+            .and_then(|status| status.branch.clone());
+        let mut panel = div()
+            .id("git-branch-menu")
+            .test_support()
+            .v_flex()
+            // Wider than the sync menu: a branch name is long (`feat/…-solana`),
+            // and a picker that cuts every one of them to the same stub is a
+            // picker nobody can choose from.
+            .w(px(260.))
+            .p_1()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border)
+            // Solid at any window opacity, like every menu.
+            .bg(crate::settings_view::solid(colors.surface))
+            .text_xs()
+            // The whole panel is the menu, its padding and the pixels between
+            // two rows included: a click there is a click on the menu.
+            .occlude()
+            .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
+        for branch in &self.branches {
+            let chosen = current.as_deref() == Some(branch.name.as_str());
+            let name = branch.name.clone();
+            let view = this.clone();
+            panel = panel.child(
                 div()
-                    .id("git-sync-scrim")
+                    .id(SharedString::from(format!("git-switch-{}", branch.name)))
                     .test_support()
-                    .w(window_size.width)
-                    .h(window_size.height)
-                    // Blocks the mouse from everything behind it: the rows under
-                    // the menu are not hovered and not clicked while it is up.
-                    .occlude()
-                    .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
-                        dismiss.update(cx, |panel, cx| panel.close_menu(cx)).ok();
+                    .aria_label(SharedString::from(
+                        t!("git.switch_branch", branch = branch.name).to_string(),
+                    ))
+                    .h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .text_color(if chosen {
+                        colors.primary
+                    } else {
+                        colors.foreground
                     })
-                    .on_mouse_down(MouseButton::Right, {
-                        let dismiss = this.clone();
-                        move |_event, _window, cx| {
-                            dismiss.update(cx, |panel, cx| panel.close_menu(cx)).ok();
-                        }
+                    .when(!chosen, |el| {
+                        el.cursor_pointer().hover(|el| el.bg(colors.muted))
                     })
                     .child(
-                        anchored()
-                            .position(at)
-                            .anchor(Anchor::TopLeft)
-                            .snap_to_window_with_margin(px(8.))
-                            .child(panel),
-                    ),
-            ),
-        )
-        .with_priority(gpui_kit::base::POPUP_PRIORITY)
-        .into_any_element()
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(SharedString::from(branch.name.clone())),
+                    )
+                    .when(chosen, |el| {
+                        el.child(
+                            div()
+                                .flex_shrink_0()
+                                .child(Icon::new(IconName::Check).size(px(12.))),
+                        )
+                    })
+                    .when(!chosen, |el| {
+                        el.on_click(move |_event, _window, cx| {
+                            view.update(cx, |panel, cx| panel.switch_branch(name.clone(), cx))
+                                .ok();
+                        })
+                    }),
+            );
+        }
+        panel.into_any_element()
     }
 
     /// The branch, what it moved, and the upstream it is measured against.
-    fn branch_block(&self, colors: &ColorTokens, accents: Accents) -> AnyElement {
+    fn branch_block(
+        &self,
+        colors: &ColorTokens,
+        accents: Accents,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut block = div()
             .id("git-branch")
             .test_support()
@@ -754,12 +927,33 @@ impl GitPanel {
                 .w_full()
                 .child(
                     div()
+                        .id("git-branch-name")
+                        .test_support()
+                        .aria_label(SharedString::from(
+                            t!("git.switch_branch", branch = status.name()).to_string(),
+                        ))
+                        .h_flex()
+                        .items_center()
+                        .gap_1()
                         .min_w_0()
                         .overflow_hidden()
-                        .text_ellipsis()
-                        .text_sm()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(SharedString::from(status.name().to_string())),
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .hover(|el| el.bg(colors.muted))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(SharedString::from(status.name().to_string())),
+                        )
+                        // The chevron says the name is a control, not a label.
+                        .child(Icon::new(IconName::ChevronDown).size(px(12.)))
+                        .on_click(cx.listener(|this, event, window, cx| {
+                            this.open_branch_menu(event, window, cx)
+                        })),
                 )
                 .when(added > 0 || deleted > 0, |el| {
                     // `+85 -9`, the two numbers a reader checks before deciding
@@ -1579,7 +1773,7 @@ impl Render for GitPanel {
             .flex_1()
             .min_h_0()
             .w_full()
-            .child(self.branch_block(&colors, accents))
+            .child(self.branch_block(&colors, accents, cx))
             // The two sentences come before the message box: what the branch has,
             // then what to do about it.
             .child(
@@ -1630,9 +1824,9 @@ impl Render for GitPanel {
             .min_h_0()
             .child(header)
             .child(body);
-        if let Some(at) = self.menu {
+        if self.menu.is_some() {
             return panel
-                .child(self.menu_overlay(at, window.viewport_size(), &colors, cx))
+                .child(self.menu_overlay(window.viewport_size(), &colors, cx))
                 .into_any_element();
         }
         panel.into_any_element()

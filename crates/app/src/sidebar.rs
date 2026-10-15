@@ -834,11 +834,9 @@ impl Sidebar {
             .child(
                 div()
                     .h_flex()
+                    // No indent of its own: the card's `px_2` is the row's whole
+                    // inset, so the hover is padded the same on both sides.
                     .gap_1p5()
-                    // The indent the folder icon above makes: a row is the
-                    // heading's child, and it starts where the heading's name
-                    // does.
-                    .pl_5()
                     .items_center()
                     .text_sm()
                     .text_color(if active {
@@ -1039,9 +1037,6 @@ fn terminal_line(worktree_id: &str, row: &Row, colors: &ColorTokens) -> AnyEleme
         .h_flex()
         .items_center()
         .gap_1p5()
-        // One step further in than the branch above it: a terminal belongs to a
-        // worktree the way a worktree belongs to its repository.
-        .pl_5()
         .h(px(18.))
         .flex_shrink_0()
         .child(
@@ -2172,6 +2167,56 @@ mod window_tests {
                 .clone();
             (active, other)
         })
+    }
+
+    /// A row's hover is a card, and a card is padded the same on both sides: the
+    /// text used to be indented under the heading's name, which made the left
+    /// look heavier than the right.
+    #[gpui_kit::test]
+    fn a_rows_hover_is_padded_the_same_on_both_sides(cx: &mut TestAppContext) {
+        let fixture = open(cx, "row-padding");
+        let (active, _other) = active_and_other(cx, &fixture);
+        let has_row = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                fixture
+                    .workspace
+                    .read(cx)
+                    .resource_bar()
+                    .read(cx)
+                    .worktree_usage(&active)
+                    .is_some_and(|usage| !usage.terminals.is_empty())
+            })
+        };
+        assert!(
+            draw_until(cx, &fixture, has_row),
+            "the worktree never got a row"
+        );
+        let title = cx
+            .update(|cx| {
+                fixture
+                    .workspace
+                    .read(cx)
+                    .resource_bar()
+                    .read(cx)
+                    .worktree_usage(&active)
+                    .and_then(|usage| usage.terminals.first().map(|row| row.title.clone()))
+            })
+            .expect("a row");
+        let left_of =
+            |cx: &mut TestAppContext, id: &str| bounds(cx, &fixture, id).origin.x.as_f32();
+        let right_of = |cx: &mut TestAppContext, id: &str| {
+            let b = bounds(cx, &fixture, id);
+            b.origin.x.as_f32() + b.size.width.as_f32()
+        };
+        let card = format!("worktree-{active}");
+        let name = format!("terminal-name-{active}-{title}");
+        let metrics = format!("terminal-metrics-{active}-{title}");
+        let left = left_of(cx, &name) - left_of(cx, &card);
+        let right = right_of(cx, &card) - right_of(cx, &metrics);
+        assert!(
+            (left - right).abs() < 2.,
+            "the row's hover is lopsided: {left} on the left against {right} on the right"
+        );
     }
 
     /// A worktree's column names come with the rows they head: one with nothing

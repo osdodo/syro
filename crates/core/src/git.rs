@@ -707,6 +707,13 @@ pub fn push(worktree_path: &Path, publish: bool) -> Result<String> {
     }
 }
 
+/// Switch this checkout to `branch`. git decides whether the working tree is
+/// clean enough — a change the switch would overwrite is its own refusal, and
+/// the caller shows it as git wrote it.
+pub fn checkout(root: &Path, branch: &str) -> Result<String> {
+    run_git_reporting(root, &["checkout", branch])
+}
+
 /// Delete a branch on a remote: `git push <remote> --delete <branch>`. The one
 /// delete that changes something on somebody else's machine, which is why the
 /// question asked before it says so.

@@ -25,6 +25,7 @@ mod settings_view;
 mod sidebar;
 mod split;
 mod state;
+mod usage_chart;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -3730,7 +3731,7 @@ mod window_tests {
     };
     use syro_core::config::{ComputerAwakeMode, Settings};
     use syro_core::model::{AgentSpec, SplitAxis, State, TabLayout, TabSpec};
-    use syro_core::session::SessionRoots;
+    use syro_core::session::{SessionRoots, Usage, UsageDay, UsageGroup, UsageSlice, UsageSummary};
     use syro_core::store::Store;
 
     use crate::pane::PaneItem as _;
@@ -5484,6 +5485,74 @@ mod window_tests {
         );
     }
 
+    /// The source control panel's branch line: a menu of every local branch, and
+    /// picking another is a checkout — git's own words are the notice, and the
+    /// panel reads the branch it moved to.
+    #[gpui_kit::test]
+    fn the_source_control_panel_switches_branches(cx: &mut TestAppContext) {
+        // The second branch is made where the fixture is: one to switch to.
+        let fixture = open_with(cx, "git-switch", Settings::default(), |root, _| {
+            git(root, &["branch", "feature"]);
+            Vec::new()
+        });
+        let panel = cx.update(|cx| fixture.workspace.read(cx).git.clone());
+        show_panel(cx, &fixture, "panel-git", Some(Panel::Git));
+        assert!(
+            draw_until(cx, &fixture, |cx| cx
+                .update(|cx| panel.read(cx).status().is_some())),
+            "the panel never read the branch"
+        );
+        assert_eq!(
+            cx.update(|cx| panel
+                .read(cx)
+                .status()
+                .map(|status| status.name().to_string())),
+            Some("main".to_string())
+        );
+
+        // The branch line is the way in, and the menu names both branches.
+        assert!(
+            click_until(cx, &fixture, "git-branch-name".to_string(), |cx| found(
+                cx,
+                &fixture,
+                "git-branch-menu"
+            )),
+            "the branch menu did not open"
+        );
+        assert!(found(cx, &fixture, "git-switch-main"));
+        assert!(found(cx, &fixture, "git-switch-feature"));
+
+        // Escape closes it, the way it closes every other overlay.
+        press(cx, &fixture, "escape");
+        assert!(
+            draw_until(cx, &fixture, |cx| !found(cx, &fixture, "git-branch-menu")),
+            "escape did not close the branch menu"
+        );
+
+        // Picking the other one checks it out, and the panel reads the branch it
+        // moved to.
+        click_visible(cx, &fixture, "git-branch-name");
+        assert!(
+            draw_until(cx, &fixture, |cx| found(cx, &fixture, "git-switch-feature")),
+            "the branch menu did not open a second time"
+        );
+        click_visible(cx, &fixture, "git-switch-feature");
+        assert!(
+            draw_until(cx, &fixture, |cx| cx.update(|cx| panel
+                .read(cx)
+                .status()
+                .is_some_and(|status| status.name() == "feature"))),
+            "the branch did not switch: {:?}",
+            cx.update(|cx| panel.read(cx).status().cloned())
+        );
+        assert!(!found(cx, &fixture, "git-branch-menu"));
+        assert!(
+            label(cx, &fixture, "git-notice").is_some_and(|said| said.contains("feature")),
+            "the switch said nothing: {:?}",
+            label(cx, &fixture, "git-notice")
+        );
+    }
+
     /// The source control panel: the branch on screen, what it has against its
     /// upstream, and the commits that got it there.
     #[gpui_kit::test]
@@ -5644,6 +5713,78 @@ mod window_tests {
         assert!(
             cx.update(|cx| panel.read(cx).changes().is_empty()),
             "the panel still lists the files of a commit that already happened"
+        );
+    }
+
+    /// git's own words are about the worktree they were said in. A commit in one
+    /// worktree leaves a notice under the button, and switching to another must
+    /// not carry it over: the reader who has moved on is looking at a different
+    /// repository, and that repository's push is not this one's news.
+    #[gpui_kit::test]
+    fn a_git_notice_does_not_follow_the_reader_to_another_worktree(cx: &mut TestAppContext) {
+        let fixture = open(cx, "git-notice-worktree");
+        let panel = cx.update(|cx| fixture.workspace.read(cx).git.clone());
+        show_panel(cx, &fixture, "panel-git", Some(Panel::Git));
+        assert!(
+            draw_until(cx, &fixture, |cx| cx
+                .update(|cx| !panel.read(cx).commits().is_empty())),
+            "the panel never read the repository"
+        );
+
+        // Something to say, said the way the reader says it: a message, the
+        // button, and a wait for the commit to land. Its output is the notice.
+        std::fs::write(fixture.root.join("here.txt"), "here\n").unwrap();
+        click_visible(cx, &fixture, "git-refresh");
+        let mut typed = false;
+        for _ in 0..3 {
+            click_visible(cx, &fixture, "git-message");
+            type_text(cx, &fixture, "here");
+            draw(cx, &fixture);
+            if cx.update(|cx| panel.read(cx).message() == "here") {
+                typed = true;
+                break;
+            }
+        }
+        assert!(typed, "the message field never took the text");
+        let committed = panel.clone();
+        assert!(
+            click_until(cx, &fixture, "git-primary".to_string(), move |cx| cx
+                .update(|cx| committed
+                    .read(cx)
+                    .commits()
+                    .first()
+                    .is_some_and(|commit| commit.summary == "here"))),
+            "the commit never landed"
+        );
+        assert!(
+            draw_until(cx, &fixture, |cx| label(cx, &fixture, "git-notice")
+                .is_some_and(|said| !said.is_empty())),
+            "the commit said nothing"
+        );
+
+        // Another worktree, so the panel is now reading another repository.
+        let other = cx.update(|cx| {
+            fixture
+                .state
+                .read(cx)
+                .worktrees()
+                .iter()
+                .find(|worktree| worktree.path != fixture.root)
+                .expect("the fixture has a worktree besides the main checkout")
+                .id
+                .clone()
+        });
+        cx.update(|cx| {
+            fixture
+                .state
+                .update(cx, |state, cx| state.activate(&other, cx))
+        });
+
+        assert!(
+            draw_until(cx, &fixture, |cx| label(cx, &fixture, "git-notice")
+                .is_none()),
+            "the notice of the worktree the reader left is still on screen: {:?}",
+            label(cx, &fixture, "git-notice")
         );
     }
 
@@ -8386,6 +8527,321 @@ mod window_tests {
         assert!(
             button.origin.x < bar.origin.x + px(32.),
             "the settings button is not at the status bar's leading end: {button:?}"
+        );
+    }
+
+    /// The strip's usage chip opens the panel: what the agents have spent lately, as
+    /// charts over the window rather than as rows squeezed into a popover.
+    #[gpui_kit::test]
+    fn the_status_bar_usage_chip_opens_the_panel(cx: &mut TestAppContext) {
+        let fixture = open(cx, "usage-chip");
+        assert!(
+            !found(cx, &fixture, "usage-panel"),
+            "the panel was up already"
+        );
+
+        // A sweep's answer without a sweep: a test's home has no transcripts to
+        // fold, and what the panel draws is what the strip holds.
+        let slice = |model: &str, tokens: u64, cost: f64| UsageSlice {
+            model: model.to_string(),
+            tokens,
+            cost,
+        };
+        let model = |label: &str, tokens: u64, cost: f64| UsageGroup {
+            label: label.to_string(),
+            tokens,
+            cost,
+        };
+        let usage = UsageSummary {
+            total: Usage {
+                tokens: 2_500_000_000,
+                cost: 1824.49,
+            },
+            today: Usage {
+                tokens: 40_000_000,
+                cost: 4.46,
+            },
+            days: vec![
+                UsageDay {
+                    label: "10-13".to_string(),
+                    tokens: 731_000_000,
+                    cost: 677.44,
+                    // Two models in one column: the stack the panel draws.
+                    models: vec![
+                        slice("claude-opus-5-5", 600_000_000, 600.),
+                        slice("gpt-6.1-sol", 131_000_000, 77.44),
+                    ],
+                },
+                UsageDay {
+                    label: "10-14".to_string(),
+                    tokens: 423_000_000,
+                    cost: 343.57,
+                    models: vec![slice("claude-opus-5-5", 423_000_000, 343.57)],
+                },
+            ],
+            providers: vec![UsageGroup {
+                label: "iotex".to_string(),
+                tokens: 1_564_000_000,
+                cost: 12.64,
+            }],
+            // Ten of them, which is what the panel has to hold: the list runs past the
+            // bottom of the strip it is drawn in, and the body scrolls to it.
+            models: vec![
+                model("claude-opus-5-5", 1_564_000_000, 12.64),
+                model("deepseek-v4.1-flash", 900_000_000, 8.20),
+                model("gpt-6.1-sol", 400_000_000, 3.40),
+                model("deepseek-v4-pro", 200_000_000, 1.60),
+                model("kimi-k3", 90_000_000, 0.61),
+                // A long name, which is the widest thing the legend has to hold.
+                model("gpt-6-sol", 40_000_000, 0.30),
+                model("gpt-5.6-sol", 30_000_000, 0.20),
+                model("grok-4.6", 20_000_000, 0.10),
+                model("glm-5.3", 10_000_000, 0.05),
+                model("claude-sonnet-5-5", 5_000_000, 0.02),
+            ],
+        };
+        let bar = cx.update(|cx| fixture.workspace.read(cx).resource_bar().clone());
+        bar.update(cx, |bar, cx| {
+            bar.set_usage(usage.clone());
+            cx.notify();
+        });
+        // The chip's label is the sentence a screen reader reads; the compact
+        // numbers on it are the unit test's.
+        assert_eq!(
+            label(cx, &fixture, "usage-open").as_deref(),
+            Some("Usage: 2.5B tokens and $1824.49 over the last 14 days"),
+            "the chip does not read the numbers the sweep left"
+        );
+
+        click_visible(cx, &fixture, "usage-open");
+        assert!(
+            draw_until(cx, &fixture, |cx| found(cx, &fixture, "usage-panel")),
+            "the usage chip opened nothing"
+        );
+        // Both cuts of it: the days as bars, and the providers as a ring with the
+        // legend that names them.
+        assert!(found(cx, &fixture, "usage-days-box"), "no day chart");
+        assert!(found(cx, &fixture, "usage-share-box"), "no share ring");
+
+        // The panel is a strip down the window's leading side: narrow, clear of the strip
+        // it reports on — and its body scrolls, because the list of models can be longer
+        // than any window. It is only as tall as the list makes it.
+        let panel = bounds_of(cx, &fixture, "usage-panel");
+        let strip = bounds_of(cx, &fixture, "resource-bar");
+        assert!(
+            panel.origin.x > px(24.) && panel.origin.x < px(120.),
+            "the panel is not just off the leading edge: {panel:?}"
+        );
+        assert!(
+            panel.size.width <= px(560.),
+            "the panel is not a narrow strip: {panel:?}"
+        );
+        // Its foot hangs just over the strip — near it, clear of it.
+        let clearance = strip.origin.y - (panel.origin.y + panel.size.height);
+        assert!(
+            clearance >= px(40.) && clearance <= px(80.),
+            "the panel's clearance over the strip is {clearance:?}: {panel:?}, {strip:?}"
+        );
+        assert!(
+            panel.origin.y + panel.size.height <= strip.origin.y,
+            "the panel runs into the strip: {panel:?}, {strip:?}"
+        );
+        assert!(
+            !found(cx, &fixture, "usage-tail"),
+            "the panel still has a tail"
+        );
+        assert!(
+            found(cx, &fixture, "usage-close"),
+            "the card has no way out"
+        );
+        // The box the scroller was given, and the content inside it: the content being
+        // taller is what the scrollbar is for, and a wheel over it has to move the list
+        // rather than stop after a few pixels — which is what an un-sized scroller does.
+        let viewport = bounds_of(cx, &fixture, "usage-viewport");
+        let body = bounds_of(cx, &fixture, "usage-body");
+        assert!(
+            viewport.origin.y + viewport.size.height <= panel.origin.y + panel.size.height,
+            "the scroller is not inside the panel: {viewport:?}, {panel:?}"
+        );
+        assert!(
+            body.size.height > viewport.size.height,
+            "the model list fits the viewport: nothing to scroll — {body:?}, {viewport:?}"
+        );
+        let legend_before = bounds_of(cx, &fixture, "usage-legend").origin.y;
+        cx.update_window(fixture.window.into(), |_, window, cx| {
+            window.scroll(
+                "usage-body",
+                ScrollDelta::Lines(Point { x: 0., y: -400. }),
+                cx,
+            );
+        })
+        .unwrap();
+        draw(cx, &fixture);
+        let legend_after = bounds_of(cx, &fixture, "usage-legend").origin.y;
+        assert!(
+            legend_before - legend_after > px(100.),
+            "the wheel barely moved the list: {legend_before:?} to {legend_after:?}"
+        );
+        // Back to the top, so the rest of this test reads the list as it opens.
+        cx.update_window(fixture.window.into(), |_, window, cx| {
+            window.scroll(
+                "usage-body",
+                ScrollDelta::Lines(Point { x: 0., y: 400. }),
+                cx,
+            );
+        })
+        .unwrap();
+        draw(cx, &fixture);
+
+        // And the legend keeps to its own row: a list longer than the room it was
+        // given scrolls inside it rather than being drawn over the days chart, which
+        // is what happened when it outgrew the row it was in. Its first row — and the
+        // heading above it — start below the chart.
+        let days = bounds_of(cx, &fixture, "usage-days-box");
+        let share = bounds_of(cx, &fixture, "usage-share-box");
+        let first = bounds_of(cx, &fixture, "usage-legend-claude-opus-5-5");
+        for (what, top) in [
+            ("the share row", share.origin.y),
+            ("the legend", first.origin.y),
+        ] {
+            assert!(
+                top >= days.origin.y + days.size.height,
+                "{what} runs into the days chart: {top:?}, {days:?}"
+            );
+        }
+        // A row is one line, and the name in it is not cut: the figures beside the name
+        // are fixed columns, and the name takes what is left of the row.
+        let row = bounds_of(cx, &fixture, "usage-legend-deepseek-v4.1-flash");
+        assert!(
+            row.size.width >= viewport.size.width,
+            "the legend does not fill the panel: {row:?}, {viewport:?}"
+        );
+        let name: gpui_kit::SharedString = "deepseek-v4.1-flash".into();
+        let whole = cx
+            .update_window(fixture.window.into(), move |_, window, _| {
+                gpui_kit::base::plot::label::measure_text_width(
+                    &name,
+                    window.rem_size() * 0.75,
+                    window,
+                )
+            })
+            .expect("measure the name");
+        assert!(
+            row.size.width >= px(whole),
+            "the legend cut its longest name: {row:?}, which needs {whole:?}"
+        );
+        assert!(row.size.height < px(24.), "the legend row wrapped: {row:?}");
+
+        // Escape closes it, and the chip opens it again: the strip's own flag has to
+        // agree with the panel, or the chip stops answering.
+        press(cx, &fixture, "escape");
+        assert!(
+            draw_until(cx, &fixture, |cx| !found(cx, &fixture, "usage-panel")),
+            "escape left the panel up"
+        );
+        click_visible(cx, &fixture, "usage-open");
+        assert!(
+            draw_until(cx, &fixture, |cx| found(cx, &fixture, "usage-panel")),
+            "the chip did not open the panel a second time"
+        );
+
+        // A chart defers its tooltip so the box can overflow the plot, and this panel
+        // is drawn deferred too: a panel painted at a raised priority would come after
+        // the tooltip and hide it, which is exactly what a hover that shows nothing
+        // looks like. Nothing else asserts on it, so: hover, and check that something
+        // painted over the panel's own surface.
+        let quads = |cx: &mut TestAppContext| {
+            cx.update_window(fixture.window.into(), |_, window, _| window.painted_quads())
+                .unwrap()
+        };
+        let hovered_at = cx
+            .update_window(fixture.window.into(), |_, window, _| window.scale_factor())
+            .unwrap();
+        // Past the chart's draw-in: a chart withholds its tooltip while its data is
+        // still appearing.
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(1500));
+        draw(cx, &fixture);
+        let before = quads(cx);
+        cx.update_window(fixture.window.into(), |_, window, cx| {
+            window.hover("usage-days-box", cx);
+        })
+        .unwrap();
+        // Twice: the hover state the first frame records is what the second paints.
+        draw(cx, &fixture);
+        draw(cx, &fixture);
+        let after = quads(cx);
+        let panel = bounds_of(cx, &fixture, "usage-panel");
+        let (panel_x, panel_y) = (
+            panel.origin.x.as_f32() * hovered_at,
+            panel.origin.y.as_f32() * hovered_at,
+        );
+        let last_panel = after
+            .iter()
+            .enumerate()
+            .filter(|(_, quad)| {
+                quad.bounds.origin.x.as_f32() == panel_x && quad.bounds.origin.y.as_f32() == panel_y
+            })
+            .map(|(index, _)| index)
+            .next_back()
+            .expect("the panel is painted");
+        // The band, the dot and the tooltip box: whatever the hover draws, it has to be
+        // painted after the panel's own surface.
+        assert!(
+            after
+                .iter()
+                .enumerate()
+                .any(|(index, quad)| index > last_panel
+                    && !before.iter().any(|old| old.bounds == quad.bounds)),
+            "the hover painted nothing over the panel: the tooltip is behind the card"
+        );
+
+        // The card's own close button is the way out that does not need the window
+        // behind it.
+        click_visible(cx, &fixture, "usage-close");
+        assert!(
+            draw_until(cx, &fixture, |cx| !found(cx, &fixture, "usage-panel")),
+            "the close button left the panel up"
+        );
+        click_visible(cx, &fixture, "usage-open");
+        assert!(
+            draw_until(cx, &fixture, |cx| found(cx, &fixture, "usage-panel")),
+            "the chip did not open the panel again"
+        );
+
+        // And a click on the bar behind it dismisses it — without reaching the bar,
+        // so the settings form does not open as well. (Not the window's top edge,
+        // which is the title bar's drag zone and ignores the press.)
+        click(cx, &fixture, "resource-bar".to_string());
+        assert!(
+            draw_until(cx, &fixture, |cx| !found(cx, &fixture, "usage-panel")),
+            "a click on the window behind left the panel up"
+        );
+        assert!(
+            !found(cx, &fixture, "settings"),
+            "the click went past the panel"
+        );
+    }
+
+    /// The panel opens before the first sweep has answered, too: a window that has
+    /// not read anything yet says so rather than drawing an empty chart.
+    #[gpui_kit::test]
+    fn the_usage_panel_says_it_is_measuring_before_the_first_sweep(cx: &mut TestAppContext) {
+        let fixture = open(cx, "usage-measuring");
+        assert_eq!(
+            label(cx, &fixture, "usage-open").as_deref(),
+            Some("Usage: —"),
+            "the chip invented numbers before the first sweep"
+        );
+
+        click_visible(cx, &fixture, "usage-open");
+        assert!(
+            draw_until(cx, &fixture, |cx| found(cx, &fixture, "usage-panel")),
+            "the usage chip opened nothing"
+        );
+        assert!(
+            !found(cx, &fixture, "usage-days-box"),
+            "the panel charted usage it had not read"
         );
     }
 

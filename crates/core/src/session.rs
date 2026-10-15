@@ -5,12 +5,14 @@
 //! (`~/.pi/agent/sessions/--<encoded-cwd>--/*.jsonl`). Records are counted through a shallow
 //! borrowed struct, so a 27 MB transcript costs a byte scan rather than a `Value` per line.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::File;
+use std::hash::{Hash as _, Hasher as _};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, Datelike as _, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -20,6 +22,10 @@ use crate::model::Worktree;
 
 /// How many transcripts a scan parses, newest first; everything past it is reported as a total.
 pub const DEFAULT_LIMIT: usize = 250;
+
+/// How many days the usage summary keeps: a turn older than this is still listed
+/// as a session, and is just not in the strip's numbers.
+pub const USAGE_DAYS: i32 = 14;
 
 /// The head zone: the first 64 KB, where the records that name the session are.
 const HEAD_BYTES: u64 = 64 * 1024;
@@ -38,6 +44,7 @@ const PREVIEW_CHARS: usize = 240;
 pub enum SessionAgent {
     Claude,
     Pi,
+    Codex,
 }
 
 impl SessionAgent {
@@ -45,6 +52,7 @@ impl SessionAgent {
         match self {
             Self::Claude => "claude",
             Self::Pi => "pi",
+            Self::Codex => "codex",
         }
     }
 
@@ -53,6 +61,7 @@ impl SessionAgent {
         match id {
             "claude" => Some(Self::Claude),
             "pi" => Some(Self::Pi),
+            "codex" => Some(Self::Codex),
             _ => None,
         }
     }
@@ -61,6 +70,7 @@ impl SessionAgent {
         match self {
             Self::Claude => "Claude Code",
             Self::Pi => "Pi",
+            Self::Codex => "Codex",
         }
     }
 }
@@ -90,6 +100,9 @@ pub struct Session {
 pub struct SessionRoots {
     pub claude: PathBuf,
     pub pi: PathBuf,
+    /// Codex sorts its rollouts into year/month/day directories under this root rather
+    /// than one bucket per project.
+    pub codex: PathBuf,
 }
 
 impl SessionRoots {
@@ -97,6 +110,7 @@ impl SessionRoots {
         Self {
             claude: home.join(".claude").join("projects"),
             pi: home.join(".pi").join("agent").join("sessions"),
+            codex: home.join(".codex").join("sessions"),
         }
     }
 }
@@ -109,12 +123,98 @@ impl Default for SessionRoots {
     }
 }
 
-/// The result of one scan: what to list, and how much was there to list.
+/// The result of one scan: what to list, how much was there to list, and what the
+/// transcripts it read have cost lately.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Scan {
     pub sessions: Vec<Session>,
     /// Every transcript discovered, before the cap.
     pub total: usize,
+    pub usage: UsageSummary,
+}
+
+/// Tokens and money one stretch of transcripts used. The cost is what the agent
+/// recorded for it, and Claude Code often records none — a stretch with no price is
+/// tokens only, not a zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Usage {
+    pub tokens: u64,
+    pub cost: f64,
+}
+
+impl Usage {
+    /// Add one turn's tokens and its price.
+    fn add(&mut self, tokens: u64, cost: f64) {
+        self.tokens += tokens;
+        self.cost += cost;
+    }
+}
+
+/// One day of the usage chart, oldest first.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageDay {
+    /// The day as `MM-DD`, in the reader's own timezone.
+    pub label: String,
+    pub tokens: u64,
+    pub cost: f64,
+    /// One entry per model that spent anything that day, biggest first: the stack a
+    /// chart draws in that day's column, and the reason the days are kept per model
+    /// rather than as one number.
+    pub models: Vec<UsageSlice>,
+}
+
+/// One model's share of one day.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageSlice {
+    /// The model the provider answered with (`claude-opus-5-5`), or the agent's own
+    /// name for a turn that recorded none.
+    pub model: String,
+    pub tokens: u64,
+    pub cost: f64,
+}
+
+/// One agent, or one provider under an agent: the chart's second cut.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageGroup {
+    /// The provider that answered (`opencode-go`, `anthropic`), or the agent's own
+    /// name for one that records no provider (`Claude Code`). Short on purpose: it
+    /// is a label in a chart column, not a sentence.
+    pub label: String,
+    pub tokens: u64,
+    pub cost: f64,
+}
+
+/// What the transcripts a scan read have used over the last [`USAGE_DAYS`] days:
+/// the strip's numbers, and both cuts of its chart.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UsageSummary {
+    pub total: Usage,
+    pub today: Usage,
+    pub days: Vec<UsageDay>,
+    /// The providers the tokens went through, biggest first, ties broken by name so
+    /// two scans agree.
+    pub providers: Vec<UsageGroup>,
+    /// The models that answered, biggest first: the same turns cut the other way.
+    pub models: Vec<UsageGroup>,
+}
+
+/// The local calendar day a moment falls on, as a key that sorts and subtracts.
+/// Local, not UTC: a turn at nine in the morning belongs to the day the reader
+/// was having, which is the day the chart's bars are.
+fn local_day(ms: i64) -> Option<i32> {
+    Some(
+        DateTime::from_timestamp_millis(ms)?
+            .with_timezone(&Local)
+            .date_naive()
+            .num_days_from_ce(),
+    )
+}
+
+/// A day key back as the chart's `MM-DD`.
+fn day_label(day: i32) -> String {
+    NaiveDate::from_num_days_from_ce_opt(day)
+        .map(|date| format!("{:02}-{:02}", date.month(), date.day()))
+        .unwrap_or_default()
 }
 
 /// Each transcript's fold and bytes read, valid only while the file is the same size or longer.
@@ -141,6 +241,39 @@ struct Fold {
     title: Option<String>,
     /// The preview's text, refreshed from the tail buffer at the end of a pass.
     preview: Option<String>,
+    /// The response ids whose usage this transcript has already paid into the days: a
+    /// resumed Codex session writes a whole new rollout and replays the earlier items
+    /// into it, so the same response arrives twice, in two files. Hashed rather than
+    /// kept whole: only identity matters, and a rollout holds a lot of them.
+    seen: HashSet<u64>,
+    /// The last `token_usage_record` this transcript carried, as the raw numbers it
+    /// reported. Newer rollouts also write a `token_count` event saying the same thing
+    /// about the same response — and, unlike the record, the event carries no id — so
+    /// the event is recognised by those numbers and skipped, while an older rollout that
+    /// has only the event is read from it.
+    last_report: Option<(u64, u64, u64)>,
+    /// What the priced turns in this transcript cost, by the local day they
+    /// happened. The summary is a slice of this, and it is kept per day rather
+    /// than per transcript because a session resumed for a week spends on several.
+    days: BTreeMap<i32, DayFold>,
+}
+
+/// One priced turn's cost, and the two names a reader compares it by.
+struct Spent {
+    tokens: u64,
+    cost: f64,
+    provider: String,
+    model: String,
+}
+
+/// One transcript's usage on one local day.
+#[derive(Debug, Default, Clone)]
+struct DayFold {
+    usage: Usage,
+    /// That day's cut by provider.
+    providers: BTreeMap<String, Usage>,
+    /// And by model, which is what the day's column is stacked from.
+    models: BTreeMap<String, Usage>,
 }
 
 /// One transcript file discovery found: what to parse and what to sort by.
@@ -155,8 +288,15 @@ struct Candidate {
 /// Discover the newest `limit` transcripts under `roots` and summarise them. `cache` is carried
 /// by the caller, so a later scan reads only what was appended.
 pub fn scan(roots: &SessionRoots, cache: &mut Cache, limit: usize) -> Scan {
+    scan_at(roots, cache, limit, now_ms())
+}
+
+/// The same scan, with the clock handed in: which days are "today" and inside the
+/// usage window is the one thing a test cannot leave to the machine's own time.
+pub fn scan_at(roots: &SessionRoots, cache: &mut Cache, limit: usize, now: i64) -> Scan {
     let mut candidates = discover(&roots.claude, SessionAgent::Claude);
     candidates.extend(discover(&roots.pi, SessionAgent::Pi));
+    candidates.extend(discover_codex(&roots.codex));
     // Newest first, and the path breaks ties so two transcripts written in the
     // same millisecond keep one order between scans.
     candidates.sort_by(|left, right| {
@@ -173,10 +313,58 @@ pub fn scan(roots: &SessionRoots, cache: &mut Cache, limit: usize) -> Scan {
         .entries
         .retain(|path, _| live.contains(&path.as_path()));
 
-    let mut sessions: Vec<Session> = candidates
-        .into_iter()
-        .filter_map(|candidate| scan_one(&candidate, cache))
+    // The window's two ends: the day it is now, and the oldest day it keeps. A
+    // record stamped in the future (a clock that ran ahead) is not in it.
+    let today = local_day(now).unwrap_or_default();
+    let oldest = today - (USAGE_DAYS - 1);
+    // A resumed Codex session replays the earlier responses into its new rollout, so what
+    // the folds already hold is what a replay is recognised against.
+    let mut seen: HashSet<u64> = cache
+        .entries
+        .values()
+        .flat_map(|entry| entry.fold.seen.iter().copied())
         .collect();
+    let mut days: BTreeMap<i32, DayFold> = BTreeMap::new();
+    let mut providers: BTreeMap<String, Usage> = BTreeMap::new();
+    let mut models: BTreeMap<String, Usage> = BTreeMap::new();
+    let mut usage = Usage::default();
+    let mut sessions: Vec<Session> = Vec::new();
+    for candidate in candidates {
+        let listed = scan_one(&candidate, cache, &mut seen);
+        // The fold lands in the cache whether or not the transcript could be listed,
+        // so a session with no directory still pays into the numbers: the strip is
+        // about the machine, not about the repository on screen.
+        if let Some(fold) = cache.entries.get(&candidate.path).map(|entry| &entry.fold) {
+            for (day, fold_day) in &fold.days {
+                if *day < oldest || *day > today {
+                    continue;
+                }
+                let merged = days.entry(*day).or_default();
+                merged.usage.add(fold_day.usage.tokens, fold_day.usage.cost);
+                usage.add(fold_day.usage.tokens, fold_day.usage.cost);
+                for (label, group) in &fold_day.providers {
+                    providers
+                        .entry(label.clone())
+                        .or_default()
+                        .add(group.tokens, group.cost);
+                }
+                for (label, group) in &fold_day.models {
+                    models
+                        .entry(label.clone())
+                        .or_default()
+                        .add(group.tokens, group.cost);
+                    merged
+                        .models
+                        .entry(label.clone())
+                        .or_default()
+                        .add(group.tokens, group.cost);
+                }
+            }
+        }
+        if let Some(session) = listed {
+            sessions.push(session);
+        }
+    }
     sessions.sort_by(|left, right| {
         right
             .updated_ms
@@ -184,7 +372,52 @@ pub fn scan(roots: &SessionRoots, cache: &mut Cache, limit: usize) -> Scan {
             .then_with(|| left.path.cmp(&right.path))
     });
 
-    Scan { sessions, total }
+    // Both cuts, biggest first, ties broken by name so two scans agree.
+    let ranked = |cuts: BTreeMap<String, Usage>| {
+        let mut ranked: Vec<UsageGroup> = cuts
+            .into_iter()
+            .map(|(label, usage)| UsageGroup {
+                label,
+                tokens: usage.tokens,
+                cost: usage.cost,
+            })
+            .collect();
+        ranked.sort_by(|left, right| {
+            right
+                .tokens
+                .cmp(&left.tokens)
+                .then_with(|| left.label.cmp(&right.label))
+        });
+        ranked
+    };
+    let usage = UsageSummary {
+        total: usage,
+        today: days.get(&today).map(|day| day.usage).unwrap_or_default(),
+        days: days
+            .into_iter()
+            .map(|(day, fold)| UsageDay {
+                label: day_label(day),
+                tokens: fold.usage.tokens,
+                cost: fold.usage.cost,
+                models: ranked(fold.models)
+                    .into_iter()
+                    .map(|group| UsageSlice {
+                        model: group.label,
+                        tokens: group.tokens,
+                        cost: group.cost,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        providers: ranked(providers),
+        models: ranked(models),
+    };
+
+    Scan {
+        sessions,
+        total,
+        usage,
+    }
 }
 
 /// The transcript of the session `id` that an agent started in `cwd`, once the agent has
@@ -215,6 +448,18 @@ pub fn transcript_of(
                         .is_some_and(|name| name.ends_with(&suffix))
                 })
         }
+        // `rollout-<stamp>-<id>.jsonl` under the dated tree.
+        SessionAgent::Codex => {
+            let suffix = format!("-{id}.jsonl");
+            discover_codex(&roots.codex)
+                .into_iter()
+                .map(|candidate| candidate.path)
+                .find(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(&suffix))
+                })
+        }
         // `<bucket>/<id>.jsonl`: the id is unique, so the bucket's encoding need not be guessed.
         SessionAgent::Claude => std::fs::read_dir(&roots.claude)
             .ok()?
@@ -236,7 +481,15 @@ pub fn first_prompt(agent: SessionAgent, path: &Path) -> Option<String> {
         if reader.read_line(&mut line).ok()? == 0 {
             break;
         }
-        consume(agent, &line, &mut fold, &mut tail, &mut first_user, true);
+        consume(
+            agent,
+            &line,
+            &mut fold,
+            &mut tail,
+            &mut first_user,
+            true,
+            &mut HashSet::new(),
+        );
     }
     text_of(agent, &first_user).map(|text| one_line(&text, PREVIEW_CHARS))
 }
@@ -275,6 +528,47 @@ fn discover(root: &Path, agent: SessionAgent) -> Vec<Candidate> {
     found
 }
 
+/// The rollouts under Codex's root: `YYYY/MM/DD/rollout-*.jsonl`, and — in older builds
+/// — the same files loose at the root, so the walk goes by depth rather than by shape.
+fn discover_codex(root: &Path) -> Vec<Candidate> {
+    /// Enough for the dated tree with room to spare; a deeper tree is not a layout Codex
+    /// has, and walking one would be walking the rest of the home directory.
+    const DEPTH: usize = 4;
+
+    let mut found = Vec::new();
+    let mut dirs = vec![(root.to_path_buf(), 0_usize)];
+    while let Some((dir, depth)) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if depth < DEPTH {
+                    dirs.push((path, depth + 1));
+                }
+                continue;
+            }
+            if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            found.push(Candidate {
+                agent: SessionAgent::Codex,
+                mtime_ms: modified_ms(&metadata),
+                size: metadata.len(),
+                path,
+            });
+        }
+    }
+    found
+}
+
 fn modified_ms(metadata: &std::fs::Metadata) -> i64 {
     metadata
         .modified()
@@ -285,7 +579,7 @@ fn modified_ms(metadata: &std::fs::Metadata) -> i64 {
 }
 
 /// Fold one transcript, resuming from where the cache left off.
-fn scan_one(candidate: &Candidate, cache: &mut Cache) -> Option<Session> {
+fn scan_one(candidate: &Candidate, cache: &mut Cache, seen: &mut HashSet<u64>) -> Option<Session> {
     let previous = cache.entries.get(&candidate.path);
     // A file that shrank was replaced: start again rather than read the middle
     // of a transcript whose head is gone.
@@ -293,7 +587,7 @@ fn scan_one(candidate: &Candidate, cache: &mut Cache) -> Option<Session> {
         Some(entry) if entry.size <= candidate.size => entry.fold.clone(),
         _ => Fold::default(),
     };
-    let fold = fold_file(candidate, start).ok()?;
+    let fold = fold_file(candidate, start, seen).ok()?;
     let cwd = fold.cwd.clone()?;
     let workspace = cwd
         .file_name()
@@ -334,7 +628,11 @@ fn file_stem(path: &Path) -> String {
 }
 
 /// Read `candidate` from `start`'s byte offset to the end, folding records in.
-fn fold_file(candidate: &Candidate, mut fold: Fold) -> std::io::Result<Fold> {
+fn fold_file(
+    candidate: &Candidate,
+    mut fold: Fold,
+    seen: &mut HashSet<u64>,
+) -> std::io::Result<Fold> {
     let head_zone = fold.bytes == 0;
     let mut reader = BufReader::new(File::open(&candidate.path)?);
     if fold.bytes > 0 {
@@ -359,6 +657,7 @@ fn fold_file(candidate: &Candidate, mut fold: Fold) -> std::io::Result<Fold> {
             &mut tail,
             &mut first_user,
             head,
+            seen,
         );
     }
 
@@ -376,6 +675,7 @@ fn fold_file(candidate: &Candidate, mut fold: Fold) -> std::io::Result<Fold> {
 
 /// Fold one line in. `head` says the record is inside the head zone, which is
 /// where the session's own name and directory are read from.
+#[allow(clippy::too_many_arguments)]
 fn consume(
     agent: SessionAgent,
     line: &str,
@@ -383,6 +683,7 @@ fn consume(
     tail: &mut VecDeque<String>,
     first_user: &mut String,
     head: bool,
+    seen: &mut HashSet<u64>,
 ) {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -406,6 +707,34 @@ fn consume(
             }
             if record.kind == Some("message") {
                 let role = record.message.as_ref().and_then(|message| message.role);
+                is_turn = matches!(role, Some("user") | Some("assistant"));
+                by_user = role == Some("user");
+            }
+        }
+        SessionAgent::Codex => {
+            let payload = record.payload.as_ref();
+            if record.kind == Some("session_meta") {
+                // The rollout's own name is the session's, and a sub-agent's rollout
+                // carries its parent's there while `id` is its own.
+                fold.id = payload
+                    .and_then(|payload| payload.session_id.or(payload.id))
+                    .map(str::to_string)
+                    .or(fold.id.take());
+                fold.cwd = payload
+                    .and_then(|payload| payload.cwd)
+                    .map(PathBuf::from)
+                    .or(fold.cwd.take());
+            }
+            if record.kind == Some("turn_context") {
+                fold.model = payload
+                    .and_then(|payload| payload.model)
+                    .map(str::to_string)
+                    .or(fold.model.take());
+            }
+            if record.kind == Some("response_item")
+                && payload.and_then(|payload| payload.kind) == Some("message")
+            {
+                let role = payload.and_then(|payload| payload.role);
                 is_turn = matches!(role, Some("user") | Some("assistant"));
                 by_user = role == Some("user");
             }
@@ -436,10 +765,39 @@ fn consume(
         }
     }
 
+    // Codex reports usage on records of its own, which are not turns: they are paid in
+    // before anything else decides this line is not a turn and returns.
+    if agent == SessionAgent::Codex {
+        fold_codex(&record, fold, seen);
+    }
+
     if !is_turn {
         return;
     }
     fold.messages += 1;
+    // What the turn cost, under the day it happened. A turn that recorded no
+    // usage — every user turn, and every tool result — adds nothing to either cut.
+    if let Some(spent) = record.spent(agent) {
+        // A record with no readable timestamp is filed under today rather than
+        // dropped: both agents write one on every priced turn, and dropping the
+        // rare one would quietly shrink the total.
+        let day = record
+            .day()
+            .or_else(|| local_day(now_ms()))
+            .unwrap_or_default();
+        let fold_day = fold.days.entry(day).or_default();
+        fold_day.usage.add(spent.tokens, spent.cost);
+        fold_day
+            .providers
+            .entry(spent.provider)
+            .or_default()
+            .add(spent.tokens, spent.cost);
+        fold_day
+            .models
+            .entry(spent.model)
+            .or_default()
+            .add(spent.tokens, spent.cost);
+    }
     // The newest few turns for the preview, and the first user turn for the title.
     tail.push_back(trimmed.to_string());
     while tail.len() > TAIL_LINES {
@@ -450,6 +808,71 @@ fn consume(
     }
 }
 
+/// Pay one Codex usage report into the fold, whichever of the two reports it is.
+///
+/// Interactive Codex sessions have been reported not to write either report at all, in
+/// which case a rollout has no tokens in it to find: what is read here is what the file
+/// says, and a session the agent did not account for shows as a session with no usage.
+///
+/// A newer rollout writes a `token_usage_record` per response and a `token_count` event
+/// saying the same thing about it, and the event carries no id to say so — the numbers
+/// are what matches the pair, in whichever order they arrive. An older rollout has only
+/// the event, and is read from it.
+fn fold_codex(record: &Record<'_>, fold: &mut Fold, seen: &mut HashSet<u64>) {
+    let Some(payload) = record.payload.as_ref() else {
+        return;
+    };
+    let usage = if record.kind == Some("token_usage_record") {
+        payload.usage.as_ref()
+    } else if record.kind == Some("event_msg") && payload.kind == Some("token_count") {
+        payload
+            .info
+            .as_ref()
+            .and_then(|info| info.last_token_usage.as_ref())
+    } else {
+        return;
+    };
+    let Some(usage) = usage else {
+        return;
+    };
+
+    let (tokens, numbers) = usage.spent();
+    let repeated = fold.last_report == Some(numbers);
+    fold.last_report = Some(numbers);
+    if repeated || tokens == 0 {
+        return;
+    }
+    // A resumed session replays the responses it already had into a new rollout; the
+    // record's own id is what says one has been paid in already.
+    if let Some(id) = payload.response_id {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut hasher);
+        if !seen.insert(hasher.finish()) {
+            return;
+        }
+        fold.seen.insert(hasher.finish());
+    }
+
+    let day = record
+        .day()
+        .or_else(|| local_day(now_ms()))
+        .unwrap_or_default();
+    let name = SessionAgent::Codex.display().to_string();
+    let fold_day = fold.days.entry(day).or_default();
+    // Codex is a subscription: it records tokens, never a price.
+    fold_day.usage.add(tokens, 0.);
+    fold_day
+        .providers
+        .entry(name.clone())
+        .or_default()
+        .add(tokens, 0.);
+    fold_day
+        .models
+        .entry(fold.model.clone().unwrap_or(name))
+        .or_default()
+        .add(tokens, 0.);
+}
+
 /// The text of a turn record, the only thing this module decodes a whole record for.
 fn text_of(agent: SessionAgent, line: &str) -> Option<String> {
     if line.is_empty() {
@@ -457,8 +880,8 @@ fn text_of(agent: SessionAgent, line: &str) -> Option<String> {
     }
     let value: Value = serde_json::from_str(line).ok()?;
     let content = match agent {
-        SessionAgent::Pi => value.get("message")?.get("content")?,
-        SessionAgent::Claude => value.get("message")?.get("content")?,
+        SessionAgent::Pi | SessionAgent::Claude => value.get("message")?.get("content")?,
+        SessionAgent::Codex => value.get("payload")?.get("content")?,
     };
     texts(content)
 }
@@ -489,6 +912,56 @@ fn one_line(text: &str, limit: usize) -> String {
     cut
 }
 
+/// Codex's envelope, as far as the count needs it: `payload` is where everything a
+/// record says lives, and which fields are set says what kind of record it is.
+#[derive(Debug, Deserialize)]
+struct Payload<'a> {
+    /// `session_meta`: the session's own id, and the directory it ran in.
+    #[serde(rename = "session_id")]
+    session_id: Option<&'a str>,
+    id: Option<&'a str>,
+    cwd: Option<&'a str>,
+    /// `turn_context`: the model that answered the turn.
+    model: Option<&'a str>,
+    /// The inner discriminator: `message` for a turn, `token_count` for an event.
+    #[serde(rename = "type")]
+    kind: Option<&'a str>,
+    role: Option<&'a str>,
+    /// `token_usage_record`: which response this usage was for.
+    #[serde(rename = "response_id")]
+    response_id: Option<&'a str>,
+    usage: Option<Tokens>,
+    /// `event_msg` of type `token_count`.
+    info: Option<Info>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Info {
+    last_token_usage: Option<Tokens>,
+}
+
+/// One usage report. `cached_input_tokens` is *inside* `input_tokens` — `total_tokens`
+/// is the input plus the output, which is what says so — so the cache is not added to
+/// the input a second time.
+#[derive(Debug, Deserialize)]
+struct Tokens {
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+
+impl Tokens {
+    /// The tokens this report covers, and the pair a later event is matched against.
+    fn spent(&self) -> (u64, (u64, u64, u64)) {
+        let input = self.input_tokens.unwrap_or(0);
+        let output = self.output_tokens.unwrap_or(0);
+        (
+            input + output,
+            (input, output, self.total_tokens.unwrap_or(0)),
+        )
+    }
+}
+
 /// One record, as far as the count needs it: every field optional and borrowed, so a line costs
 /// a scan rather than a document.
 #[derive(Debug, Deserialize)]
@@ -501,13 +974,114 @@ struct Record<'a> {
     model_id: Option<&'a str>,
     cwd: Option<&'a str>,
     id: Option<&'a str>,
+    /// When the record was written, as either agent stamps it: RFC 3339.
+    timestamp: Option<&'a str>,
+    /// Claude Code's own price for the turn, when it writes one.
+    #[serde(rename = "costUSD")]
+    cost_usd: Option<f64>,
     message: Option<Message<'a>>,
+    /// Codex's envelope around everything a rollout line says.
+    payload: Option<Payload<'a>>,
+}
+
+impl Record<'_> {
+    /// What one assistant turn cost: its tokens, the price the agent recorded, the
+    /// provider that answered and the model that did. `None` for everything that is
+    /// not a priced turn.
+    fn spent(&self, agent: SessionAgent) -> Option<Spent> {
+        let assistant = match agent {
+            SessionAgent::Pi => self.kind == Some("message"),
+            SessionAgent::Claude => self.kind == Some("assistant"),
+            // Codex reports usage on its own record, not on the turn: see
+            // [`Record::tokens`].
+            SessionAgent::Codex => return None,
+        };
+        let message = self.message.as_ref()?;
+        if !assistant || message.role != Some("assistant") {
+            return None;
+        }
+        let usage = message.usage.as_ref()?;
+        let (tokens, cost) = match agent {
+            // Handled above: Codex reports usage on records of its own.
+            SessionAgent::Codex => return None,
+            SessionAgent::Pi => (
+                usage.input.unwrap_or(0)
+                    + usage.output.unwrap_or(0)
+                    + usage.cache_read.unwrap_or(0)
+                    + usage.cache_write.unwrap_or(0),
+                usage
+                    .cost
+                    .as_ref()
+                    .and_then(|cost| cost.total)
+                    .unwrap_or(0.),
+            ),
+            SessionAgent::Claude => (
+                usage.input_tokens.unwrap_or(0)
+                    + usage.output_tokens.unwrap_or(0)
+                    + usage.cache_read_input_tokens.unwrap_or(0)
+                    + usage.cache_creation_input_tokens.unwrap_or(0),
+                self.cost_usd.unwrap_or(0.),
+            ),
+        };
+        if tokens == 0 && cost == 0. {
+            return None;
+        }
+        // An agent that records neither is named by the agent itself (`Claude Code`),
+        // so a record is never labelled with nothing.
+        Some(Spent {
+            tokens,
+            cost,
+            provider: message
+                .provider
+                .map(str::to_string)
+                .unwrap_or_else(|| agent.display().to_string()),
+            model: message
+                .model
+                .map(str::to_string)
+                .unwrap_or_else(|| agent.display().to_string()),
+        })
+    }
+
+    /// The local day the record was written, as the key the chart sorts by.
+    fn day(&self) -> Option<i32> {
+        local_day(
+            DateTime::parse_from_rfc3339(self.timestamp?)
+                .ok()?
+                .timestamp_millis(),
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct Message<'a> {
     role: Option<&'a str>,
     model: Option<&'a str>,
+    /// Pi names the provider that answered; Claude Code has only the one.
+    provider: Option<&'a str>,
+    usage: Option<UsageRecord>,
+}
+
+/// The tokens one turn cost, as either agent writes them: Pi in camelCase, Claude
+/// Code in the API's snake_case. Every field optional, because a record that used
+/// no tokens at all is one to skip rather than one to fault.
+#[derive(Debug, Deserialize)]
+struct UsageRecord {
+    input: Option<u64>,
+    output: Option<u64>,
+    #[serde(rename = "cacheRead")]
+    cache_read: Option<u64>,
+    #[serde(rename = "cacheWrite")]
+    cache_write: Option<u64>,
+    cost: Option<CostRecord>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cache_read_input_tokens: Option<u64>,
+    cache_creation_input_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CostRecord {
+    total: Option<f64>,
 }
 
 /// Whether `session` belongs to the repository on screen: under any worktree of the active
@@ -632,6 +1206,162 @@ mod tests {
         "{\"type\":\"message\",\"id\":\"c\",\"parentId\":\"b\",\"timestamp\":\"2026-10-12T01:00:04.000Z\",\"message\":{\"role\":\"toolResult\",\"content\":[{\"type\":\"text\",\"text\":\"tool output that is not a turn\"}]}}".to_string()
     }
 
+    /// A Pi assistant turn with usage on it: what the usage strip reads, in the
+    /// shape `session-manager.ts` writes.
+    fn pi_spent(at: &str, provider: &str, input: u64, output: u64, cost: f64) -> String {
+        serde_json::json!({
+            "type": "message",
+            "id": "u",
+            "parentId": null,
+            "timestamp": at,
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "api": "anthropic-messages",
+                "provider": provider,
+                "model": "claude-opus-5",
+                "usage": {
+                    "input": input,
+                    "output": output,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "totalTokens": input + output,
+                    "cost": {"total": cost},
+                },
+            },
+        })
+        .to_string()
+    }
+
+    /// A Claude Code assistant turn with usage on it. `cost` is `None` for a
+    /// transcript that records no price, which the agent often does not.
+    fn claude_spent(at: &str, input: u64, output: u64, cost: Option<f64>) -> String {
+        let mut record = serde_json::json!({
+            "type": "assistant",
+            "sessionId": "8f2c1d4e",
+            "cwd": "/Users/ada/code/syro",
+            "timestamp": at,
+            "message": {
+                "role": "assistant",
+                "model": "claude-sonnet-4-5",
+                "content": [{"type": "text", "text": "On it."}],
+                "usage": {
+                    "input_tokens": input,
+                    "output_tokens": output,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                },
+            },
+        });
+        if let Some(cost) = cost {
+            record["costUSD"] = serde_json::json!(cost);
+        }
+        record.to_string()
+    }
+
+    /// A timestamp `days` days before `now`, at the same moment of the day, as
+    /// both agents stamp a record.
+    fn iso_days_ago(now: i64, days: i64) -> String {
+        DateTime::from_timestamp_millis(now - days * 86_400_000)
+            .expect("a timestamp")
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    }
+
+    /// A Codex rollout, in the dated tree Codex writes rather than the one-bucket layout
+    /// the other two agents use.
+    fn write_codex(home: &Path, id: &str, lines: &[&str]) -> PathBuf {
+        let dir = home.join(".codex/sessions/2026/10/15");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("rollout-2026-10-15T01-00-00-{id}.jsonl"));
+        let mut body = String::new();
+        for line in lines {
+            body.push_str(line);
+            body.push('\n');
+        }
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn codex_meta(cwd: &str, id: &str) -> String {
+        serde_json::json!({
+            "timestamp": "2026-10-15T01:00:00.000Z",
+            "type": "session_meta",
+            "payload": {"session_id": id, "id": id, "cwd": cwd},
+        })
+        .to_string()
+    }
+
+    fn codex_turn(model: &str) -> String {
+        serde_json::json!({
+            "timestamp": "2026-10-15T01:00:01.000Z",
+            "type": "turn_context",
+            "payload": {"model": model, "cwd": "/Users/ada/code"},
+        })
+        .to_string()
+    }
+
+    fn codex_message(at: &str, role: &str, text: &str) -> String {
+        serde_json::json!({
+            "timestamp": at,
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": role,
+                "content": [{"type": "input_text", "text": text}],
+            },
+        })
+        .to_string()
+    }
+
+    /// A per-response usage line: `usage` is the response's own, `turn_token_usage` a
+    /// running total that must not be added as well.
+    fn codex_usage_record(
+        at: &str,
+        response_id: &str,
+        input: u64,
+        cached: u64,
+        output: u64,
+    ) -> String {
+        serde_json::json!({
+            "timestamp": at,
+            "type": "token_usage_record",
+            "payload": {
+                "response_id": response_id,
+                "usage": {
+                    "input_tokens": input,
+                    "cached_input_tokens": cached,
+                    "output_tokens": output,
+                    "total_tokens": input + output,
+                },
+                "turn_token_usage": {
+                    "input_tokens": input * 9,
+                    "cached_input_tokens": cached,
+                    "output_tokens": output * 9,
+                    "total_tokens": (input + output) * 9,
+                },
+            },
+        })
+        .to_string()
+    }
+
+    /// The same numbers as a `token_count` event, which older rollouts have instead.
+    fn codex_token_event(at: &str, input: u64, cached: u64, output: u64) -> String {
+        serde_json::json!({
+            "timestamp": at,
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {"last_token_usage": {
+                    "input_tokens": input,
+                    "cached_input_tokens": cached,
+                    "output_tokens": output,
+                    "total_tokens": input + output,
+                }},
+            },
+        })
+        .to_string()
+    }
+
     fn scan_home(home: &Path) -> Scan {
         scan(
             &SessionRoots::from_home(home),
@@ -667,6 +1397,237 @@ mod tests {
         // Two turns: the tool result is not one.
         assert_eq!(session.messages, 2);
         assert!(session.updated_ms > 0);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// A Codex rollout folds into the same summary the other two agents' do.
+    #[test]
+    fn a_codex_rollout_summarises_to_title_preview_and_turns() {
+        let home = home("codex-basic");
+        let now = now_ms();
+        let at = iso_days_ago(now, 0);
+        write_codex(
+            &home,
+            "01a2b3c4",
+            &[
+                &codex_meta("/Users/ada/code/swap-aggregator", "01a2b3c4"),
+                &codex_turn("gpt-5-codex"),
+                &codex_message(&at, "user", "把 swap 的重试改成退避"),
+                &codex_message(&at, "assistant", "On it."),
+            ],
+        );
+
+        let scan = scan_home(&home);
+        assert_eq!(scan.total, 1);
+        let session = &scan.sessions[0];
+        assert_eq!(session.agent, SessionAgent::Codex);
+        assert_eq!(session.id, "01a2b3c4");
+        assert_eq!(session.workspace, "swap-aggregator");
+        assert_eq!(session.title, "把 swap 的重试改成退避");
+        assert_eq!(session.preview, "On it.");
+        assert_eq!(session.model.as_deref(), Some("gpt-5-codex"));
+        // Two turns: the usage records are not turns.
+        assert_eq!(session.messages, 2);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// A newer rollout reports each response twice — a record and an event saying the same
+    /// thing — and only one of them is counted. An older one has only the event. And the
+    /// cached tokens are inside the input, not beside it: adding them would double the
+    /// figure.
+    #[test]
+    fn codex_counts_a_response_once_and_cached_tokens_once() {
+        let home = home("codex-usage");
+        let now = now_ms();
+        write_codex(
+            &home,
+            "01a2b3c4",
+            &[
+                &codex_meta("/Users/ada/code/swap-aggregator", "01a2b3c4"),
+                &codex_turn("gpt-5-codex"),
+                // 28_739 input of which 28_032 cached, 11 output: 28_750 tokens, not
+                // 56_782.
+                &codex_usage_record(&iso_days_ago(now, 0), "resp_a", 28_739, 28_032, 11),
+                &codex_token_event(&iso_days_ago(now, 0), 28_739, 28_032, 11),
+                // Only an older rollout would have this response, as an event alone.
+                &codex_token_event(&iso_days_ago(now, 1), 1_000, 0, 500),
+            ],
+        );
+
+        let usage = scan_at(
+            &SessionRoots::from_home(&home),
+            &mut Cache::default(),
+            DEFAULT_LIMIT,
+            now,
+        )
+        .usage;
+
+        assert_eq!(usage.total.tokens, 28_750 + 1_500);
+        assert_eq!(usage.today.tokens, 28_750);
+        assert_eq!(usage.days.len(), 2);
+        // Codex records tokens, never a price: it is a subscription.
+        assert_eq!(usage.total.cost, 0.);
+        assert_eq!(usage.providers[0].label, "Codex");
+        assert_eq!(usage.models[0].label, "gpt-5-codex");
+        assert_eq!(usage.models[0].tokens, 30_250);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Resuming a Codex session writes a second rollout with the earlier responses replayed
+    /// into it: the response id is what keeps them from being counted twice.
+    #[test]
+    fn a_replayed_codex_response_is_counted_once() {
+        let home = home("codex-resume");
+        let now = now_ms();
+        let at = iso_days_ago(now, 0);
+        write_codex(
+            &home,
+            "01a2b3c4",
+            &[
+                &codex_meta("/Users/ada/code", "01a2b3c4"),
+                &codex_turn("gpt-5-codex"),
+                &codex_usage_record(&at, "resp_a", 100, 0, 10),
+            ],
+        );
+        write_codex(
+            &home,
+            "01a2b3c5",
+            &[
+                &codex_meta("/Users/ada/code", "01a2b3c5"),
+                &codex_turn("gpt-5-codex"),
+                // The response the resume carried over, and the one it added.
+                &codex_usage_record(&at, "resp_a", 100, 0, 10),
+                &codex_usage_record(&at, "resp_b", 200, 0, 20),
+            ],
+        );
+
+        let usage = scan_at(
+            &SessionRoots::from_home(&home),
+            &mut Cache::default(),
+            DEFAULT_LIMIT,
+            now,
+        )
+        .usage;
+        assert_eq!(usage.total.tokens, 110 + 220);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// A Codex id finds its rollout in the dated tree.
+    #[test]
+    fn a_codex_id_finds_its_rollout() {
+        let home = home("codex-by-id");
+        let roots = SessionRoots::from_home(&home);
+        let rollout = write_codex(
+            &home,
+            "01a2b3c4",
+            &[
+                &codex_meta("/Users/ada/code", "01a2b3c4"),
+                &codex_message("2026-10-15T01:00:02.000Z", "user", "fix the build"),
+            ],
+        );
+        write_codex(
+            &home,
+            "01a2b3c5",
+            &[&codex_meta("/Users/ada/code", "01a2b3c5")],
+        );
+
+        assert_eq!(
+            transcript_of(
+                &roots,
+                SessionAgent::Codex,
+                Path::new("/Users/ada/code"),
+                "01a2b3c4"
+            ),
+            Some(rollout.clone())
+        );
+        assert_eq!(
+            first_prompt(SessionAgent::Codex, &rollout).as_deref(),
+            Some("fix the build")
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// The strip's numbers are the priced turns, each under the day it happened:
+    /// both cuts of the chart are the same turns, read two ways.
+    #[test]
+    fn usage_is_summed_by_day_and_by_provider() {
+        let home = home("usage-pi");
+        let now = now_ms();
+        write_pi(
+            &home,
+            "/Users/ada/code/syro",
+            "u1",
+            &[
+                // Outside the window: still a session, not in the numbers.
+                &pi_spent(&iso_days_ago(now, 20), "anthropic", 999, 0, 9.),
+                &pi_spent(&iso_days_ago(now, 3), "iotex", 200, 0, 1.),
+                &pi_spent(&iso_days_ago(now, 0), "anthropic", 40, 60, 0.5),
+            ],
+        );
+
+        let scan = scan_at(
+            &SessionRoots::from_home(&home),
+            &mut Cache::default(),
+            DEFAULT_LIMIT,
+            now,
+        );
+
+        // The transcript itself is listed whole, however old its turns are.
+        assert_eq!(scan.sessions[0].messages, 3);
+        assert_eq!(scan.usage.total.tokens, 300);
+        assert_eq!(scan.usage.total.cost, 1.5);
+        assert_eq!(scan.usage.today.tokens, 100);
+        // One bar per day that spent something, oldest first.
+        let days: Vec<u64> = scan.usage.days.iter().map(|day| day.tokens).collect();
+        assert_eq!(days, [200, 100]);
+        // And the second cut, biggest first.
+        let groups: Vec<(&str, u64, f64)> = scan
+            .usage
+            .providers
+            .iter()
+            .map(|group| (group.label.as_str(), group.tokens, group.cost))
+            .collect();
+        assert_eq!(groups, [("iotex", 200, 1.), ("anthropic", 100, 0.5)]);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Claude Code's turns count under its own name, and a transcript that records
+    /// no price is a day of tokens rather than a day of nothing.
+    #[test]
+    fn claude_code_usage_is_counted_under_its_own_name() {
+        let home = home("usage-claude");
+        let now = now_ms();
+        write_claude(
+            &home,
+            "/Users/ada/code/syro",
+            "8f2c1d4e",
+            &[
+                &claude_spent(&iso_days_ago(now, 0), 10, 90, Some(0.25)),
+                &claude_spent(&iso_days_ago(now, 1), 30, 20, None),
+            ],
+        );
+
+        let usage = scan_at(
+            &SessionRoots::from_home(&home),
+            &mut Cache::default(),
+            DEFAULT_LIMIT,
+            now,
+        )
+        .usage;
+
+        assert_eq!(usage.total.tokens, 150);
+        assert_eq!(usage.total.cost, 0.25);
+        assert_eq!(usage.days.len(), 2);
+        assert_eq!(usage.days[0].tokens, 50);
+        assert_eq!(usage.days[1].tokens, 100);
+        assert_eq!(usage.providers[0].label, "Claude Code");
+        assert_eq!(usage.providers[0].tokens, 150);
+        // And the same turns cut by model: both days answered by the same one.
+        assert_eq!(usage.models.len(), 1);
+        assert_eq!(usage.models[0].label, "claude-sonnet-4-5");
+        assert_eq!(usage.models[0].tokens, 150);
+        assert_eq!(usage.days[1].models[0].model, "claude-sonnet-4-5");
+        assert_eq!(usage.days[1].models[0].tokens, 100);
         let _ = fs::remove_dir_all(&home);
     }
 

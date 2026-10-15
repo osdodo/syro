@@ -355,6 +355,9 @@ git:
   publishing:
     en: Publishing…
     zh-CN: 正在发布…
+  switching:
+    en: "Switching to %{branch}…"
+    zh-CN: "正在切换到 %{branch}…"
   message:
     en: Message
     zh-CN: 提交信息
@@ -394,6 +397,9 @@ git:
   not_on_branch:
     en: This worktree is not on a branch git can name.
     zh-CN: 此工作树不在 git 能识别的分支上。
+  switch_branch:
+    en: "Switch to branch %{branch}"
+    zh-CN: "切换到分支 %{branch}"
   no_changes:
     en: No changes on this branch
     zh-CN: 此分支没有变更
@@ -512,6 +518,33 @@ resource:
   error:
     en: "unavailable: %{error}"
     zh-CN: "不可用：%{error}"
+  # The usage chip and the chart it opens. The window is days, not sessions: what
+  # the agents cost is a number people compare against a subscription's own reset.
+  usage:
+    en: "%{days}d %{tokens} tok · %{cost}"
+    zh-CN: "近 %{days} 天 %{tokens} tok · %{cost}"
+  usage_aria:
+    en: "Usage: %{tokens} tokens and %{cost} over the last %{days} days"
+    zh-CN: "用量：近 %{days} 天 %{tokens} tokens，%{cost}"
+  usage_measuring:
+    en: "Usage: —"
+    zh-CN: "用量：—"
+  usage_none:
+    en: "Usage: none"
+    zh-CN: "用量：无"
+  usage_window:
+    en: "Last %{days} days"
+    zh-CN: "近 %{days} 天"
+  usage_today:
+    en: Today
+    zh-CN: 今天
+  # The panel's own title, and the heading over the share legend.
+  usage_title:
+    en: Usage
+    zh-CN: 用量
+  usage_share:
+    en: By model
+    zh-CN: 按模型
   # The names over a terminal row's columns, drawn on the worktree's own line.
   # The length is a duration, not a clock: "Time" rather than "Uptime", which
   # is what the row's own doc comment calls it.
