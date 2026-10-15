@@ -3,7 +3,7 @@
 
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$root"
 
 main_rs="crates/app/src/main.rs"
@@ -61,6 +61,20 @@ if [ -x "$plist" ]; then
         echo "  run this script from the repo root so cargo-bundle's icon glob matches" >&2
         exit 1
     fi
+fi
+
+# `cargo-bundle` leaves the app linker-signed: the signature has no bound
+# `Info.plist`, and its identifier comes from the executable name (`syro-<hash>`)
+# rather than the bundle. `usernotificationsd` then rejects every authorization
+# request — "Entitlement 'com.apple.private.usernotifications.bundle-identifiers'
+# required to request user notifications" — so the permission prompt never
+# appears and no notification is delivered. Re-signing ad-hoc with the bundle in
+# place binds the plist and the identifier macOS reads.
+codesign --force --sign - "$bundle"
+signed_id=$(codesign -dv "$bundle" 2>&1 | sed -n 's/^Identifier=//p' | head -1)
+if [ "$signed_id" != "$declared" ]; then
+    echo "bundle.sh: the signature says '$signed_id', main.rs says '$declared'" >&2
+    exit 1
 fi
 
 # The drag-to-install disk image: logo behind the two icons, app on the left,
