@@ -20,7 +20,5 @@ tree beside it, the diff, the git graph, and the agent session it belongs to.
 ```sh
 cargo run -p syro     # the app
 cargo test            # tests
-packaging/bundle.sh   # the macOS .app and DMG
+./bundle.sh           # the macOS .app and DMG
 ```
-
-Packaging details, memory and cold-start numbers: `packaging/README.md`.
