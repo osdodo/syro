@@ -6853,11 +6853,13 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
+ "async-channel",
  "data-url",
  "gpui-kit",
  "objc",
  "raw-window-handle",
  "rust-i18n",
+ "serde_json",
  "syro-core",
  "sys-locale",
  "tracing",

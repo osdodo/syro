@@ -1071,6 +1071,7 @@ impl SettingsView {
             )
             .child(self.commit_message_row(colors))
             .child(self.awake_row(colors, cx))
+            .child(self.web_row(colors, cx))
             .into_any_element()
     }
 
@@ -1105,6 +1106,58 @@ impl SettingsView {
                     )),
             )
             .into_any_element()
+    }
+
+    /// The phone panel's address, with a copy button. Otherwise the URL exists
+    /// only in the log the app was launched from, which is not where anyone looks
+    /// for it.
+    ///
+    /// The switch and the port stay in `settings.toml`: both are read once, when
+    /// the listener is bound, so a control here would be a control that lies
+    /// until the next launch.
+    fn web_row(&self, colors: &ColorTokens, cx: &App) -> AnyElement {
+        let url = self.state.read(cx).web_url().map(str::to_string);
+        let shown = url
+            .clone()
+            .unwrap_or_else(|| t!("settings.web_off").to_string());
+        let mut row = div()
+            .id("settings-web")
+            .test_support()
+            .h_flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .v_flex()
+                    .child(div().text_sm().child(t!("settings.web")))
+                    .child(
+                        div()
+                            .id("settings-web-url")
+                            .test_support()
+                            // The URL is the whole point of the row, and a
+                            // screen reader can read it out even when the panel
+                            // is too narrow to show it.
+                            .aria_label(SharedString::from(shown.clone()))
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .text_ellipsis()
+                            .child(SharedString::from(shown)),
+                    ),
+            );
+        if let Some(url) = url {
+            row = row.child(
+                Button::new("settings-web-copy")
+                    .small()
+                    .outline()
+                    .label(t!("settings.web_copy"))
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(url.clone()))
+                    }),
+            );
+        }
+        row.into_any_element()
     }
 
     /// The sleep setting: a radio group, because exactly one of the three answers

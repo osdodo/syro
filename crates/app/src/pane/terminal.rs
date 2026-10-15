@@ -491,6 +491,71 @@ impl TerminalView {
         &self.terminal_id
     }
 
+    /// The visible grid as plain text: what the web panel shows instead of a
+    /// grid of cells.
+    pub fn snapshot_text(&self) -> String {
+        self.session.snapshot().text()
+    }
+
+    /// A live view of this terminal for the web panel: the subscription first (so
+    /// nothing read from here on is missed), then the screen as it stands.
+    ///
+    /// The caller paints the screen, throws away whatever the subscription
+    /// already caught while doing so, and streams the rest.
+    pub fn stream(&self) -> (String, syro_core::term::Subscription) {
+        let bytes = self.session.subscribe();
+        (self.snapshot_text(), bytes)
+    }
+
+    /// Bytes from the web panel, straight to the child, as if typed here.
+    pub fn write_bytes(&self, bytes: &[u8]) -> anyhow::Result<()> {
+        self.session.write(bytes)
+    }
+
+    /// The grid size, for a panel's own viewport to start from.
+    pub fn term_size(&self) -> TermSize {
+        self.session.size()
+    }
+
+    /// Resize the child, as the panel's viewport asks.
+    pub fn resize_term(&self, columns: usize, screen_lines: usize) -> anyhow::Result<()> {
+        self.session.resize(columns, screen_lines)
+    }
+
+    /// The status this terminal last reported.
+    pub fn agent_status(&self) -> Option<AgentStatus> {
+        self.status
+    }
+
+    /// Whether that status has gone quiet (`agent::stalled`).
+    pub fn is_stalled(&self) -> bool {
+        self.stalled
+    }
+
+    /// The task the agent's title names, when it names one.
+    pub fn task(&self) -> Option<&str> {
+        self.task.as_deref()
+    }
+
+    /// The command that re-enters this terminal's conversation, for a phone to
+    /// paste into a shell. `None` for a plain shell, a preset that cannot
+    /// resume, or a session whose transcript is not on disk yet.
+    pub fn resume_command(&self) -> Option<String> {
+        let agent = self.agent.as_ref()?;
+        let (id, path) = match &self.resume {
+            Some(resume) => (Some(resume.id.clone()), Some(resume.path.clone())),
+            None => {
+                let id = self.session_id.clone()?;
+                let kind = session::SessionAgent::from_id(agent.id.as_str())?;
+                let home = std::env::var_os("HOME")?;
+                let roots = session::SessionRoots::from_home(Path::new(&home));
+                let path = session::transcript_of(&roots, kind, &self.cwd, &id);
+                (Some(id), path)
+            }
+        };
+        syro_core::api::resume_command(agent, id.as_deref(), path.as_deref())
+    }
+
     /// The directory this terminal was started in, which is what a restart
     /// starts the new child in.
     pub fn cwd(&self) -> &std::path::Path {
