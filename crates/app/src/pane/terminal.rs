@@ -1249,6 +1249,12 @@ impl PaneItem for TerminalView {
         Some(TabSpec::Terminal {
             cwd: self.cwd.clone(),
             agent: self.agent_id().cloned(),
+            // The id is enough: the transcript is found again on the way back.
+            session: self
+                .resume
+                .as_ref()
+                .map(|resume| resume.id.clone())
+                .or_else(|| self.session_id.clone()),
         })
     }
 }
@@ -2516,7 +2522,7 @@ mod window_tests {
         WindowBounds, WindowHandle, WindowOptions, div, px, size,
     };
     use syro_core::config::Settings;
-    use syro_core::model::{AgentSpec, AgentStatus, AgentStatusRule, State};
+    use syro_core::model::{AgentSpec, AgentStatus, AgentStatusRule, State, TabSpec};
     use syro_core::store::Store;
     use syro_core::term::{TermSize, TermSpec};
 
@@ -2732,6 +2738,12 @@ mod window_tests {
         assert!(
             draw_until(cx, window, &view, &format!("id={id}")),
             "the child was not handed the id"
+        );
+        // The id is what a restart resumes by: the tab describes itself with it.
+        let spec = cx.update(|cx| view.read(cx).to_spec(cx)).expect("a spec");
+        assert!(
+            matches!(&spec, TabSpec::Terminal { session: Some(saved), .. } if saved == &id),
+            "{spec:?}"
         );
     }
 

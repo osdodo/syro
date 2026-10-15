@@ -170,6 +170,7 @@ mod tests {
         TabSpec::Terminal {
             cwd: PathBuf::from(cwd),
             agent: None,
+            session: None,
         }
     }
 

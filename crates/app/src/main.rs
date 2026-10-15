@@ -39,7 +39,7 @@ use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::config::Settings;
 use syro_core::event::CoreEvent;
-use syro_core::model::{TabLayout, TabSpec, WorktreeId};
+use syro_core::model::{AgentSpec, TabLayout, TabSpec, WorktreeId};
 use syro_core::session;
 use syro_core::store::Store;
 use syro_core::term::{TermSize, TermSpec};
@@ -634,9 +634,17 @@ impl Workspace {
             let mut panes: Vec<Option<split::Pane>> = Vec::new();
             for spec in tab.specs() {
                 panes.push(match spec {
-                    TabSpec::Terminal { cwd, agent } => {
-                        self.restore_terminal(worktree_id, cwd, agent.as_deref(), cx)
-                    }
+                    TabSpec::Terminal {
+                        cwd,
+                        agent,
+                        session,
+                    } => self.restore_terminal(
+                        worktree_id,
+                        cwd,
+                        agent.as_deref(),
+                        session.as_deref(),
+                        cx,
+                    ),
                     TabSpec::File { .. } | TabSpec::Diff { .. } => {
                         Some(self.new_pane(worktree_id, PaneView::Deferred { spec: spec.clone() }))
                     }
@@ -692,20 +700,30 @@ impl Workspace {
         self.persist_tabs(cx);
     }
 
-    /// A restored terminal: the same cwd and the same agent, a new child. The
-    /// pane it made, for the tab's tree to be built around it.
+    /// A restored terminal: the same cwd and the same agent, a new child — and, when the
+    /// saved spec names a session, the conversation it was in. The pane it made, for the
+    /// tab's tree to be built around it.
     fn restore_terminal(
         &mut self,
         worktree_id: &WorktreeId,
         cwd: &Path,
         agent: Option<&str>,
+        session: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Option<split::Pane> {
         let preset = agent.and_then(|id| self.state.read(cx).agent(id));
         let settings = self.state.read(cx).settings().terminal.clone();
         let size = TermSize::new(80, 24);
+        // A saved session comes back the way the history panel opens one: the transcript
+        // is found, and the preset's `resume_args` re-enter it.
+        let resume = match (preset.as_ref(), session, session_roots()) {
+            (Some(agent), Some(id), Some(roots)) if !agent.resume_args.is_empty() => {
+                saved_session(&roots, agent, cwd, id)
+            }
+            _ => None,
+        };
         let spec = match &preset {
-            Some(agent) => term_spec_for_agent(agent, cwd.to_path_buf(), size, None),
+            Some(agent) => term_spec_for_agent(agent, cwd.to_path_buf(), size, resume.as_ref()),
             None => TermSpec::shell(cwd.to_path_buf(), size),
         };
         let spec = with_settings(spec, &settings);
@@ -717,7 +735,7 @@ impl Workspace {
             }
         };
         let terminal = cx.new(|cx| {
-            TerminalView::new(cx, spec, preset, None)
+            TerminalView::new(cx, spec, preset, resume)
                 .expect("the command and the directory were checked")
         });
         let view = self.wire_terminal(worktree_id, terminal, cx);
@@ -3240,6 +3258,28 @@ fn dialog_background(cx: &App) -> Hsla {
     settings_view::solid(Theme::global(cx).tokens.colors.background)
 }
 
+/// The past session a saved terminal named, ready to re-enter: its id, with the
+/// transcript file the presets resume by. `None` when no transcript this app knows
+/// exists yet — an agent that keeps none, or a session that never wrote a turn.
+fn saved_session(
+    roots: &session::SessionRoots,
+    agent: &AgentSpec,
+    cwd: &Path,
+    id: &str,
+) -> Option<SessionRef> {
+    let kind = session::SessionAgent::from_id(agent.id.as_str())?;
+    let path = session::transcript_of(roots, kind, cwd, id)?;
+    Some(SessionRef {
+        id: id.to_string(),
+        path,
+    })
+}
+
+/// The default session roots, from `$HOME`; `None` when there is no home to read.
+fn session_roots() -> Option<session::SessionRoots> {
+    std::env::var_os("HOME").map(|home| session::SessionRoots::from_home(Path::new(&home)))
+}
+
 /// Why this spec cannot be started, if it cannot.
 fn with_settings(mut spec: TermSpec, settings: &syro_core::config::TerminalSettings) -> TermSpec {
     spec.scrollback = settings.scrollback as usize;
@@ -3747,7 +3787,7 @@ mod window_tests {
     use crate::state::{AppState, branch_or_name, register_actions};
     use crate::{
         TermSize, TermSpec, Workspace, app_keymap, dialog_background, fit_to_display,
-        register_workspace_actions, unrunnable, with_settings,
+        register_workspace_actions, saved_session, unrunnable, with_settings,
     };
 
     /// A view with nothing in it, for the two tests that are about the window
@@ -7092,6 +7132,52 @@ mod window_tests {
         );
     }
 
+    /// A restart re-enters the conversation: the id the tab saved, resolved back to
+    /// the transcript the resume flags need.
+    #[test]
+    fn a_saved_session_resolves_to_the_transcript_it_named() {
+        let dir = std::env::temp_dir().join(format!(
+            "syro-saved-session-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cwd = dir.join("main");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let roots = pi_history(&dir, &cwd, "aaaa1111", "carry on");
+        let agent = AgentSpec {
+            id: "pi".into(),
+            name: "Pi".into(),
+            command: "pi".into(),
+            args: Vec::new(),
+            resume_args: vec!["--session".into(), "{path}".into()],
+            new_args: vec!["--session-id".into(), "{id}".into()],
+            env: Default::default(),
+            status: Vec::new(),
+        };
+
+        let resume = saved_session(&roots, &agent, &cwd, "aaaa1111")
+            .expect("the transcript the session wrote");
+        assert_eq!(resume.id, "aaaa1111");
+        assert_eq!(
+            resume.path.file_name().unwrap().to_string_lossy(),
+            "2026-10-12T01-00-01-191Z_aaaa1111.jsonl"
+        );
+
+        // An id no transcript answers to is not a resume: there is nothing to re-enter.
+        assert!(saved_session(&roots, &agent, &cwd, "nosuchid").is_none());
+        // An agent whose transcripts this app cannot lay out is left alone too.
+        let unknown = AgentSpec {
+            id: "opencode".into(),
+            ..agent
+        };
+        assert!(saved_session(&roots, &unknown, &cwd, "aaaa1111").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ------------------------------------------------------------ the lists
 
     /// The check that stands in front of the four `expect`s: a spec is only
@@ -7395,6 +7481,7 @@ mod window_tests {
                     first: Box::new(TabLayout::Pane(TabSpec::Terminal {
                         cwd: root.clone(),
                         agent: None,
+                        session: None,
                     })),
                     second: Box::new(TabLayout::Pane(TabSpec::File {
                         path: root.join(NOTES),
@@ -7433,6 +7520,7 @@ mod window_tests {
                 TabSpec::Terminal {
                     cwd: root.to_path_buf(),
                     agent: None,
+                    session: None,
                 },
                 TabSpec::File {
                     path: root.join(NOTES),
@@ -7528,6 +7616,7 @@ mod window_tests {
                     TabLayout::Pane(TabSpec::Terminal {
                         cwd: root.clone(),
                         agent: None,
+                        session: None,
                     }),
                     TabLayout::Split {
                         axis: SplitAxis::SideBySide,
@@ -7579,6 +7668,7 @@ mod window_tests {
                 TabSpec::Terminal {
                     cwd: root.to_path_buf(),
                     agent: None,
+                    session: None,
                 },
                 TabSpec::File {
                     path: root.join(NOTES),
@@ -7625,6 +7715,7 @@ mod window_tests {
                     TabSpec::Terminal {
                         cwd: root.to_path_buf(),
                         agent: None,
+                        session: None,
                     },
                     TabSpec::File {
                         path: root.join(name),
@@ -7671,6 +7762,7 @@ mod window_tests {
                 TabSpec::Terminal {
                     cwd: root.to_path_buf(),
                     agent: None,
+                    session: None,
                 },
             ]
         });
@@ -7723,6 +7815,7 @@ mod window_tests {
                 TabSpec::Terminal {
                     cwd: root.to_path_buf(),
                     agent: None,
+                    session: None,
                 },
             ]
         });
@@ -7764,6 +7857,7 @@ mod window_tests {
                 TabSpec::Terminal {
                     cwd: elsewhere,
                     agent: None,
+                    session: None,
                 },
             ]
         });
@@ -7790,6 +7884,7 @@ mod window_tests {
             vec![TabSpec::Terminal {
                 cwd: root.to_path_buf(),
                 agent: None,
+                session: None,
             }]
         });
 

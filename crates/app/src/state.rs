@@ -1854,6 +1854,7 @@ mod tests {
         let tab = TabSpec::Terminal {
             cwd: repo.path.clone(),
             agent: Some("claude".to_string()),
+            session: None,
         };
         store
             .save(&State {

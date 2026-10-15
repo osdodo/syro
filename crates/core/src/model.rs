@@ -93,6 +93,11 @@ pub enum TabSpec {
     Terminal {
         cwd: PathBuf,
         agent: Option<AgentId>,
+        /// The agent's own session, so a restart re-enters the conversation instead of
+        /// starting a new one. `None` is a plain shell, an agent that writes no transcript
+        /// this app can find, or a session that never wrote one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
     },
     File {
         path: PathBuf,
