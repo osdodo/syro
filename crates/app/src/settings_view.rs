@@ -4,8 +4,10 @@ use gpui_kit::base::{
     ColorTokens, Root, StyledExt as _, TestSupportExt as _, Theme, TypographyTokens,
 };
 use gpui_kit::component::button::Button;
+use gpui_kit::component::searchable_list::SearchableListItem;
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
-use gpui_kit::component::{Sizable as _, ThemeMode, WindowExt as _};
+use gpui_kit::component::{IndexPath, Sizable as _, ThemeMode};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
@@ -301,8 +303,9 @@ enum Category {
 }
 
 impl Category {
-    /// In tab order. The first is the one the form opens on.
-    const ALL: [Category; 3] = [Self::Appearance, Self::Terminal, Self::General];
+    /// In tab order. The first is the one the form opens on: the everyday
+    /// settings come first, and how the app looks comes last.
+    const ALL: [Category; 3] = [Self::General, Self::Terminal, Self::Appearance];
 
     fn label(self) -> String {
         match self {
@@ -323,6 +326,67 @@ impl Category {
     }
 }
 
+/// One row of the language picker: the setting it stands for, and the name it
+/// is read by. A language is named in its own language, because a picker that
+/// names Chinese in English is a picker for people who already read English;
+/// "follow the system" is about the app rather than a language, so it is
+/// written in the one the app is currently showing.
+#[derive(Clone)]
+struct LanguageItem(Option<String>);
+
+impl SearchableListItem for LanguageItem {
+    type Value = Option<String>;
+
+    fn title(&self) -> SharedString {
+        match self.0.as_deref() {
+            None => t!("settings.language_system").to_string().into(),
+            Some(i18n::EN) => SharedString::from("English"),
+            _ => SharedString::from("简体中文"),
+        }
+    }
+
+    fn value(&self) -> &Option<String> {
+        &self.0
+    }
+
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        roomier(self.title())
+    }
+}
+
+/// One row of the appearance picker: the palette it stands for, and the name
+/// the form gives it. `None` is "follow the system", the same answer the
+/// language picker offers.
+#[derive(Clone)]
+struct AppearanceItem(Option<Appearance>);
+
+impl SearchableListItem for AppearanceItem {
+    type Value = Option<Appearance>;
+
+    fn title(&self) -> SharedString {
+        match self.0 {
+            None => t!("settings.language_system").to_string().into(),
+            Some(Appearance::Light) => t!("settings.light").to_string().into(),
+            Some(Appearance::Dark) => t!("settings.dark").to_string().into(),
+        }
+    }
+
+    fn value(&self) -> &Option<Appearance> {
+        &self.0
+    }
+
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        roomier(self.title())
+    }
+}
+
+/// A picker's row, with air above and below it: the component's own row is tight,
+/// and a short menu of settings reads better when the answers are not stacked
+/// against each other.
+fn roomier(title: SharedString) -> impl IntoElement {
+    div().py_1().child(title)
+}
+
 /// The form.
 pub struct SettingsView {
     state: Entity<AppState>,
@@ -331,12 +395,17 @@ pub struct SettingsView {
     window: AnyWindowHandle,
     /// `None` is "follow the system", as with the language.
     appearance: Option<Appearance>,
+    /// The appearance picker: a dropdown, like the language one.
+    appearance_select: Entity<SelectState<Vec<AppearanceItem>>>,
     /// Which tab's rows the right side shows.
     category: Category,
     /// `None` is "follow the system", which is what a settings file without a
     /// `language` says. Applied on click rather than only on restart: a language
     /// picker that needs a restart is a picker nobody trusts.
     language: Option<String>,
+    /// The language picker: a dropdown, because the answer is one of a few and
+    /// only one of them can be it.
+    language_select: Entity<SelectState<Vec<LanguageItem>>>,
     /// The window's opacity, as the setting spells it; the form shows its
     /// inverse (see [`transparency`]).
     opacity: f32,
@@ -356,6 +425,8 @@ pub struct SettingsView {
     error: Option<String>,
     _events: Subscription,
     _slider_events: [Subscription; 2],
+    _language_events: Subscription,
+    _appearance_events: Subscription,
 }
 
 impl SettingsView {
@@ -393,6 +464,59 @@ impl SettingsView {
             this.blur = (radius.round().max(0.) as u32).min(MAX_BLUR);
             this.slide(done, cx);
         });
+        let items = vec![
+            LanguageItem(None),
+            LanguageItem(Some(i18n::EN.to_string())),
+            LanguageItem(Some(i18n::ZH.to_string())),
+        ];
+        let selected = items
+            .iter()
+            .position(|item| item.0 == language)
+            .map(|row| IndexPath::default().row(row));
+        let language_select = cx.new(|cx| SelectState::new(items, selected, window, cx));
+        // A language is picked once and lands at once: the form redraws in it, and
+        // `settings.toml` is written in the same step.
+        let language_events = cx.subscribe(
+            &language_select,
+            |this, _select, event: &SelectEvent<Vec<LanguageItem>>, cx| {
+                let SelectEvent::Confirm(Some(language)) = event else {
+                    return;
+                };
+                if *language == this.language {
+                    return;
+                }
+                this.language = language.clone();
+                i18n::apply(this.language.as_deref());
+                this.commit(cx);
+                // The rows are written in the language just picked, so both
+                // pickers have to redraw their own labels.
+                this.language_select.update(cx, |_, cx| cx.notify());
+                this.appearance_select.update(cx, |_, cx| cx.notify());
+            },
+        );
+        let items = vec![
+            AppearanceItem(None),
+            AppearanceItem(Some(Appearance::Light)),
+            AppearanceItem(Some(Appearance::Dark)),
+        ];
+        let selected = items
+            .iter()
+            .position(|item| item.0 == appearance)
+            .map(|row| IndexPath::default().row(row));
+        let appearance_select = cx.new(|cx| SelectState::new(items, selected, window, cx));
+        let appearance_events = cx.subscribe(
+            &appearance_select,
+            |this, _select, event: &SelectEvent<Vec<AppearanceItem>>, cx| {
+                let SelectEvent::Confirm(Some(appearance)) = event else {
+                    return;
+                };
+                if *appearance == this.appearance {
+                    return;
+                }
+                this.appearance = *appearance;
+                this.commit(cx);
+            },
+        );
         // The dialog is a view of the state, so a change made anywhere else —
         // a `settings.toml` reload, a command — is redrawn rather than fought.
         let events = cx.subscribe(
@@ -412,9 +536,18 @@ impl SettingsView {
                 let blur = this.blur as f32;
                 let (opacity_slider, blur_slider) =
                     (this.opacity_slider.clone(), this.blur_slider.clone());
+                // The language picker is a copy of the setting too: a change made
+                // elsewhere has to be shown in it as well.
+                let (language_select, language) =
+                    (this.language_select.clone(), this.language.clone());
+                let (appearance_select, appearance) =
+                    (this.appearance_select.clone(), this.appearance);
                 let _ = this.window.update(cx, |_, window, cx| {
                     opacity_slider.update(cx, |s, cx| s.set_value(opacity, window, cx));
                     blur_slider.update(cx, |s, cx| s.set_value(blur, window, cx));
+                    language_select.update(cx, |s, cx| s.set_selected_value(&language, window, cx));
+                    appearance_select
+                        .update(cx, |s, cx| s.set_selected_value(&appearance, window, cx));
                 });
                 cx.notify();
             },
@@ -423,8 +556,10 @@ impl SettingsView {
             state,
             window: window.window_handle(),
             appearance,
+            appearance_select,
             category: Category::ALL[0],
             language,
+            language_select,
             opacity,
             blur,
             opacity_slider,
@@ -435,6 +570,8 @@ impl SettingsView {
             error: None,
             _events: events,
             _slider_events: [opacity_events, blur_events],
+            _language_events: language_events,
+            _appearance_events: appearance_events,
         }
     }
 
@@ -635,7 +772,7 @@ impl Render for SettingsView {
         }
 
         let pane = match self.category {
-            Category::Appearance => self.appearance_tab(&colors, cx),
+            Category::Appearance => self.appearance_tab(&colors),
             Category::Terminal => self.terminal_tab(&colors, cx),
             Category::General => self.general_tab(&colors, cx),
         };
@@ -661,8 +798,8 @@ impl Render for SettingsView {
                     .child(tabs)
                     .child(
                         // The rows scroll rather than clip: a category with more
-                        // of them than fit is a category the `Done` button can
-                        // still be reached under.
+                        // of them than fit is a category the dialog's own close
+                        // button can still be reached under.
                         div()
                             .id("settings-rows")
                             .test_support()
@@ -687,64 +824,17 @@ impl Render for SettingsView {
             );
         }
 
-        let window = self.window;
-        form.child(
-            div().h_flex().justify_end().child(
-                Button::new("settings-close")
-                    .small()
-                    .label(t!("common.done"))
-                    .on_click(move |_, _, cx| {
-                        // The handle the form was opened in, deferred: a
-                        // dialog is closed from an `App` callback here, and
-                        // the window's own update is where that happens.
-                        cx.defer(move |cx| {
-                            let _ = window.update(cx, |_, window, cx| window.close_dialog(cx));
-                        });
-                    }),
-            ),
-        )
+        // Every change is applied and written the moment it is made, so there is
+        // nothing to confirm: the title bar's close button and Escape are the
+        // ways out.
+        form
     }
 }
 
 impl SettingsView {
     /// The rows of the appearance tab: the palette, and how much of the window
     /// it is drawn on.
-    fn appearance_tab(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
-        // The chosen one is filled and the others outlined: one of the three is
-        // always the answer, and which is not something to work out from a hover
-        // state. The same three the language row offers.
-        let mut appearance_buttons = Vec::new();
-        for (id, value, label) in [
-            (
-                "settings-appearance-system",
-                None,
-                t!("settings.language_system"),
-            ),
-            (
-                "settings-appearance-light",
-                Some(Appearance::Light),
-                t!("settings.light"),
-            ),
-            (
-                "settings-appearance-dark",
-                Some(Appearance::Dark),
-                t!("settings.dark"),
-            ),
-        ] {
-            let mut button = Button::new(id).small().label(label);
-            if self.appearance != value {
-                button = button.outline();
-            }
-            appearance_buttons.push(
-                button
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.appearance = value;
-                        this.commit(cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-
+    fn appearance_tab(&self, colors: &ColorTokens) -> AnyElement {
         let percent = transparency(self.opacity) * 100.;
 
         div()
@@ -761,7 +851,17 @@ impl SettingsView {
                     .items_center()
                     .gap_2()
                     .child(div().flex_1().text_sm().child(t!("settings.appearance")))
-                    .children(appearance_buttons),
+                    .child(
+                        // The same fixed width as the language picker, so the two
+                        // dropdowns line up.
+                        div().w(px(160.)).flex_shrink_0().child(
+                            Select::new(&self.appearance_select)
+                                .id("settings-appearance-select")
+                                .small()
+                                .accessibility_label(t!("settings.appearance").to_string())
+                                .menu_width(px(160.)),
+                        ),
+                    ),
             )
             // The slider is the whole travel of the setting: the thumb at 0% is a
             // solid window, at the far end the most transparent the app goes.
@@ -852,47 +952,6 @@ impl SettingsView {
 
     /// The rows of the general tab.
     fn general_tab(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
-        // The three languages: the system's, and the two the app ships — each
-        // named in its own language, because a language picker that names
-        // Chinese in English is a picker for people who already read English.
-        let language = self.language.clone();
-        let mut language_buttons = Vec::new();
-        for (id, value, label) in [
-            (
-                "settings-language-system",
-                None,
-                t!("settings.language_system").to_string(),
-            ),
-            (
-                "settings-language-en",
-                Some(i18n::EN),
-                "English".to_string(),
-            ),
-            (
-                "settings-language-zh",
-                Some(i18n::ZH),
-                "简体中文".to_string(),
-            ),
-        ] {
-            let chosen = language.as_deref() == value;
-            let mut button = Button::new(id).small().label(SharedString::from(label));
-            if !chosen {
-                button = button.outline();
-            }
-            language_buttons.push(
-                button
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.language = value.map(str::to_string);
-                        // Applied before the write, so the form redraws in the
-                        // language just picked and `settings.toml` is written in
-                        // the same step.
-                        i18n::apply(this.language.as_deref());
-                        this.commit(cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-
         div()
             .id("settings-general-rows")
             .test_support()
@@ -907,7 +966,17 @@ impl SettingsView {
                     .items_center()
                     .gap_2()
                     .child(div().flex_1().text_sm().child(t!("settings.language")))
-                    .children(language_buttons),
+                    .child(
+                        // A fixed width, so the trigger and the menu line up and
+                        // the whole of it is the clickable control.
+                        div().w(px(160.)).flex_shrink_0().child(
+                            Select::new(&self.language_select)
+                                .id("settings-language-select")
+                                .small()
+                                .accessibility_label(t!("settings.language").to_string())
+                                .menu_width(px(160.)),
+                        ),
+                    ),
             )
             .child(self.awake_row(colors, cx))
             .into_any_element()

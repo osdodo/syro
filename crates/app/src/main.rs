@@ -2674,8 +2674,9 @@ impl Workspace {
                 .bg(dialog_background(cx))
                 // No scrim: the form is a panel over the window rather than an
                 // alert over it, and the window behind it is what the
-                // transparency setting was asked for. Escape and `Done` are the
-                // ways out — the dimmed area was also the click-away target.
+                // transparency setting was asked for. Every change lands as it is
+                // made, so the title bar's close button and Escape are the ways
+                // out — the dimmed area was also the click-away target.
                 .overlay(false)
                 .content(move |content, _, _| content.child(form.clone()))
         });
@@ -9192,45 +9193,38 @@ mod window_tests {
         );
     }
 
-    /// The appearance is applied where it is picked, and the form comes back
-    /// showing what is set.
+    /// The appearance is a dropdown, and picking a palette lands as the theme.
     #[gpui_kit::test]
     fn the_appearance_setting_changes_the_theme(cx: &mut TestAppContext) {
         let fixture = open(cx, "settings-appearance");
         let before = cx.update(|cx| gpui_kit::base::Theme::global(cx).appearance);
-        open_settings(cx, &fixture);
-        let (dark, light) = ("settings-appearance-dark", "settings-appearance-light");
-        // Pick the one it is not, so the assertion is about the click rather
-        // than about the start-up value.
-        let pick = if before == gpui_kit::base::ThemeAppearance::Dark {
-            light
+        open_settings_tab(cx, &fixture, "settings-tab-appearance");
+
+        // Pick the one it is not, so the assertion is about the pick rather than
+        // about the start-up value. The picker opens on "follow the system", so
+        // Light is the next row and Dark the one after it.
+        let (wanted, rows) = if before == gpui_kit::base::ThemeAppearance::Dark {
+            (gpui_kit::base::ThemeAppearance::Light, 1)
         } else {
-            dark
+            (gpui_kit::base::ThemeAppearance::Dark, 2)
         };
-        // Clicked until it changes rather than once: a synthetic click is
-        // occasionally dropped, and the assertion is about the wiring from the
-        // form to the theme.
-        let wanted = if pick == dark {
-            gpui_kit::base::ThemeAppearance::Dark
-        } else {
-            gpui_kit::base::ThemeAppearance::Light
-        };
+
+        click_visible(cx, &fixture, "settings-appearance-select");
+        draw(cx, &fixture);
+        for _ in 0..rows {
+            press(cx, &fixture, "down");
+        }
+        press(cx, &fixture, "enter");
+
         assert!(
-            click_until(cx, &fixture, pick.to_string(), move |cx| cx.update(|cx| {
+            draw_until(cx, &fixture, move |cx| cx.update(|cx| {
                 gpui_kit::base::Theme::global(cx).appearance == wanted
             })),
             "the appearance did not change"
         );
         let after = cx.update(|cx| gpui_kit::base::Theme::global(cx).appearance);
         assert_ne!(before, after, "the appearance did not change");
-        assert_eq!(
-            after,
-            if pick == dark {
-                gpui_kit::base::ThemeAppearance::Dark
-            } else {
-                gpui_kit::base::ThemeAppearance::Light
-            }
-        );
+        assert_eq!(after, wanted);
     }
 
     /// The blur is a slider on the same tab, and it lands in the state and in the
@@ -9240,7 +9234,7 @@ mod window_tests {
     #[gpui_kit::test]
     fn the_blur_setting_reaches_the_state(cx: &mut TestAppContext) {
         let fixture = open(cx, "settings-blur");
-        open_settings(cx, &fixture);
+        open_settings_tab(cx, &fixture, "settings-tab-appearance");
 
         assert!(
             found(cx, &fixture, "settings-blur"),
@@ -9290,7 +9284,7 @@ mod window_tests {
     #[gpui_kit::test]
     fn the_transparency_slider_reaches_the_window(cx: &mut TestAppContext) {
         let fixture = open(cx, "settings-opacity");
-        open_settings(cx, &fixture);
+        open_settings_tab(cx, &fixture, "settings-tab-appearance");
         let state = fixture.state.clone();
 
         // The far end of the track is the most transparent a window goes.
@@ -9485,18 +9479,19 @@ mod window_tests {
     }
 
     /// The form is a column of tabs and the rows of the one selected: every
-    /// setting is in one of them, and picking a tab swaps them.
+    /// setting is in one of them, and picking a tab swaps them. It opens on the
+    /// general settings, the everyday ones.
     #[gpui_kit::test]
     fn the_settings_tabs_hold_the_rows_they_name(cx: &mut TestAppContext) {
         let fixture = open(cx, "settings-tabs");
         open_settings(cx, &fixture);
 
-        // It opens on the appearance rows, and the other tabs' rows are not
-        // drawn: a form is one category at a time.
-        assert!(found(cx, &fixture, "settings-opacity-slider"));
-        assert!(found(cx, &fixture, "settings-appearance-dark"));
+        // It opens on the general rows, and the other tabs' rows are not drawn: a
+        // form is one category at a time.
+        assert!(found(cx, &fixture, "settings-language"));
+        assert!(found(cx, &fixture, "settings-computer-awake"));
         assert!(!found(cx, &fixture, "settings-font-plus"));
-        assert!(!found(cx, &fixture, "settings-language-system"));
+        assert!(!found(cx, &fixture, "settings-opacity-slider"));
 
         click_visible(cx, &fixture, "settings-tab-terminal");
         assert!(
@@ -9504,18 +9499,54 @@ mod window_tests {
             "the terminal tab showed no rows"
         );
         assert!(found(cx, &fixture, "settings-scrollback-plus"));
-        assert!(!found(cx, &fixture, "settings-opacity-slider"));
+        assert!(!found(cx, &fixture, "settings-computer-awake"));
 
-        click_visible(cx, &fixture, "settings-tab-general");
+        click_visible(cx, &fixture, "settings-tab-appearance");
         assert!(
             draw_until(cx, &fixture, |cx| found(
                 cx,
                 &fixture,
-                "settings-language-system"
+                "settings-opacity-slider"
             )),
-            "the general tab showed no rows"
+            "the appearance tab showed no rows"
         );
+        assert!(found(cx, &fixture, "settings-appearance-select"));
         assert!(!found(cx, &fixture, "settings-font-plus"));
+    }
+
+    /// The language is a dropdown on the general tab, and picking one lands in the
+    /// state and in the file the state is written to.
+    #[gpui_kit::test]
+    fn the_language_setting_is_a_dropdown_that_reaches_the_state(cx: &mut TestAppContext) {
+        let fixture = open(cx, "settings-language");
+        open_settings(cx, &fixture);
+
+        assert!(
+            found(cx, &fixture, "settings-language-select"),
+            "the general tab has no language picker"
+        );
+
+        // Open it and take the next language after the one in effect, through the
+        // keyboard the list already answers to.
+        click_visible(cx, &fixture, "settings-language-select");
+        draw(cx, &fixture);
+        press(cx, &fixture, "down");
+        press(cx, &fixture, "enter");
+
+        let state = fixture.state.clone();
+        assert!(
+            draw_until(cx, &fixture, |cx| cx.update(|cx| state
+                .read(cx)
+                .settings()
+                .language
+                .is_some())),
+            "the picker's choice did not reach the state"
+        );
+        let written = std::fs::read_to_string(&fixture.settings_path).unwrap();
+        assert!(
+            written.contains("language"),
+            "the language never reached the file: {written}"
+        );
     }
 
     /// The scrollback moves in the form, and lands in the state — which is where a terminal's spec
