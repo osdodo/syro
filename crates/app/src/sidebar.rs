@@ -604,6 +604,7 @@ impl Sidebar {
             // Washes of the text colour rather than of a token: a dark palette
             // has one grey for every surface, so a hover has to be built from
             // the two ends of the scale to stay visible in both themes.
+            .bg(colors.foreground.alpha(0.03))
             .when(active, |el| el.bg(colors.foreground.alpha(0.08)))
             .hover(|el| el.bg(colors.foreground.alpha(0.04)))
             .child(

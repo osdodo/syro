@@ -151,11 +151,6 @@ fn set_blur_radius(window: &Window, radius: u32) {
     }
 }
 
-/// An opaque surface for content that replaces a pane, such as the git graph.
-pub fn solid(color: Hsla) -> Hsla {
-    Hsla { a: 1., ..color }
-}
-
 /// Floating surfaces share the window's native blur, with a tint floor for readable text.
 // shortcut: GPUI has no per-element backdrop blur; this frosts the desktop, not app content.
 pub fn popup_surface(color: Hsla) -> Hsla {
@@ -1243,31 +1238,10 @@ mod tests {
     use super::{
         MAX_BLUR, MAX_FONT_SIZE, MAX_OPACITY, MAX_SCROLLBACK, MAX_TRANSPARENCY, MIN_FONT_SIZE,
         MIN_OPACITY, MIN_SCROLLBACK, OPACITY_STEP, apply_opacity, clamp_font, clamp_opacity,
-        clamp_scrollback, is_transparent, line_ratio, opacity_at, popup_surface, solid,
-        transparency, window_background,
+        clamp_scrollback, is_transparent, line_ratio, opacity_at, popup_surface, transparency,
+        window_background,
     };
     use gpui_kit::WindowBackgroundAppearance;
-
-    /// A panel that has to be read is solid whatever the window's transparency
-    /// is: a page of controls, or a menu over a terminal, is not the place to
-    /// read the wallpaper through.
-    #[gpui_kit::test]
-    fn a_panel_that_has_to_be_read_is_solid(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
-        cx.update(|cx| apply_opacity(cx, 0.4, 0));
-
-        let (window, panel) = cx.update(|cx| {
-            (
-                gpui_kit::base::Theme::global(cx).tokens.colors.surface,
-                solid(gpui_kit::base::Theme::global(cx).tokens.colors.surface),
-            )
-        });
-        assert_eq!(window.a, 0.4, "the window itself is not see-through");
-        assert_eq!(panel.a, 1.0, "the panel is drawn see-through");
-        // The same colour, so the solid surface is still the theme's: only its
-        // alpha is taken back.
-        assert_eq!((panel.h, panel.s, panel.l), (window.h, window.s, window.l));
-    }
 
     #[test]
     fn floating_surfaces_keep_a_readable_tint() {

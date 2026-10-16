@@ -3110,7 +3110,9 @@ impl Render for Workspace {
             // not been resized yet — makes the pane area wider than the space it was given and
             // pushes the right sidebar out of the window, where nothing in it can be clicked.
             .min_w_0()
-            .child(self.tab_bar(cx, &colors));
+            .when(self.graph.is_none(), |column| {
+                column.child(self.tab_bar(cx, &colors))
+            });
 
         if let Some(at) = self.add_menu {
             column = column.child(self.add_menu_overlay(at, window, cx));
@@ -3139,7 +3141,10 @@ impl Render for Workspace {
             );
         }
 
-        column = column.child(self.body(cx));
+        // A transparent graph must not reveal the tabs and panes it replaces.
+        if self.graph.is_none() {
+            column = column.child(self.body(cx));
+        }
 
         // The graph, over the panes: every branch is what it draws, and a pane
         // is a column wide. The sidebars and the readout stay where they are —
@@ -3150,10 +3155,7 @@ impl Render for Workspace {
                 div()
                     .id("git-graph-overlay")
                     .test_support()
-                    // The window's own fill, opaque: the transparency setting is
-                    // for the window behind this, not for a page to be read
-                    // through it.
-                    .bg(settings_view::solid(colors.background))
+                    .bg(colors.background)
                     // Absolute, so its height is the pane area's — which is the
                     // height the rows inside it scroll in. A `flex_1` here would
                     // be a percentage of an auto-sized box, and the rows would be
@@ -6288,6 +6290,63 @@ mod window_tests {
             draw_until(cx, &fixture, |cx| !found(cx, &fixture, "git-graph-rows")),
             "escape did not close the graph"
         );
+    }
+
+    #[gpui_kit::test]
+    fn the_graph_respects_window_transparency(cx: &mut TestAppContext) {
+        let fixture = open(cx, "git-graph-opacity");
+        show_panel(cx, &fixture, "panel-git", Some(Panel::Git));
+        assert!(click_until(
+            cx,
+            &fixture,
+            "git-graph-open".to_string(),
+            |cx| found(cx, &fixture, "git-graph-rows")
+        ));
+
+        for opacity in [0.4, 1., 0.2] {
+            cx.update(|cx| crate::settings_view::apply_opacity(cx, opacity, 0));
+            draw(cx, &fixture);
+            let graph = bounds_of(cx, &fixture, "git-graph-overlay");
+            let color = cx.update(|cx| gpui_kit::base::Theme::global(cx).tokens.colors.background);
+            let expected = gpui_kit::solid_background(color);
+            let opaque = gpui_kit::solid_background(gpui_kit::Hsla { a: 1., ..color });
+            let fills = cx
+                .update_window(fixture.window.into(), |_, window, _| {
+                    let center = graph.center().scale(window.scale_factor());
+                    window
+                        .painted_quads()
+                        .iter()
+                        .filter(|quad| {
+                            quad.bounds.contains(&center)
+                                && (quad.background == expected || quad.background == opaque)
+                        })
+                        .map(|quad| quad.background)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap();
+            assert_eq!(
+                fills,
+                vec![expected; 2],
+                "the graph does not follow opacity {opacity}"
+            );
+            assert!(
+                !found(cx, &fixture, "pane"),
+                "the pane shows through the graph"
+            );
+            assert!(
+                !found(cx, &fixture, "tab-bar"),
+                "the tab bar shows through the graph"
+            );
+        }
+
+        assert!(click_until(
+            cx,
+            &fixture,
+            "git-graph-close".to_string(),
+            |cx| !found(cx, &fixture, "git-graph-overlay")
+        ));
+        assert!(found(cx, &fixture, "pane"));
+        assert!(found(cx, &fixture, "tab-bar"));
     }
 
     /// The branch a worktree has checked out is the one git will not delete — and
