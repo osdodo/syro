@@ -1322,8 +1322,8 @@ impl Workspace {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            // Solid at any window opacity, like every menu.
-            .bg(settings_view::solid(colors.surface))
+            .bg(settings_view::popup_surface(colors.surface))
+            .shadow_lg()
             .text_xs()
             .text_color(colors.foreground)
             .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
@@ -1385,7 +1385,8 @@ impl Workspace {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            .bg(settings_view::solid(colors.surface))
+            .bg(settings_view::popup_surface(colors.surface))
+            .shadow_lg()
             .text_xs()
             .text_color(colors.foreground)
             .child(
@@ -2709,12 +2710,12 @@ impl Workspace {
         let form = cx.new(|cx| settings_view::SettingsView::new(state, window, cx));
         // Roomier than a dialog's default, which is the point of this one: two
         // panes side by side, and a page of controls to read.
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_dialog(cx, move |dialog, window, cx| {
             let form = form.clone();
             dialog
                 .title(t!("dialog.settings"))
-                .w(px(760.))
-                .h(px(540.))
+                .w(px(920.))
+                .h((window.viewport_size().height - px(96.)).clamp(px(320.), px(680.)))
                 .bg(dialog_background(cx))
                 // No scrim: the form is a panel over the window rather than an
                 // alert over it, and the window behind it is what the
@@ -2722,7 +2723,9 @@ impl Workspace {
                 // made, so the title bar's close button and Escape are the ways
                 // out — the dimmed area was also the click-away target.
                 .overlay(false)
-                .content(move |content, _, _| content.child(form.clone()))
+                .content(move |content, _, _| {
+                    content.min_h_0().overflow_hidden().child(form.clone())
+                })
         });
     }
 
@@ -3084,6 +3087,7 @@ impl Render for Workspace {
         let colors = Theme::global(cx).tokens.colors.clone();
         let mut column = div()
             .id("workspace-body")
+            .test_support()
             .v_flex()
             .relative()
             .flex_1()
@@ -3157,10 +3161,7 @@ impl Render for Workspace {
             .id("workspace")
             .size_full()
             .v_flex()
-            // The app's own fill under everything, so that a translucent window
-            // is translucent evenly: a region nothing paints is a hole the
-            // desktop shows through at full strength.
-            .bg(colors.background)
+            // GPUI's Root already paints the window background; another fill breaks transparency.
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::handle_workspace_key))
             .on_action(cx.listener(Self::handle_add_project))
@@ -3291,13 +3292,7 @@ fn message(text: String, colors: &ColorTokens) -> AnyElement {
         .into_any_element()
 }
 
-/// The surface a dialog is painted on — every dialog this app opens, the
-/// confirmation alert included: the app's own background with the window's
-/// transparency taken back off it.
-///
-/// A dialog is a page to read, and the window behind it is what the transparency
-/// setting is for — a form read through its own scrim is a form nobody can read.
-/// The same call every menu makes with [`settings_view::solid`].
+/// Dialogs and confirmation alerts use the same readable glass tint as menus.
 ///
 /// A dialog gpui-kit opens with a builder of its own — `open_alert_dialog` — is
 /// painted on the theme's background instead, and has to be given this by hand.
@@ -3305,7 +3300,7 @@ fn message(text: String, colors: &ColorTokens) -> AnyElement {
 /// Called inside the dialog's builder, which runs every frame: a colour taken
 /// once when the dialog opened stays the old theme's after an appearance switch.
 fn dialog_background(cx: &App) -> Hsla {
-    settings_view::solid(Theme::global(cx).tokens.colors.background)
+    settings_view::popup_surface(Theme::global(cx).tokens.colors.background)
 }
 
 /// The past session a saved terminal named, ready to re-enter: its id, with the
@@ -7914,6 +7909,22 @@ mod window_tests {
             "the search did not list everything"
         );
 
+        let first = bounds_of(cx, &fixture, "palette-item-0");
+        let second = bounds_of(cx, &fixture, "palette-item-1");
+        let input = bounds_of(cx, &fixture, "palette-input");
+        assert!(
+            first.size.height >= px(48.),
+            "the two-line row is cramped: {first:?}"
+        );
+        assert!(
+            second.origin.y >= first.bottom() + px(3.),
+            "search rows touch"
+        );
+        assert!(
+            first.origin.y >= input.bottom() + px(8.),
+            "the input crowds the results"
+        );
+
         // The session's title finds it, and Enter resumes it.
         type_text(cx, &fixture, "carry on");
         draw(cx, &fixture);
@@ -9285,6 +9296,10 @@ mod window_tests {
         let viewport = bounds_of(cx, &fixture, "usage-viewport");
         let body = bounds_of(cx, &fixture, "usage-body");
         assert!(
+            panel.right() - viewport.right() <= px(2.),
+            "the scrollbar viewport is inset from the right edge: {viewport:?}, {panel:?}"
+        );
+        assert!(
             viewport.origin.y + viewport.size.height <= panel.origin.y + panel.size.height,
             "the scroller is not inside the panel: {viewport:?}, {panel:?}"
         );
@@ -9334,12 +9349,15 @@ mod window_tests {
                 "{what} runs into the days chart: {top:?}, {days:?}"
             );
         }
-        // A row is one line, and the name in it is not cut: the figures beside the name
-        // are fixed columns, and the name takes what is left of the row.
+        assert!(
+            share.origin.y >= days.bottom() + px(12.),
+            "the charts are cramped"
+        );
+        // Names shrink before the fixed numeric columns; the full value stays accessible.
         let row = bounds_of(cx, &fixture, "usage-legend-deepseek-v4.1-flash");
         assert!(
-            row.size.width >= viewport.size.width,
-            "the legend does not fill the panel: {row:?}, {viewport:?}"
+            (row.size.width - days.size.width).as_f32().abs() < 1.,
+            "the legend does not align with the chart: {row:?}, {days:?}"
         );
         let name: gpui_kit::SharedString = "deepseek-v4.1-flash".into();
         let whole = cx
@@ -9356,6 +9374,15 @@ mod window_tests {
             "the legend cut its longest name: {row:?}, which needs {whole:?}"
         );
         assert!(row.size.height < px(24.), "the legend row wrapped: {row:?}");
+        let model = bounds_of(cx, &fixture, "usage-model-deepseek-v4.1-flash");
+        assert!(
+            model.size.width > px(0.) && model.right() < row.right() - px(140.),
+            "the model name crowds the numbers: {model:?}, {row:?}"
+        );
+        assert!(
+            label(cx, &fixture, "usage-legend-deepseek-v4.1-flash")
+                .is_some_and(|label| label.starts_with("deepseek-v4.1-flash:"))
+        );
 
         // Escape closes it, and the chip opens it again: the strip's own flag has to
         // agree with the panel, or the chip stops answering.
@@ -9593,6 +9620,40 @@ mod window_tests {
         assert!(slide_to(cx, 0., 0), "the blur could not be turned off");
     }
 
+    #[gpui_kit::test]
+    fn transparency_is_calibrated_to_the_painted_background_layers(cx: &mut TestAppContext) {
+        let fixture = open(cx, "opacity-layers");
+        for percent in [10_f32, 25., 50., 75., 90.] {
+            let opacity = 1. - (percent / 100.).sqrt();
+            cx.update(|cx| crate::settings_view::apply_opacity(cx, opacity, 0));
+            draw(cx, &fixture);
+            let pane = bounds_of(cx, &fixture, "workspace-body");
+            let color = cx.update(|cx| gpui_kit::base::Theme::global(cx).tokens.colors.background);
+            let layers = cx
+                .update_window(fixture.window.into(), |_, window, _| {
+                    let center = pane.center().scale(window.scale_factor());
+                    window
+                        .painted_quads()
+                        .iter()
+                        .filter(|quad| {
+                            quad.bounds.contains(&center)
+                                && quad.background == gpui_kit::solid_background(color)
+                        })
+                        .count()
+                })
+                .unwrap();
+            assert_eq!(
+                layers, 2,
+                "extra background fills distort the slider at {percent}%"
+            );
+            let actual = (1. - opacity).powi(layers as i32) * 100.;
+            assert!(
+                (actual - percent).abs() < 0.01,
+                "{percent}% on the slider only passes {actual}% of the desktop"
+            );
+        }
+    }
+
     /// The transparency is a slider, and it reaches the fills rather than stopping at the state: each
     /// one is drawn at the setting's alpha, which is what lets the desktop through the whole UI. The
     /// text is not one of them: a faded glyph is what this is for.
@@ -9739,17 +9800,16 @@ mod window_tests {
     }
 
     /// The form is a roomy two-pane dialog: the tabs and the rows of the selected one, filling a
-    /// surface big enough to read them on. Solid, too — the transparency setting has to stop at
-    /// this dialog, or what is behind the window runs under every row of it.
+    /// surface big enough to read them on.
     #[gpui_kit::test]
-    fn the_settings_form_is_a_roomy_solid_dialog(cx: &mut TestAppContext) {
+    fn the_settings_form_is_a_roomy_dialog(cx: &mut TestAppContext) {
         let fixture = open(cx, "settings-roomy");
         open_settings(cx, &fixture);
         draw(cx, &fixture);
 
         let form = bounds_of(cx, &fixture, "settings");
         assert!(
-            form.size.width > px(680.),
+            form.size.width > px(840.),
             "the form is not as wide as the dialog it is in: {form:?}"
         );
         assert!(
@@ -9767,13 +9827,54 @@ mod window_tests {
             (tabs.size.height - rows.size.height).as_f32().abs() < 1.,
             "the two panes are not the same height: {tabs:?}, {rows:?}"
         );
+        assert!(
+            rows.origin.x - tabs.right() >= px(20.),
+            "the settings panes are cramped"
+        );
+        let language = bounds_of(cx, &fixture, "settings-language");
+        let command = bounds_of(cx, &fixture, "settings-commit-message");
+        assert!(
+            language.size.height >= px(44.),
+            "the control row is cramped"
+        );
+        assert!(
+            command.origin.y >= language.bottom() + px(8.),
+            "settings sections touch"
+        );
     }
 
-    /// Every dialog is painted on the same solid surface, whatever the window's
-    /// transparency is: the window behind it is what the setting is for, and a
-    /// form read through the wallpaper is a form nobody can read.
     #[gpui_kit::test]
-    fn a_dialog_is_solid_at_any_window_opacity(cx: &mut TestAppContext) {
+    fn settings_content_scrolls_without_moving_the_categories(cx: &mut TestAppContext) {
+        let fixture = open(cx, "settings-scroll");
+        open_settings(cx, &fixture);
+        draw(cx, &fixture);
+        cx.simulate_window_resize(fixture.window.into(), size(px(1000.), px(440.)));
+        draw(cx, &fixture);
+        let viewport = bounds_of(cx, &fixture, "settings-rows");
+        let content = bounds_of(cx, &fixture, "settings-content");
+        let tabs = bounds_of(cx, &fixture, "settings-tabs");
+        assert!(
+            content.size.height > viewport.size.height,
+            "settings content is clipped rather than scrollable: {content:?}, {viewport:?}"
+        );
+        let before = bounds_of(cx, &fixture, "settings-language").origin.y;
+        cx.update_window(fixture.window.into(), |_, window, cx| {
+            window.scroll(
+                "settings-language",
+                ScrollDelta::Lines(Point { x: 0., y: -40. }),
+                cx,
+            );
+        })
+        .unwrap();
+        draw(cx, &fixture);
+        let after = bounds_of(cx, &fixture, "settings-language").origin.y;
+        assert!(before - after > px(20.), "the settings body did not scroll");
+        assert_eq!(tabs.origin, bounds_of(cx, &fixture, "settings-tabs").origin);
+    }
+
+    /// Dialogs use a readable translucent tint when window transparency is enabled.
+    #[gpui_kit::test]
+    fn a_dialog_follows_window_transparency(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         cx.update(|cx| crate::settings_view::apply_opacity(cx, 0.4, 0));
 
@@ -9784,9 +9885,8 @@ mod window_tests {
             )
         });
         assert_eq!(window.a, 0.4, "the window itself is not see-through");
-        assert_eq!(dialog.a, 1.0, "the dialog is drawn see-through");
-        // The same colour, so an opaque dialog is still the theme's: only its
-        // alpha is taken back off it.
+        assert_eq!(dialog.a, 0.94, "the dialog has no readable glass tint");
+        // Only alpha changes; the glass tint keeps the active theme's colour.
         assert_eq!(
             (dialog.h, dialog.s, dialog.l),
             (window.h, window.s, window.l)
@@ -9800,6 +9900,16 @@ mod window_tests {
     fn the_settings_tabs_hold_the_rows_they_name(cx: &mut TestAppContext) {
         let fixture = open(cx, "settings-tabs");
         open_settings(cx, &fixture);
+        let assert_stacked = |cx: &mut TestAppContext, label: &str, control: &str| {
+            let label = bounds_of(cx, &fixture, label);
+            let control = bounds_of(cx, &fixture, control);
+            assert!(
+                control.origin.y >= label.bottom() + px(6.),
+                "the control is not spaced below its label: {label:?}, {control:?}"
+            );
+        };
+        draw(cx, &fixture);
+        assert_stacked(cx, "settings-language-label", "settings-language-select");
 
         // It opens on the general rows, and the other tabs' rows are not drawn: a
         // form is one category at a time.
@@ -9814,6 +9924,8 @@ mod window_tests {
             "the terminal tab showed no rows"
         );
         assert!(found(cx, &fixture, "settings-scrollback-plus"));
+        assert_stacked(cx, "settings-font-label", "settings-font-plus");
+        assert_stacked(cx, "settings-scrollback-label", "settings-scrollback-plus");
         assert!(!found(cx, &fixture, "settings-computer-awake"));
 
         click_visible(cx, &fixture, "settings-tab-appearance");
@@ -9826,6 +9938,13 @@ mod window_tests {
             "the appearance tab showed no rows"
         );
         assert!(found(cx, &fixture, "settings-appearance-select"));
+        assert_stacked(
+            cx,
+            "settings-appearance-label",
+            "settings-appearance-select",
+        );
+        assert_stacked(cx, "settings-opacity-label", "settings-opacity-slider");
+        assert_stacked(cx, "settings-blur-label", "settings-blur-slider");
         assert!(!found(cx, &fixture, "settings-font-plus"));
     }
 

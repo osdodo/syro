@@ -36,15 +36,15 @@ const BAR_HEIGHT: f32 = 24.;
 /// The panel's own measurements: its padding, the headline at the top of its body,
 /// the gap between any two of its rows, and how far it stands off the window's
 /// trailing edge — close to it, but not against it.
-const PANEL_PADDING: f32 = 16.;
-const PANEL_HEADLINE: f32 = 52.;
-const PANEL_GAP: f32 = 12.;
+const PANEL_PADDING: f32 = 20.;
+const PANEL_HEADLINE: f32 = 72.;
+const PANEL_GAP: f32 = 16.;
 const PANEL_INSET: f32 = 16.;
 
 /// One legend row, and the heading above the first of them: the only part of the panel
 /// that grows with the data, and so the only part its height is worked out from.
 const LEGEND_ROW: f32 = 28.;
-const LEGEND_HEAD: f32 = 28.;
+const LEGEND_HEAD: f32 = 44.;
 
 /// How far the panel's foot stands above the window's own bottom edge: the status strip
 /// plus the clearance the panel keeps over it, so the two do not read as one bar.
@@ -543,22 +543,28 @@ fn usage_panel(
     // What the body has to scroll within: the panel less its own padding.
     let body_height = (height - px(PANEL_PADDING * 2.)).max(px(120.));
 
-    let headline = |label: String, totals: &syro_core::session::Usage| {
-        div()
-            .v_flex()
-            .gap_0p5()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(colors.muted_foreground)
-                    .child(SharedString::from(label)),
-            )
-            .child(div().text_lg().child(SharedString::from(format!(
-                "{} tok · ${:.2}",
-                format_tokens(totals.tokens),
-                totals.cost
-            ))))
-    };
+    let headline =
+        |label: String, totals: &syro_core::session::Usage| {
+            div()
+                .v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    div()
+                        .text_lg()
+                        .child(SharedString::from(format!("${:.2}", totals.cost))),
+                )
+                .child(div().text_xs().text_color(colors.muted_foreground).child(
+                    SharedString::from(format!("{} tok", format_tokens(totals.tokens))),
+                ))
+        };
 
     // Before the first sweep there is nothing to chart, and a chart of no data is
     // either a blank box or a division by zero: the panel says so instead.
@@ -566,6 +572,16 @@ fn usage_panel(
         return div()
             .id("usage-panel")
             .test_support()
+            .occlude()
+            .w(width)
+            .p(px(PANEL_PADDING))
+            .rounded_lg()
+            .border_1()
+            .border_color(colors.border)
+            .bg(crate::settings_view::popup_surface(colors.surface))
+            .shadow_lg()
+            .text_sm()
+            .text_color(colors.muted_foreground)
             .child(SharedString::from(
                 t!("resource.usage_measuring").to_string(),
             ))
@@ -623,8 +639,7 @@ fn usage_panel(
     div()
         .id("usage-panel")
         .test_support()
-        // Solid at any window opacity, so the charts are read on their own surface —
-        // and occluding, so a click anywhere on the card is the card's and not a click
+        // A readable glass tint, and occluding so a click on the card is not a click
         // on the scrim behind it, which would close the panel out from under the
         // pointer. The scrim is only what the *window* behind the panel falls through
         // to.
@@ -632,11 +647,12 @@ fn usage_panel(
         .v_flex()
         .w(width)
         .h(height)
-        .p(px(PANEL_PADDING))
+        .py(px(PANEL_PADDING))
         .rounded_lg()
         .border_1()
         .border_color(colors.border)
-        .bg(crate::settings_view::solid(colors.surface))
+        .bg(crate::settings_view::popup_surface(colors.surface))
+        .shadow_lg()
         .child(
             // A column, scrolled: the panel is a tall strip down the window's side, and
             // the list of models is what runs past the bottom of it. The box the scroller
@@ -662,6 +678,9 @@ fn usage_panel(
                             div()
                                 .id("usage-body")
                                 .test_support()
+                                .w_full()
+                                .px(px(PANEL_PADDING))
+                                .pb_1()
                                 // No shrinking: the content is what it is, and the
                                 // scroller around it is what gives way.
                                 .flex_shrink_0()
@@ -671,7 +690,8 @@ fn usage_panel(
                                     div()
                                         .h_flex()
                                         .flex_shrink_0()
-                                        .gap_6()
+                                        .min_h(px(PANEL_HEADLINE))
+                                        .gap_4()
                                         .child(headline(
                                             t!("resource.usage_window", days = USAGE_DAYS)
                                                 .to_string(),
@@ -770,15 +790,13 @@ fn model_hue(index: usize) -> f32 {
     MODEL_HUES[index % MODEL_HUES.len()] / 360.
 }
 
-/// The legend: every provider with its colour, what it spent, and its share. A grid
-/// rather than a row of columns, so each column is as wide as its widest value and a
-/// long host name is printed whole.
+/// Fixed numeric columns keep amounts aligned; long model names truncate before them.
 fn legend(shares: &[Share], max_height: Pixels, colors: &ColorTokens) -> AnyElement {
     let mut rows = div()
         .id("usage-legend")
         .test_support()
         .v_flex()
-        .gap_2()
+        .gap_1p5()
         .w_full()
         .flex_shrink_0()
         .max_h(max_height)
@@ -796,7 +814,15 @@ fn legend(shares: &[Share], max_height: Pixels, colors: &ColorTokens) -> AnyElem
             div()
                 .id(SharedString::from(format!("usage-legend-{}", share.label)))
                 .test_support()
+                .aria_label(SharedString::from(format!(
+                    "{}: {} tok · ${:.2} · {:.0}%",
+                    share.label,
+                    format_tokens(share.tokens),
+                    share.cost,
+                    share.percent
+                )))
                 .h_flex()
+                .min_h(px(22.))
                 .flex_shrink_0()
                 .items_center()
                 .gap_2()
@@ -810,7 +836,16 @@ fn legend(shares: &[Share], max_height: Pixels, colors: &ColorTokens) -> AnyElem
                 )
                 // The name takes the slack, so the figures beside it end at the panel's
                 // own edge rather than leaving a hand's width of nothing.
-                .child(div().flex_1().child(share.label.clone()))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("usage-model-{}", share.label)))
+                        .test_support()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(colors.foreground)
+                        .child(share.label.clone()),
+                )
                 .child(number(
                     LEGEND_TOKENS,
                     format!("{} tok", format_tokens(share.tokens)),
@@ -827,6 +862,10 @@ fn legend(shares: &[Share], max_height: Pixels, colors: &ColorTokens) -> AnyElem
         .max_h(max_height)
         .child(
             div()
+                .pt_3()
+                .pb_2()
+                .border_t_1()
+                .border_color(colors.border)
                 .text_xs()
                 .text_color(colors.muted_foreground)
                 .child(SharedString::from(t!("resource.usage_share").to_string())),

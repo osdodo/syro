@@ -553,9 +553,9 @@ impl Sidebar {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            // Solid at any window opacity, like every menu: a list of entries
-            // over the wallpaper is not the place to read it through.
-            .bg(crate::settings_view::solid(colors.surface))
+            // A readable tint over the window's native blur.
+            .bg(crate::settings_view::popup_surface(colors.surface))
+            .shadow_lg()
             // The whole panel is the menu, padding and the few pixels between
             // two entries included: a click there is a click on the menu, not on
             // the row it happens to be drawn over.
@@ -631,7 +631,7 @@ impl Sidebar {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            .bg(crate::settings_view::solid(colors.surface))
+            .bg(crate::settings_view::popup_surface(colors.surface))
             .shadow_lg()
             .occlude()
             .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());

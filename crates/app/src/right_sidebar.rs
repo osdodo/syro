@@ -6,6 +6,89 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
 
+/// A turn acknowledges a refresh even when its result is unchanged.
+pub fn refresh_icon(generation: u64, scanning: bool) -> AnyElement {
+    let icon = Icon::new(IconName::RefreshCw).size(px(14.));
+    if generation == 0 && !scanning {
+        return icon.into_any_element();
+    }
+    let animation = Animation::new(std::time::Duration::from_millis(600));
+    icon.with_animation(
+        ("refresh-turn", generation),
+        if scanning {
+            animation.repeat()
+        } else {
+            animation
+        },
+        |icon, delta| icon.rotate(radians(delta * std::f32::consts::TAU)),
+    )
+    .into_any_element()
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::{Context, IntoElement, ParentElement, Render, Window, div, refresh_icon};
+    use gpui_kit::{AppContext as _, TestAppContext, px, size};
+
+    struct RefreshHost {
+        generation: u64,
+        scanning: bool,
+    }
+
+    impl Render for RefreshHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().child(refresh_icon(self.generation, self.scanning))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn refresh_feedback_animates_then_stops(cx: &mut TestAppContext) {
+        let window = cx.open_window(size(px(100.), px(100.)), |_, _| RefreshHost {
+            generation: 0,
+            scanning: false,
+        });
+        let draw = |cx: &mut TestAppContext| {
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+                .unwrap();
+        };
+        let next = |cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.simulate_next_frame(cx)
+            })
+            .unwrap()
+        };
+        draw(cx);
+        assert_eq!(next(cx), 0);
+        window
+            .update(cx, |host, _, cx| {
+                host.generation = 1;
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx);
+        assert!(next(cx) > 0);
+        // One-shot GPUI animations use wall-clock time, not the executor's test clock.
+        std::thread::sleep(std::time::Duration::from_millis(650));
+        draw(cx);
+        next(cx);
+        draw(cx);
+        assert_eq!(next(cx), 0);
+        window
+            .update(cx, |host, _, cx| {
+                host.generation = 2;
+                host.scanning = true;
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx);
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_secs(2));
+        draw(cx);
+        assert!(next(cx) > 0);
+    }
+}
+
 /// How wide the sidebar is before anyone drags it.
 pub const WIDTH: f32 = 260.;
 pub const MIN_WIDTH: f32 = 160.;

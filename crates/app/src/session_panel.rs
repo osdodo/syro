@@ -68,6 +68,7 @@ pub struct SessionPanel {
     chosen: BTreeSet<String>,
     /// The running scan. Held so that a second one replaces the first.
     _scan: Option<Task<()>>,
+    refresh_generation: u64,
     /// What makes the panel redraw when the state moves under it: the list is the repository
     /// on screen, and a worktree that arrives or is removed changes which sessions
     /// belong to it.
@@ -97,6 +98,7 @@ impl SessionPanel {
             picking: false,
             chosen: BTreeSet::new(),
             _scan: None,
+            refresh_generation: 0,
             _events: events,
         }
     }
@@ -158,6 +160,7 @@ impl SessionPanel {
             .ok();
         });
         self._scan = Some(task);
+        cx.notify();
     }
 
     /// The groups to draw: what the repository on screen and the query keep, grouped by working
@@ -656,8 +659,16 @@ impl Render for SessionPanel {
                             .cursor_pointer()
                             .text_color(colors.muted_foreground)
                             .hover(|el| el.bg(colors.muted))
-                            .child(Icon::new(IconName::RefreshCw).size(px(14.)))
-                            .on_click(cx.listener(|this, _event, _window, cx| this.refresh(cx))),
+                            .child(crate::right_sidebar::refresh_icon(
+                                self.refresh_generation,
+                                self._scan.is_some(),
+                            ))
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                if this._scan.is_none() {
+                                    this.refresh_generation += 1;
+                                    this.refresh(cx);
+                                }
+                            })),
                     ),
             );
 
@@ -723,7 +734,12 @@ impl Render for SessionPanel {
                     .child(SharedString::from(summary)),
             )
             .when_some(self.input.clone(), |el, input| {
-                el.child(div().px_2().pb_1().child(Input::new(&input)))
+                el.child(
+                    div()
+                        .px_2()
+                        .pb_1()
+                        .child(Input::new(&input).focus_bordered(false)),
+                )
             })
             .child(body)
     }

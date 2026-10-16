@@ -323,7 +323,7 @@ impl Render for AddProject {
                         .id("add-project-value")
                         .test_support()
                         .w_full()
-                        .child(Input::new(&self.value)),
+                        .child(Input::new(&self.value).focus_bordered(false)),
                 )
                 .child(
                     div()
@@ -336,7 +336,7 @@ impl Render for AddProject {
                         .id("add-project-destination")
                         .test_support()
                         .w_full()
-                        .child(Input::new(&self.destination)),
+                        .child(Input::new(&self.destination).focus_bordered(false)),
                 )
                 .child(
                     div().h_flex().gap_2().justify_end().child(
@@ -808,7 +808,12 @@ impl Render for NewWorktree {
                     .v_flex()
                     .gap_1()
                     .w_full()
-                    .child(Input::new(&self.name).id("new-worktree-name").w_full())
+                    .child(
+                        Input::new(&self.name)
+                            .focus_bordered(false)
+                            .id("new-worktree-name")
+                            .w_full(),
+                    )
                     .child(
                         div()
                             .id("new-worktree-branch")
@@ -1106,10 +1111,11 @@ impl NewWorktree {
                             .child(t!("new_worktree.start_from")),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.base).id("new-worktree-base")),
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.base)
+                                .focus_bordered(false)
+                                .id("new-worktree-base"),
+                        ),
                     )
                     .child(
                         div()
@@ -2433,7 +2439,7 @@ impl SharedPaths {
                 div()
                     .id("shared-paths-input")
                     .test_support()
-                    .child(Input::new(&self.query).small()),
+                    .child(Input::new(&self.query).focus_bordered(false).small()),
             )
             .child(list)
             .into_any_element()

@@ -619,13 +619,15 @@ impl Palette {
             .id(SharedString::from(format!("palette-item-{position}")))
             .test_support()
             .aria_label(item.title.clone())
+            .aria_selected(selected)
             .h_flex()
             .items_center()
             .justify_between()
             .gap_3()
-            .px_2()
-            .py_1p5()
-            .rounded_sm()
+            .px_3()
+            .py_2()
+            .min_h(px(40.))
+            .rounded_md()
             .cursor_pointer()
             .when(selected, |el| el.bg(colors.muted))
             .hover(|el| el.bg(colors.muted))
@@ -637,20 +639,18 @@ impl Palette {
                 this.run_selected(window, cx);
             }));
 
-        // The name and the line beside it share one shrinking box: a long path
-        // is cut with an ellipsis rather than running under the group word on
-        // the right.
+        // Both lines shrink before the group badge, so long paths never cover it.
         let mut left = div()
-            .h_flex()
-            .items_center()
-            .gap_2()
+            .v_flex()
+            .gap_1()
             .flex_1()
             .min_w_0()
             .overflow_hidden()
             .child(
                 div()
-                    .text_xs()
+                    .text_sm()
                     .text_color(colors.foreground)
+                    .w_full()
                     .min_w_0()
                     .truncate()
                     .child(item.title.clone()),
@@ -660,6 +660,7 @@ impl Palette {
                 div()
                     .text_xs()
                     .text_color(colors.muted_foreground)
+                    .w_full()
                     .min_w_0()
                     .truncate()
                     .child(detail),
@@ -673,6 +674,10 @@ impl Palette {
                 div()
                     .text_xs()
                     .text_color(colors.muted_foreground)
+                    .px_2()
+                    .py_0p5()
+                    .rounded_sm()
+                    .bg(colors.muted)
                     .child(item.group.clone()),
             );
         }
@@ -699,10 +704,16 @@ impl Render for Palette {
         // footer: ~180 px), between a floor that still shows a few rows and the
         // height a roomy window gives it.
         let list_height = (window.viewport_size().height - px(180.))
-            .max(px(200.))
+            .max(px(80.))
             .min(px(620.));
 
-        let mut list = div().id("palette-list").v_flex().gap_0p5().w_full();
+        let mut list = div()
+            .id("palette-list")
+            .v_flex()
+            .gap_1()
+            .py_1()
+            .pr_1()
+            .w_full();
         for position in 0..drawn {
             let index = self.shown[position];
             list = list.child(self.row(position, index, cx));
@@ -715,7 +726,7 @@ impl Render for Palette {
                     .h_flex()
                     .items_center()
                     .justify_center()
-                    .py_6()
+                    .py_8()
                     .text_sm()
                     .text_color(colors.muted_foreground)
                     .child(self.kind.empty()),
@@ -744,8 +755,8 @@ impl Render for Palette {
             .justify_between()
             .gap_3()
             .w_full()
-            .px_2()
-            .pt_2()
+            .px_3()
+            .pt_3()
             .pb_1()
             .border_t_1()
             .border_color(colors.border)
@@ -783,7 +794,7 @@ impl Render for Palette {
             .id("palette")
             .test_support()
             .v_flex()
-            .gap_2()
+            .gap_3()
             .w_full()
             .child(click_away)
             // The keys are bound in this context (see `app_keymap`), because the
@@ -794,11 +805,10 @@ impl Render for Palette {
             .on_action(cx.listener(Self::handle_previous))
             .on_action(cx.listener(Self::handle_confirm))
             .child(
-                // The same xs the rows read at, over the component's own
-                // medium: `refine_style` lands after the input's size does.
                 Input::new(&self.query)
+                    .focus_bordered(false)
                     .id("palette-input")
-                    .text_xs()
+                    .text_sm()
                     .w_full(),
             )
             .child(

@@ -187,6 +187,7 @@ pub struct GitGraph {
     /// Whether something moved under the graph while it was up: a worktree
     /// removed from the sidebar is a branch this view is still drawing.
     stale: bool,
+    refresh_generation: u64,
     focus: FocusHandle,
     _task: Option<Task<()>>,
     /// Re-reads when the repository's worktrees move.
@@ -226,6 +227,7 @@ impl GitGraph {
             busy: false,
             menu: None,
             stale: false,
+            refresh_generation: 0,
             focus: cx.focus_handle(),
             _task: None,
             _events: events,
@@ -494,8 +496,14 @@ impl GitGraph {
             .cursor_pointer()
             .text_color(colors.muted_foreground)
             .hover(|el| el.bg(colors.muted))
-            .child(Icon::new(IconName::RefreshCw).size(px(14.)))
-            .on_click(cx.listener(|this, _event, _window, cx| this.refresh(cx)))
+            .child(crate::right_sidebar::refresh_icon(
+                self.refresh_generation,
+                false,
+            ))
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.refresh_generation += 1;
+                this.refresh(cx);
+            }))
             .into_any_element()
     }
 
@@ -836,8 +844,9 @@ impl GitGraph {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            // Solid at any window opacity, like every menu.
-            .bg(crate::settings_view::solid(colors.surface))
+            // A readable tint over the window's native blur.
+            .bg(crate::settings_view::popup_surface(colors.surface))
+            .shadow_lg()
             .text_xs()
             // The whole panel is the menu, its padding and the pixels between
             // two rows included: a click there is a click on the menu.

@@ -250,6 +250,7 @@ pub struct GitPanel {
     /// Whether a read has ever happened, so the empty state can say "reading"
     /// rather than "nothing".
     read: bool,
+    refresh_generation: u64,
     /// Whether something moved under the panel while it was not on screen.
     stale: bool,
     /// The panel's own focus, so a click that dispatches `diff::Open` — which
@@ -325,6 +326,7 @@ impl GitPanel {
             generated: None,
             error: None,
             read: false,
+            refresh_generation: 0,
             stale: false,
             focus: cx.focus_handle(),
             _task: None,
@@ -725,8 +727,14 @@ impl GitPanel {
             .cursor_pointer()
             .text_color(colors.muted_foreground)
             .hover(|el| el.bg(colors.muted))
-            .child(Icon::new(IconName::RefreshCw).size(px(14.)))
-            .on_click(cx.listener(|this, _event, _window, cx| this.refresh(cx)))
+            .child(crate::right_sidebar::refresh_icon(
+                self.refresh_generation,
+                false,
+            ))
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.refresh_generation += 1;
+                this.refresh(cx);
+            }))
             .into_any_element()
     }
 
@@ -852,8 +860,8 @@ impl GitPanel {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            // Solid at any window opacity, like every menu.
-            .bg(crate::settings_view::solid(colors.surface))
+            .bg(crate::settings_view::popup_surface(colors.surface))
+            .shadow_lg()
             .text_xs()
             // The whole panel is the menu, its padding and the pixels between
             // two rows included: a click there is a click on the menu.
@@ -912,8 +920,8 @@ impl GitPanel {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            // Solid at any window opacity, like every menu.
-            .bg(crate::settings_view::solid(colors.surface))
+            .bg(crate::settings_view::popup_surface(colors.surface))
+            .shadow_lg()
             .text_xs()
             // The whole panel is the menu, its padding and the pixels between
             // two rows included: a click there is a click on the menu.

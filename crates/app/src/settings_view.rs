@@ -5,6 +5,7 @@ use gpui_kit::base::{
 };
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::searchable_list::SearchableListItem;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
@@ -39,8 +40,8 @@ const SCROLLBACK_STEP: u32 = 1_000;
 /// The bounds a background opacity is kept inside: a window is solid at one end
 /// of the range and see-through at the other, which is the whole of what a
 /// transparency setting has to say. Nothing here has a floor, because the
-/// glyphs never carry the alpha and every panel that has to be read paints
-/// itself solid (see [`solid`]) — so a window at the far end is still usable.
+/// glyphs never carry the alpha and floating surfaces keep a readable tint
+/// (see [`popup_surface`]) — so a window at the far end is still usable.
 pub const MIN_OPACITY: f32 = 0.0;
 pub const MAX_OPACITY: f32 = 1.0;
 /// One step of the transparency slider, in percent.
@@ -49,7 +50,7 @@ const OPACITY_STEP: f32 = 5.;
 /// other.
 const MAX_TRANSPARENCY: f32 = 100.;
 /// How many fills the app paints over each other between a panel and the desktop:
-/// the workspace's own fill, and the panel on it. What is behind the window comes
+/// GPUI Root's fill, and the panel on it. What is behind the window comes
 /// through both as `(1 - alpha)²`, so the alpha a slider's percent asks for is not
 /// that percent — see [`opacity_at`].
 const TRANSPARENCY_FILLS: f32 = 2.;
@@ -150,16 +151,22 @@ fn set_blur_radius(window: &Window, radius: u32) {
     }
 }
 
-/// The same color with the window's transparency taken back off it: what a panel
-/// that has to be read is painted on — the settings form, and every menu that
-/// floats over a pane. The window is see-through by setting; a menu over a
-/// terminal is not the place to read the wallpaper through.
+/// An opaque surface for content that replaces a pane, such as the git graph.
 pub fn solid(color: Hsla) -> Hsla {
     Hsla { a: 1., ..color }
 }
 
+/// Floating surfaces share the window's native blur, with a tint floor for readable text.
+// shortcut: GPUI has no per-element backdrop blur; this frosts the desktop, not app content.
+pub fn popup_surface(color: Hsla) -> Hsla {
+    Hsla {
+        a: color.a.clamp(0.94, 1.),
+        ..color
+    }
+}
+
 /// Draw every surface of the app at `opacity`, so what is behind it shows
-/// through all of it — the solid panels and menus excepted (see [`solid`]) — and
+/// through all of it — floating surfaces keep a tint floor (see [`popup_surface`]) — and
 /// the glyphs stay opaque, because the alpha goes on the colors things are drawn
 /// *on* and never on the ones drawn *with*.
 ///
@@ -685,34 +692,41 @@ fn slider_row(
     div()
         .id(SharedString::from(format!("settings-{id}")))
         .test_support()
-        .h_flex()
-        .items_center()
-        .gap_3()
+        .v_flex()
+        .w_full()
+        .gap_2()
         .child(
             div()
-                .w(px(96.))
-                .flex_shrink_0()
+                .id(SharedString::from(format!("settings-{id}-label")))
+                .test_support()
                 .text_sm()
                 .child(SharedString::from(label.clone())),
         )
         .child(
             div()
-                .id(SharedString::from(format!("settings-{id}-slider")))
-                .test_support()
-                .flex_1()
-                .min_w_0()
-                .child(slider),
-        )
-        .child(
-            div()
-                .id(SharedString::from(format!("settings-{id}-value")))
-                .test_support()
-                .aria_label(SharedString::from(format!("{label}: {value}")))
-                .w(px(40.))
-                .flex_shrink_0()
-                .text_sm()
-                .text_color(colors.muted_foreground)
-                .child(SharedString::from(value)),
+                .h_flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .id(SharedString::from(format!("settings-{id}-slider")))
+                        .test_support()
+                        .flex_1()
+                        .min_w_0()
+                        .child(slider),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("settings-{id}-value")))
+                        .test_support()
+                        .aria_label(SharedString::from(format!("{label}: {value}")))
+                        .w(px(48.))
+                        .flex_shrink_0()
+                        .text_right()
+                        .text_sm()
+                        .text_color(colors.muted_foreground)
+                        .child(SharedString::from(value)),
+                ),
         )
         .into_any_element()
 }
@@ -729,11 +743,16 @@ fn stepper(
     div()
         .id(SharedString::from(format!("settings-{id}")))
         .test_support()
-        .h_flex()
-        .items_center()
-        .justify_between()
+        .v_flex()
+        .w_full()
         .gap_2()
-        .child(div().text_sm().child(SharedString::from(label.to_string())))
+        .child(
+            div()
+                .id(SharedString::from(format!("settings-{id}-label")))
+                .test_support()
+                .text_sm()
+                .child(SharedString::from(label.to_string())),
+        )
         .child(
             div()
                 .h_flex()
@@ -745,7 +764,8 @@ fn stepper(
                         .id(SharedString::from(format!("settings-{id}-value")))
                         .test_support()
                         .aria_label(SharedString::from(format!("{label}: {value}")))
-                        .min_w(px(72.))
+                        .min_w(px(96.))
+                        .text_center()
                         .text_sm()
                         .text_color(colors.muted_foreground)
                         .child(SharedString::from(value)),
@@ -763,9 +783,10 @@ impl Render for SettingsView {
             .id("settings-tabs")
             .test_support()
             .v_flex()
-            .w(px(140.))
+            .w(px(152.))
             .h_full()
-            .pr_2()
+            .pr_3()
+            .pt_1()
             .flex_shrink_0()
             .gap_1()
             // The seam between the tabs and the rows: one dialog, two panes.
@@ -782,9 +803,9 @@ impl Render for SettingsView {
                     .aria_selected(selected)
                     .h_flex()
                     .items_center()
-                    .h(px(32.))
-                    .px_2()
-                    .rounded_sm()
+                    .h(px(36.))
+                    .px_3()
+                    .rounded_md()
                     .cursor_pointer()
                     .text_sm()
                     // The selected tab is the one the form says it is: the same
@@ -827,7 +848,7 @@ impl Render for SettingsView {
                     .h_flex()
                     .flex_1()
                     .min_h_0()
-                    .gap_4()
+                    .gap_6()
                     .child(tabs)
                     .child(
                         // The rows scroll rather than clip: a category with more
@@ -838,9 +859,31 @@ impl Render for SettingsView {
                             .test_support()
                             .h_full()
                             .flex_1()
+                            .min_h_0()
                             .min_w_0()
-                            .overflow_y_scroll()
-                            .child(pane),
+                            .child(
+                                div().size_full().overflow_y_scrollbar().child(
+                                    div()
+                                        .id("settings-content")
+                                        .test_support()
+                                        .v_flex()
+                                        .w_full()
+                                        .flex_shrink_0()
+                                        .pr_3()
+                                        .pb_4()
+                                        .child(
+                                            div()
+                                                .mb_4()
+                                                .pt_2()
+                                                .pb_3()
+                                                .border_b_1()
+                                                .border_color(colors.border)
+                                                .text_lg()
+                                                .child(SharedString::from(self.category.label())),
+                                        )
+                                        .child(pane),
+                                ),
+                            ),
                     ),
             );
 
@@ -849,6 +892,10 @@ impl Render for SettingsView {
                 div()
                     .id("settings-error")
                     .test_support()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .bg(colors.muted)
                     .role(Role::Alert)
                     .aria_label(SharedString::from(error.clone()))
                     .text_xs()
@@ -875,15 +922,20 @@ impl SettingsView {
             .test_support()
             .v_flex()
             .w_full()
-            .gap_3()
+            .gap_6()
             .child(
                 div()
                     .id("settings-appearance")
                     .test_support()
-                    .h_flex()
-                    .items_center()
+                    .v_flex()
                     .gap_2()
-                    .child(div().flex_1().text_sm().child(t!("settings.appearance")))
+                    .child(
+                        div()
+                            .id("settings-appearance-label")
+                            .test_support()
+                            .text_sm()
+                            .child(t!("settings.appearance")),
+                    )
                     .child(
                         // The same fixed width as the language picker, so the two
                         // dropdowns line up.
@@ -954,7 +1006,7 @@ impl SettingsView {
             .test_support()
             .v_flex()
             .w_full()
-            .gap_3()
+            .gap_6()
             .child(stepper(
                 "font",
                 &t!("settings.font_size"),
@@ -990,15 +1042,20 @@ impl SettingsView {
             .test_support()
             .v_flex()
             .w_full()
-            .gap_3()
+            .gap_6()
             .child(
                 div()
                     .id("settings-language")
                     .test_support()
-                    .h_flex()
-                    .items_center()
+                    .v_flex()
                     .gap_2()
-                    .child(div().flex_1().text_sm().child(t!("settings.language")))
+                    .child(
+                        div()
+                            .id("settings-language-label")
+                            .test_support()
+                            .text_sm()
+                            .child(t!("settings.language")),
+                    )
                     .child(
                         // A fixed width, so the trigger and the menu line up and
                         // the whole of it is the clickable control.
@@ -1024,14 +1081,18 @@ impl SettingsView {
             .test_support()
             .v_flex()
             .w_full()
-            .gap_1()
+            .pt_4()
+            .pb_2()
+            .border_t_1()
+            .border_color(colors.border)
+            .gap_2()
             .child(div().text_sm().child(t!("settings.commit_message_command")))
             .child(
                 div()
                     .id("settings-commit-message-input")
                     .test_support()
                     .w_full()
-                    .child(Input::new(&self.command_input)),
+                    .child(Input::new(&self.command_input).focus_bordered(false)),
             )
             .child(
                 div()
@@ -1046,7 +1107,7 @@ impl SettingsView {
     }
 
     /// The sleep setting: a radio group, because exactly one of the three answers
-    /// is true. The answer in effect says so beside the heading, so `Agent` with
+    /// is true. The answer in effect says so below the heading, so `Agent` with
     /// no agent running — the same setting, just not acting — does not read as
     /// broken.
     fn awake_row(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
@@ -1094,11 +1155,12 @@ impl SettingsView {
                     .aria_selected(chosen)
                     .h_flex()
                     .items_start()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
                     .cursor_pointer()
+                    .when(chosen, |el| el.bg(colors.muted))
                     .when(!chosen, |el| el.hover(|el| el.bg(colors.muted)))
                     .child(
                         // The dot: filled for the answer, an empty ring for the
@@ -1119,6 +1181,8 @@ impl SettingsView {
                     .child(
                         div()
                             .v_flex()
+                            .flex_1()
+                            .min_w_0()
                             .gap_1()
                             .child(div().text_sm().child(SharedString::from(label)))
                             .child(
@@ -1140,20 +1204,17 @@ impl SettingsView {
             .test_support()
             .v_flex()
             .w_full()
+            .pt_4()
+            .border_t_1()
+            .border_color(colors.border)
             .gap_2()
             .child(
                 div()
                     .id("settings-computer-awake-header")
                     .test_support()
-                    .h_flex()
-                    .items_center()
+                    .v_flex()
                     .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_sm()
-                            .child(t!("settings.computer_awake")),
-                    )
+                    .child(div().text_sm().child(t!("settings.computer_awake")))
                     .child(
                         div()
                             .id("settings-computer-awake-state")
@@ -1176,8 +1237,8 @@ mod tests {
     use super::{
         MAX_BLUR, MAX_FONT_SIZE, MAX_OPACITY, MAX_SCROLLBACK, MAX_TRANSPARENCY, MIN_FONT_SIZE,
         MIN_OPACITY, MIN_SCROLLBACK, OPACITY_STEP, apply_opacity, clamp_font, clamp_opacity,
-        clamp_scrollback, is_transparent, line_ratio, opacity_at, solid, transparency,
-        window_background,
+        clamp_scrollback, is_transparent, line_ratio, opacity_at, popup_surface, solid,
+        transparency, window_background,
     };
     use gpui_kit::WindowBackgroundAppearance;
 
@@ -1200,6 +1261,20 @@ mod tests {
         // The same colour, so the solid surface is still the theme's: only its
         // alpha is taken back.
         assert_eq!((panel.h, panel.s, panel.l), (window.h, window.s, window.l));
+    }
+
+    #[test]
+    fn floating_surfaces_keep_a_readable_tint() {
+        let color = gpui_kit::hsla(0.6, 0.2, 0.3, 1.);
+        assert_eq!(popup_surface(color).a, 1.);
+        for alpha in [0., 0.4, 0.9] {
+            let surface = popup_surface(gpui_kit::Hsla { a: alpha, ..color });
+            assert_eq!(surface.a, 0.94);
+            assert_eq!(
+                (surface.h, surface.s, surface.l),
+                (color.h, color.s, color.l)
+            );
+        }
     }
 
     /// A box is drawn on a panel rather than beside it, so at the panel's own

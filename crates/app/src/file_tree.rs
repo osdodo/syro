@@ -186,6 +186,7 @@ pub struct FileTreeView {
     /// The window's activation observer, registered on the first frame: the
     /// window is what the tree is refreshed by, and construction has no window.
     _watch: Option<Subscription>,
+    refresh_generation: u64,
     /// Re-reads on a worktree switch, and on the active agent going idle: those
     /// are the moments the files under this panel are expected to have moved.
     _events: Subscription,
@@ -221,6 +222,7 @@ impl FileTreeView {
             confirming_delete: None,
             notice: None,
             _watch: None,
+            refresh_generation: 0,
             _events: events,
         };
         tree.follow_active_worktree(cx);
@@ -720,6 +722,7 @@ impl FileTreeView {
             // need here is the box it draws inside a form.
             .child(
                 Input::new(input)
+                    .focus_bordered(false)
                     .id("tree-edit-input")
                     .appearance(false)
                     .bordered(false)
@@ -762,8 +765,12 @@ impl FileTreeView {
             .cursor_pointer()
             .text_color(colors.muted_foreground)
             .hover(|el| el.bg(colors.muted))
-            .child(Icon::new(IconName::RefreshCw).size(px(14.)))
+            .child(crate::right_sidebar::refresh_icon(
+                self.refresh_generation,
+                false,
+            ))
             .on_click(cx.listener(|this, _event, _window, cx| {
+                this.refresh_generation += 1;
                 this.set_notice(None, cx);
                 this.refresh(cx);
             }))
@@ -862,9 +869,9 @@ impl FileTreeView {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            // Solid at any window opacity, like every menu: a list of entries
-            // over the tree is not the place to read the wallpaper through.
-            .bg(crate::settings_view::solid(colors.surface))
+            // A readable tint over the window's native blur.
+            .bg(crate::settings_view::popup_surface(colors.surface))
+            .shadow_lg()
             // The whole panel is the menu, padding and the few pixels between two items included: a click
             // there is a click on the menu, not on the row it happens to be drawn over.
             .occlude()
@@ -935,9 +942,9 @@ impl FileTreeView {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            // Solid at any window opacity, like the menu it answers: a question
-            // over the tree is not the place to read the wallpaper through.
-            .bg(crate::settings_view::solid(colors.surface))
+            // The same glass tint as the menu this question belongs to.
+            .bg(crate::settings_view::popup_surface(colors.surface))
+            .shadow_lg()
             .text_xs()
             .text_color(colors.foreground)
             .child(SharedString::from(question))

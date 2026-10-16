@@ -1112,9 +1112,9 @@ impl TerminalView {
             .rounded_md()
             .border_1()
             .border_color(colors.border)
-            // Solid at any window opacity, like every menu: a list of entries
-            // over a terminal is not the place to read the wallpaper through.
-            .bg(crate::settings_view::solid(colors.surface))
+            // A readable tint over the window's native blur.
+            .bg(crate::settings_view::popup_surface(colors.surface))
+            .shadow_lg()
             .text_xs()
             // The whole panel is the menu, its padding and the pixels between two entries included: a click
             // there is a click on the menu, not on the grid it is drawn over.
