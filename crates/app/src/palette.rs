@@ -756,12 +756,36 @@ impl Render for Palette {
             // palette is opened by a key and driven by three more.
             .child(div().flex_shrink_0().child(t!("palette.hint")));
 
+        // The dialog has no scrim — the window behind is what the transparency
+        // setting asked for — so the dimmed backdrop that used to catch a click
+        // outside is gone. This canvas is the replacement: it measures the box
+        // the palette occupies as it paints and closes the dialog on a click
+        // outside it, leaving the no-scrim look.
+        let click_away = canvas(
+            |_bounds, _window, _cx| (),
+            |bounds, (), window, _cx| {
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Capture
+                        || event.button != MouseButton::Left
+                        || bounds.contains(&event.position)
+                    {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.close_dialog(cx);
+                });
+            },
+        )
+        .absolute()
+        .inset_0();
+
         div()
             .id("palette")
             .test_support()
             .v_flex()
             .gap_2()
             .w_full()
+            .child(click_away)
             // The keys are bound in this context (see `app_keymap`), because the
             // dialog this sits in binds Enter for its own Confirm and a bound key
             // is dispatched as an action: a listener never sees it.

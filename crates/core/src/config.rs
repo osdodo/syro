@@ -112,6 +112,11 @@ pub struct Settings {
     pub hooks: Vec<HookSpec>,
     #[serde(default)]
     pub keymap: BTreeMap<String, String>,
+    /// The command the AI button runs to write a commit message: the prompt is
+    /// on its stdin and its stdout is the message. Absent or blank is
+    /// [`crate::commit_message::DEFAULT_COMMAND`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_message_command: Option<String>,
     /// The UI language: `"en"`, `"zh-CN"`, or absent for "follow the system".
     /// A string rather than an enum because `syro-core` has no opinion about
     /// which languages the app ships; the app maps it (see `app::i18n`).
@@ -130,6 +135,7 @@ impl Default for Settings {
             agents: Vec::new(),
             hooks: Vec::new(),
             keymap: BTreeMap::new(),
+            commit_message_command: None,
             language: None,
         }
     }
@@ -213,6 +219,8 @@ mod tests {
         assert!(s.agents.is_empty());
         assert!(s.hooks.is_empty());
         assert!(s.keymap.is_empty());
+        // No command in the file means the AI button runs the default one.
+        assert!(s.commit_message_command.is_none());
         // No `language` in the file means "follow the system".
         assert!(s.language.is_none());
     }

@@ -1969,16 +1969,17 @@ impl Workspace {
             let form = form.clone();
             dialog
                 // No title and no close corner: the field says what the list is,
-                // and with no heading the X would float over the input. Escape
-                // is the way out — the footer says so.
+                // and with no heading the X would float over the input. Escape and
+                // a click outside are the ways out — the footer names Escape.
                 .close_button(false)
                 .w(px(840.))
                 .bg(dialog_background(cx))
                 // No scrim, like the settings form: the list floats over the
                 // window rather than alerting over it, and the window behind it
-                // is what the transparency setting was asked for. The dimmed
-                // area was also the click-away target, so a click outside is
-                // now nothing at all — the dialog still occludes the window.
+                // is what the transparency setting was asked for. A click outside
+                // still closes it — the palette measures its own box and answers
+                // at the window level (see `Palette::render`), because the dimmed
+                // backdrop that used to catch that click is what went away.
                 .overlay(false)
                 .content(move |content, _, _| content.child(form.clone()))
         });
@@ -4237,6 +4238,15 @@ mod window_tests {
         .expect("read the frame")
     }
 
+    /// What a checkbox reports as checked, read off the control itself.
+    fn checked(cx: &mut TestAppContext, fixture: &Fixture, id: &str) -> Option<bool> {
+        let id = id.to_string();
+        cx.update_window(fixture.window.into(), move |_, window, _| {
+            window.try_find(id).and_then(|el| el.checked())
+        })
+        .expect("read the frame")
+    }
+
     /// Where an element ended up, in window coordinates. Which side a panel
     /// sits on, and the two ends of a drag, are only readable here.
     fn bounds_of(cx: &mut TestAppContext, fixture: &Fixture, id: &str) -> Bounds<Pixels> {
@@ -5801,6 +5811,61 @@ mod window_tests {
             click_until(cx, &fixture, "git-view-all".to_string(), move |cx| cx
                 .update(|cx| workspace.read(cx).active_diff(cx).is_some())),
             "the panel's View all did not open the diff tab"
+        );
+    }
+
+    /// The AI button: the command's stdout is what the message field holds, which
+    /// is what the Commit button reads. `cat` stands in for the model — it prints
+    /// the prompt back, and the prompt carries the diff.
+    #[gpui_kit::test]
+    fn the_ai_button_puts_the_commands_answer_in_the_message_field(cx: &mut TestAppContext) {
+        let settings = Settings {
+            commit_message_command: Some("cat".into()),
+            ..Default::default()
+        };
+        let fixture = open_with_settings(cx, "git-ai-message", settings);
+        let panel = cx.update(|cx| fixture.workspace.read(cx).git.clone());
+        show_panel(cx, &fixture, "panel-git", Some(Panel::Git));
+        assert!(
+            draw_until(cx, &fixture, |cx| cx
+                .update(|cx| !panel.read(cx).commits().is_empty())),
+            "the panel never read the repository"
+        );
+
+        // Something to write a message for.
+        std::fs::write(fixture.root.join("described.txt"), "described\n").unwrap();
+        click_visible(cx, &fixture, "git-refresh");
+        assert!(
+            draw_until(cx, &fixture, |cx| found(
+                cx,
+                &fixture,
+                "git-generate-message"
+            )),
+            "the AI button was never drawn"
+        );
+        // The field is a textarea, not a single line: a message with a body has
+        // somewhere to go. And it takes the whole width — the AI button sits
+        // inside it rather than beside it.
+        let field = bounds_of(cx, &fixture, "git-message");
+        assert!(
+            field.size.height > px(40.),
+            "the message field is one line tall: {field:?}"
+        );
+        let button = bounds_of(cx, &fixture, "git-generate-message");
+        assert!(
+            field.contains(&button.center()),
+            "the AI button is outside the field: {button:?} in {field:?}"
+        );
+
+        let landed = panel.clone();
+        assert!(
+            click_until(
+                cx,
+                &fixture,
+                "git-generate-message".to_string(),
+                move |cx| cx.update(|cx| landed.read(cx).message().contains("commit message"))
+            ),
+            "the command's answer never reached the message field"
         );
     }
 
@@ -7380,6 +7445,95 @@ mod window_tests {
         );
     }
 
+    /// Picking gathers a batch: the row's checkmark takes it without opening it,
+    /// and one confirmation removes every chosen transcript at once.
+    #[gpui_kit::test]
+    fn chosen_sessions_are_deleted_in_one_confirmation(cx: &mut TestAppContext) {
+        let fixture = open(cx, "sessions-delete-many");
+        let home = fixture._dir.join("home");
+        let roots = pi_history(&home, &fixture.root, "aaaa1111", "throw me away");
+        pi_history(&home, &fixture.root, "bbbb2222", "and me too");
+        pi_history(&home, &fixture.root, "cccc3333", "keep me");
+        let panel = open_sessions(cx, &fixture, roots);
+        // By id, not by position: three transcripts written a millisecond apart
+        // sort newest first, and only the id says which one is which.
+        let path_of = |cx: &mut TestAppContext, id: &str| -> PathBuf {
+            cx.update(|cx| {
+                panel
+                    .read(cx)
+                    .sessions()
+                    .iter()
+                    .find(|session| session.id == id)
+                    .unwrap_or_else(|| panic!("no session {id}"))
+                    .path
+                    .clone()
+            })
+        };
+        let (aa, bb, cc) = (
+            path_of(cx, "aaaa1111"),
+            path_of(cx, "bbbb2222"),
+            path_of(cx, "cccc3333"),
+        );
+
+        // Off by default: the list is a list, not a form.
+        draw(cx, &fixture);
+        assert!(!found(cx, &fixture, "session-aaaa1111-choose"));
+
+        click(cx, &fixture, "sessions-pick".to_string());
+        assert!(
+            draw_until(cx, &fixture, |cx| found(
+                cx,
+                &fixture,
+                "session-aaaa1111-choose"
+            )),
+            "picking did not put a checkmark on the row"
+        );
+        assert!(found(cx, &fixture, "sessions-delete-chosen"));
+
+        // The row's own click takes it, and picking does not open it.
+        click(cx, &fixture, "session-aaaa1111".to_string());
+        click(cx, &fixture, "session-bbbb2222".to_string());
+        draw(cx, &fixture);
+        assert_eq!(cx.update(|cx| panel.read(cx).chosen()), 2);
+        assert_eq!(checked(cx, &fixture, "session-aaaa1111-choose"), Some(true));
+        assert_eq!(
+            checked(cx, &fixture, "session-cccc3333-choose"),
+            Some(false)
+        );
+        assert!(
+            !found(cx, &fixture, "session-aaaa1111-resume"),
+            "picking opened a row"
+        );
+
+        click_visible(cx, &fixture, "sessions-delete-chosen");
+        assert!(
+            draw_until(cx, &fixture, |cx| found(cx, &fixture, "ok")),
+            "the batch delete did not ask"
+        );
+        assert!(
+            aa.is_file() && bb.is_file() && cc.is_file(),
+            "transcripts went before the answer"
+        );
+
+        click_visible(cx, &fixture, "ok");
+        assert!(
+            draw_until(cx, &fixture, |_cx| !aa.exists() && !bb.exists()),
+            "the chosen transcripts were not removed"
+        );
+        assert!(cc.is_file(), "a session nobody picked went with the batch");
+        assert!(
+            draw_until(cx, &fixture, |cx| !found(cx, &fixture, "session-aaaa1111")
+                && !found(cx, &fixture, "session-bbbb2222")
+                && found(cx, &fixture, "session-cccc3333")),
+            "the list did not keep the session nobody picked"
+        );
+        // The batch is over: the panel is back to reading rows.
+        assert!(
+            !found(cx, &fixture, "session-cccc3333-choose"),
+            "the checkmarks stayed after the delete"
+        );
+    }
+
     /// A restart re-enters the conversation: the id the tab saved, resolved back to
     /// the transcript the resume flags need.
     #[test]
@@ -7478,11 +7632,11 @@ mod window_tests {
     }
 
     /// The palette floats over the window instead of dimming it: no scrim, like
-    /// the settings form. A click outside is therefore neither a way out nor a
-    /// click on what is behind — the dialog still occludes the window — so
-    /// Escape is the one way out, which is what the footer says.
+    /// the settings form. A click outside is still a way out — the palette
+    /// measures its own box and answers at the window level — and it does not
+    /// reach the control behind, which the dialog still occludes.
     #[gpui_kit::test]
-    fn the_palette_floats_without_a_scrim(cx: &mut TestAppContext) {
+    fn a_click_outside_the_palette_closes_it_without_a_scrim(cx: &mut TestAppContext) {
         let fixture = open(cx, "palette-no-scrim");
         activate(cx, &fixture);
         press(cx, &fixture, "cmd-p");
@@ -7491,10 +7645,8 @@ mod window_tests {
             "cmd-p did not open the palette"
         );
 
-        // A click outside it: the palette stays up, and the control behind it —
-        // the usage chip, which opens its own panel — does not see it. Not a
-        // probe under the dialog's own box, because the dimmed area used to be
-        // the click-away target and this is the click it no longer answers to.
+        // A click outside it: the palette closes, and the control behind it —
+        // the usage chip, which opens its own panel — does not see the click.
         let palette = bounds_of(cx, &fixture, "palette");
         let chip = bounds_of(cx, &fixture, "usage-open");
         assert!(
@@ -7504,8 +7656,8 @@ mod window_tests {
         click(cx, &fixture, "usage-open".to_string());
         draw(cx, &fixture);
         assert!(
-            found(cx, &fixture, "palette-input"),
-            "the palette closed on a click outside it"
+            !found(cx, &fixture, "palette-input"),
+            "the palette stayed up on a click outside it"
         );
         assert!(
             !found(cx, &fixture, "usage-panel"),
@@ -9095,8 +9247,8 @@ mod window_tests {
             "the usage chip is not at the status bar's trailing end: {chip:?}, {strip:?}"
         );
         let window_bounds = bounds_of(cx, &fixture, "usage-scrim");
-        let trailing = window_bounds.origin.x + window_bounds.size.width
-            - (panel.origin.x + panel.size.width);
+        let trailing =
+            window_bounds.origin.x + window_bounds.size.width - (panel.origin.x + panel.size.width);
         // Off the trailing edge, but only just: the panel is placed where the
         // red line was drawn, not against the window's own corner.
         assert!(
@@ -9709,6 +9861,37 @@ mod window_tests {
         assert!(
             written.contains("language"),
             "the language never reached the file: {written}"
+        );
+    }
+
+    /// The AI command is a field on the general tab, and what is typed lands in
+    /// the state and in the file the state is written to.
+    #[gpui_kit::test]
+    fn the_ai_command_setting_reaches_the_state(cx: &mut TestAppContext) {
+        let fixture = open(cx, "settings-ai-command");
+        open_settings(cx, &fixture);
+
+        assert!(
+            found(cx, &fixture, "settings-commit-message-input"),
+            "the general tab has no AI command field"
+        );
+        click_visible(cx, &fixture, "settings-commit-message-input");
+        type_text(cx, &fixture, "cat");
+
+        let state = fixture.state.clone();
+        assert!(
+            draw_until(cx, &fixture, |cx| cx.update(|cx| state
+                .read(cx)
+                .settings()
+                .commit_message_command
+                .as_deref()
+                == Some("cat"))),
+            "the command never reached the state"
+        );
+        let written = std::fs::read_to_string(&fixture.settings_path).unwrap();
+        assert!(
+            written.contains("cat"),
+            "the command never reached the file: {written}"
         );
     }
 

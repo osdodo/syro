@@ -1118,6 +1118,9 @@ impl AppState {
                     .cloned()
                     .collect();
                 self.worktrees.retain(|w| w.repo_id != repo_id);
+                // The trunk, asked for at most once per repo per refresh and only
+                // by a worktree that has no base ref of its own: see `base_ref_for`.
+                let mut trunk = None;
                 for entry in listed {
                     // Resolved once, here: git already reports a resolved path,
                     // and the ones state.json kept are resolved too.
@@ -1131,8 +1134,9 @@ impl AppState {
                         continue;
                     }
                     let previous = known.iter().find(|w| w.path == entry.path);
+                    let base_ref = base_ref_for(previous, &repo.path, &mut trunk);
                     self.worktrees
-                        .push(worktree_from_git(&repo, entry, previous));
+                        .push(worktree_from_git(&repo, entry, previous, base_ref));
                 }
                 self.ensure_active_exists(cx);
             }
@@ -1377,7 +1381,12 @@ fn notification_tag(terminal_id: &TerminalId) -> String {
 }
 
 /// Map one `git worktree list` entry onto the model, keeping what we knew.
-fn worktree_from_git(repo: &Repo, entry: GitWorktree, previous: Option<&Worktree>) -> Worktree {
+fn worktree_from_git(
+    repo: &Repo,
+    entry: GitWorktree,
+    previous: Option<&Worktree>,
+    base_ref: String,
+) -> Worktree {
     let branch = entry
         .branch
         .as_deref()
@@ -1404,10 +1413,32 @@ fn worktree_from_git(repo: &Repo, entry: GitWorktree, previous: Option<&Worktree
         repo_id: repo.id.clone(),
         name,
         path: entry.path,
-        base_ref: previous
-            .map(|p| p.base_ref.clone())
-            .unwrap_or(branch.clone()),
+        base_ref,
         branch,
+    }
+}
+
+/// What a worktree's changes are measured against, as a ref name.
+///
+/// syro knows it for a worktree it made — the call that ran `worktree add` recorded the fork
+/// point, and git does not know it at all — and that answer is kept: a checkout inside the
+/// worktree moves the branch, not where the branch came from. For every other worktree — the
+/// repository's own checkout, or one made outside this app — there is no fork point for git to
+/// give, so the repository's trunk is the answer.
+///
+/// What it must not be is the branch the worktree happened to be on when it was first read. That
+/// is a snapshot, and it goes stale the moment the branch moves: the panel then diffed against a
+/// branch the checkout had left, and listed that branch's own commits as this one's work.
+fn base_ref_for(previous: Option<&Worktree>, repo: &Path, trunk: &mut Option<String>) -> String {
+    match previous {
+        Some(previous) if previous.base_ref != previous.branch => previous.base_ref.clone(),
+        // Whatever HEAD is, when even the trunk cannot be named: the diff is then
+        // the uncommitted work, which is all git can compare against.
+        _ => trunk
+            .get_or_insert_with(|| {
+                git::default_base_ref(repo).unwrap_or_else(|_| "HEAD".to_string())
+            })
+            .clone(),
     }
 }
 
@@ -2158,6 +2189,64 @@ mod tests {
                 .expect("the refresh dropped the worktree");
             assert_eq!(after.name, "my task");
             assert_eq!(after.base_ref, "main", "the base ref was forgotten");
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    /// The base ref is not whatever branch a worktree was on when it was last read: that snapshot
+    /// goes stale the moment a checkout moves the branch, and the panel then lists the *other*
+    /// branch's commits as this one's uncommitted work. The repository's own checkout has no fork
+    /// point for git to give, so the trunk is what its changes are measured against.
+    #[gpui_kit::test]
+    fn a_stale_base_ref_gives_way_to_the_trunk(cx: &mut TestAppContext) {
+        let (dir, repo, _) = scratch_repo("state-stale-base");
+        let (state_path, store_dir) = temp_store("state-stale-base");
+        // The checkout moves onto a feature branch, and state.json last saw it
+        // there — measured against that same branch.
+        let switched = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo.path)
+            .args(["switch", "-q", "-c", "feature"])
+            .output()
+            .unwrap();
+        assert!(
+            switched.status.success(),
+            "{}",
+            String::from_utf8_lossy(&switched.stderr)
+        );
+        let own = Worktree {
+            id: repo.path.display().to_string(),
+            repo_id: repo.id.clone(),
+            name: repo.name.clone(),
+            path: repo.path.clone(),
+            branch: "feature".to_string(),
+            base_ref: "feature".to_string(),
+        };
+        Store::new(state_path.clone())
+            .save(&State {
+                repos: vec![repo.clone()],
+                worktrees: vec![own],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let state = cx.update(|cx| {
+            cx.new(|cx| AppState::open(Store::new(state_path), dir.join("workspaces"), cx))
+        });
+        cx.update(|cx| {
+            let after = state
+                .read(cx)
+                .worktrees_of(&repo.id)
+                .find(|w| w.path == repo.path)
+                .cloned()
+                .expect("the repository's own checkout is gone");
+            assert_eq!(after.branch, "feature");
+            assert_eq!(
+                after.base_ref, "main",
+                "the branch the checkout is on is not a base ref"
+            );
         });
 
         let _ = std::fs::remove_dir_all(&dir);

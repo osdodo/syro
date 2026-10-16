@@ -6,11 +6,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui_kit::base::{ColorTokens, StyledExt as _, TestSupportExt as _, Theme};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
+use syro_core::commit_message;
 use syro_core::event::CoreEvent;
 use syro_core::git::{self, Branch, BranchStatus, Commit, FileChange};
 use syro_core::model::{AgentStatus, WorktreeId};
@@ -223,7 +224,7 @@ pub struct GitPanel {
     branches: Vec<Branch>,
     /// The commit message, mirrored from the field on every keystroke.
     message: String,
-    input: Option<Entity<InputState>>,
+    input: Option<Entity<TextareaState>>,
     _input_events: Option<Subscription>,
     /// git's own words after a commit or a push, or why there was no commit.
     /// Drawn under the button until the next read replaces it.
@@ -231,12 +232,18 @@ pub struct GitPanel {
     /// The worktree the notice came from. git's words are about one repository,
     /// and they are the panel's only while that one is the one on screen.
     notice_worktree: Option<WorktreeId>,
-    /// A commit that finished wants the message box empty, and clearing an
-    /// `InputState` takes a window — which is the next frame, not the task.
+    /// A commit that finished wants the message box empty, and clearing a
+    /// `TextareaState` takes a window — which is the next frame, not the task.
     clear_message: bool,
     /// A commit or a push is in flight. The button is disabled meanwhile:
     /// two of them at once is two commits, or a push racing its own commit.
     busy: bool,
+    /// The AI command is writing a message. The field is left alone meanwhile,
+    /// and Commit waits for it: half a message is not one to commit under.
+    generating: bool,
+    /// The message the AI wrote, to be put in the field on the next frame: a
+    /// `TextareaState` takes a window, which the task that asked has not got.
+    generated: Option<String>,
     /// Why the last read failed, if it did. git's own words: "does not have any
     /// commits yet" is more useful than anything this file could say.
     error: Option<String>,
@@ -314,6 +321,8 @@ impl GitPanel {
             notice_worktree: None,
             clear_message: false,
             busy: false,
+            generating: false,
+            generated: None,
             error: None,
             read: false,
             stale: false,
@@ -383,7 +392,8 @@ impl GitPanel {
         {
             self.open = None;
         }
-        self.stats = git::diff_stat(&worktree.path, &worktree.base_ref).unwrap_or_default();
+        self.stats =
+            git::diff_stat(&worktree.path, &worktree.base_ref, &self.changes).unwrap_or_default();
         self.dirty = git::worktree_changes(&worktree.path)
             .map(|changes| !changes.is_empty())
             .unwrap_or(false);
@@ -419,7 +429,7 @@ impl GitPanel {
     /// Whether the button can be pressed: a commit needs a message, and nothing
     /// else has anything to wait for.
     fn action_ready(&self, action: Action) -> bool {
-        if self.busy {
+        if self.running() {
             return false;
         }
         match action {
@@ -427,6 +437,65 @@ impl GitPanel {
             Action::Push | Action::Publish => true,
             Action::Idle => false,
         }
+    }
+
+    /// Whether the panel is busy with something the reader has to wait for: a
+    /// git operation or the AI writing a message.
+    fn running(&self) -> bool {
+        self.busy || self.generating
+    }
+
+    /// The command the AI button runs: the user's, or the default.
+    fn message_command(&self, cx: &App) -> String {
+        self.state
+            .read(cx)
+            .settings()
+            .commit_message_command
+            .clone()
+            .filter(|command| !command.trim().is_empty())
+            .unwrap_or_else(|| commit_message::DEFAULT_COMMAND.to_string())
+    }
+
+    /// Write the commit message with the AI command, on the background executor:
+    /// the diff of what a commit would hold goes in, and what comes out is put in
+    /// the field on the next frame.
+    fn generate_message(&mut self, cx: &mut Context<Self>) {
+        if self.running() {
+            return;
+        }
+        let root = self.root.clone();
+        let command = self.message_command(cx);
+        self.generating = true;
+        self.notice = Some(t!("git.generating_message").to_string());
+        // Attributed to this worktree, so the tick does not clear the notice as
+        // if it were another repository's news.
+        self.notice_worktree = self.state.read(cx).active_id().cloned();
+        cx.notify();
+        let task = cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let diff = git::commit_diff(&root)?;
+                    if diff.trim().is_empty() {
+                        anyhow::bail!(t!("git.nothing_to_describe").to_string());
+                    }
+                    commit_message::write(&root, &command, &commit_message::prompt(&diff))
+                })
+                .await;
+            this.update(cx, |panel, cx| {
+                panel.generating = false;
+                match result {
+                    Ok(message) => {
+                        panel.notice = None;
+                        panel.generated = Some(message);
+                    }
+                    Err(error) => panel.notice = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        self._task = Some(task);
     }
 
     /// Do what the button says, on the background executor.
@@ -578,26 +647,31 @@ impl GitPanel {
     /// Build the message field on the first frame with a window, and listen to
     /// it. The text lives here, the field is only where it is typed.
     fn ensure_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.clear_message
-            && let Some(input) = self.input.clone()
-        {
+        if self.input.is_none() {
+            let input = cx.new(|cx| TextareaState::new(window, cx).placeholder(t!("git.message")));
+            let events = cx.subscribe(&input, |this, input, _event: &InputEvent, cx| {
+                let message = input.read(cx).value().to_string();
+                if this.message != message {
+                    this.message = message;
+                    cx.notify();
+                }
+            });
+            self.input = Some(input);
+            self._input_events = Some(events);
+        }
+        let Some(input) = self.input.clone() else {
+            return;
+        };
+        // A commit that finished wants the field empty, and the AI a message in
+        // it. Both take a window, which the task that asked has not got.
+        if std::mem::take(&mut self.clear_message) {
             input.update(cx, |input, cx| input.set_value("", window, cx));
             self.message.clear();
-            self.clear_message = false;
         }
-        if self.input.is_some() {
-            return;
+        if let Some(message) = self.generated.take() {
+            self.message = message.clone();
+            input.update(cx, |input, cx| input.set_value(message, window, cx));
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("git.message")));
-        let events = cx.subscribe(&input, |this, input, _event: &InputEvent, cx| {
-            let message = input.read(cx).value().to_string();
-            if this.message != message {
-                this.message = message;
-                cx.notify();
-            }
-        });
-        self.input = Some(input);
-        self._input_events = Some(events);
     }
 
     /// One tick: re-read if this is the panel being looked at.
@@ -1045,8 +1119,18 @@ impl GitPanel {
                         .id("git-message")
                         .test_support()
                         .aria_label(t!("git.commit_message"))
+                        // The field takes the whole width, and the AI button sits
+                        // inside its bottom-right corner rather than beside it.
+                        .relative()
                         .w_full()
-                        .child(Input::new(&input)),
+                        .child(Textarea::new(&input).h(px(72.)))
+                        .child(
+                            div()
+                                .absolute()
+                                .bottom(px(4.))
+                                .right(px(4.))
+                                .child(self.generate_button(colors, cx)),
+                        ),
                 )
             });
         }
@@ -1097,6 +1181,34 @@ impl GitPanel {
         block.into_any_element()
     }
 
+    /// The button that writes the message with the AI command: at the trailing
+    /// end of the field, disabled while it or a git operation is running.
+    fn generate_button(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
+        let ready = !self.running();
+        div()
+            .id("git-generate-message")
+            .test_support()
+            .aria_label(t!("git.generate_message"))
+            .h_flex()
+            .items_center()
+            .justify_center()
+            .size(px(28.))
+            .flex_shrink_0()
+            .rounded_sm()
+            .text_color(colors.muted_foreground)
+            .when(ready, |el| {
+                el.cursor_pointer()
+                    .hover(|el| el.bg(colors.muted).text_color(colors.foreground))
+            })
+            .child(Icon::new(IconName::Bot).size(px(14.)))
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                if !this.running() {
+                    this.generate_message(cx);
+                }
+            }))
+            .into_any_element()
+    }
+
     /// The changes on the branch: what the commit would hold, and what the base
     /// ref does not have.
     fn changes_block(
@@ -1121,7 +1233,7 @@ impl GitPanel {
             .child(
                 self.section_header(
                     Section::Changes,
-                    t!("git.committed_on", count = self.changes.len()).to_string(),
+                    t!("git.changes_count", count = self.changes.len()).to_string(),
                     self.files_collapsed,
                     Some(
                         div()
@@ -1624,8 +1736,8 @@ impl GitPanel {
                 )
             })
             .when_some(stat.copied(), |el, (added, deleted)| {
-                // An untracked file has no counts: git has nothing to compare it
-                // against, which is why its row shows only the letter.
+                // An untracked file has nothing to compare against in git's own
+                // diff, so its count is the file's own lines (`git::diff_stat`).
                 el.child(
                     div()
                         .flex_shrink_0()

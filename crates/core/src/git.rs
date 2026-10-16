@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -329,6 +329,31 @@ pub fn diff_text(root: &Path, base_ref: &str, change: &FileChange) -> Result<Str
             path,
             String::from_utf8_lossy(&untracked.stderr).trim()
         );
+    }
+    Ok(text)
+}
+
+/// What the uncommitted work amounts to, as one diff: the files a `git add -A`
+/// would stage, and the files git holds in no commit at all. What the AI writes
+/// a message from, so it is one call and not one per file.
+pub fn commit_diff(root: &Path) -> Result<String> {
+    let mut text = String::new();
+    // `HEAD` covers staged and unstaged alike. An unborn `HEAD` — a repository
+    // with no commits yet — has no such revision to compare against, so the two
+    // halves are asked for separately.
+    match run_git(root, &["diff", "--no-color", "HEAD"]) {
+        Ok(out) if out.status.success() => text.push_str(&String::from_utf8_lossy(&out.stdout)),
+        _ => {
+            text.push_str(&run_git_ok(root, &["diff", "--no-color", "--cached"])?);
+            text.push_str(&run_git_ok(root, &["diff", "--no-color"])?);
+        }
+    }
+    for change in worktree_changes(root)? {
+        if change.status == '?'
+            && let Ok(diff) = diff_text(root, "HEAD", &change)
+        {
+            text.push_str(&diff);
+        }
     }
     Ok(text)
 }
@@ -676,10 +701,12 @@ pub fn worktree_changes(worktree_path: &Path) -> Result<Vec<FileChange>> {
 
 /// `(added, deleted)` lines per path against `base_ref`. `git diff <ref>` compares with the
 /// working tree, so one call covers committed and uncommitted alike; a binary file counts as
-/// zeros.
+/// zeros. `changes` is the same list the panel draws: the files git holds in no commit are not
+/// in a diff at all, so their own lines are counted here instead.
 pub fn diff_stat(
     worktree_path: &Path,
     base_ref: &str,
+    changes: &[FileChange],
 ) -> Result<std::collections::BTreeMap<String, (u32, u32)>> {
     let text = run_git_ok(worktree_path, &["diff", "--numstat", base_ref])?;
     let mut stats = std::collections::BTreeMap::new();
@@ -695,7 +722,41 @@ pub fn diff_stat(
             (added.parse().unwrap_or(0), deleted.parse().unwrap_or(0)),
         );
     }
+    for change in changes.iter().filter(|change| change.status == '?') {
+        if let Some(counts) = untracked_lines(&worktree_path.join(&change.path)) {
+            stats.insert(change.path.clone(), counts);
+        }
+    }
     Ok(stats)
+}
+
+/// `(added, deleted)` for a file no commit holds: its own lines, which is all a commit would
+/// add. `None` when there is nothing to count — a binary file, or a directory
+/// `--untracked-files=all` will not open (a nested repository) — where git's own `--numstat`
+/// says `-` too.
+fn untracked_lines(path: &Path) -> Option<(u32, u32)> {
+    let mut reader = std::io::BufReader::new(fs::File::open(path).ok()?);
+    let mut lines = 0u32;
+    // An empty file is the one case with no byte to look at, and it has no last
+    // line to count.
+    let mut ends_with_newline = true;
+    loop {
+        // A chunk at a time: the file is whatever the reader left lying in a
+        // repository, and reading all of it in to count line breaks is a spike
+        // nobody asked for.
+        let buf = reader.fill_buf().ok()?;
+        if buf.is_empty() {
+            break;
+        }
+        if buf.contains(&0) {
+            return None;
+        }
+        lines += buf.iter().filter(|byte| **byte == b'\n').count() as u32;
+        ends_with_newline = buf.last() == Some(&b'\n');
+        let filled = buf.len();
+        reader.consume(filled);
+    }
+    Some((lines + u32::from(!ends_with_newline), 0))
 }
 
 /// `git add -A` then commit, which is the contract of a panel with one button. A blank message
@@ -1464,16 +1525,37 @@ mod tests {
         std::fs::write(repo.join("new.txt"), "one\ntwo\n").unwrap();
         git_in(&repo, &["add", "new.txt"]);
 
-        let stats = diff_stat(&repo, "main").unwrap();
+        let stats = diff_stat(&repo, "main", &worktree_changes(&repo).unwrap()).unwrap();
         // Uncommitted work is in there too, which is the point of `diff <ref>`.
         assert_eq!(stats.get("README.md"), Some(&(1, 0)));
         assert_eq!(stats.get("new.txt"), Some(&(2, 0)));
         assert_eq!(stats.get("src/main.rs"), None);
 
-        // An untracked file has no stat until it is added, so the panel shows its letter and no counts.
-        std::fs::write(repo.join("loose.txt"), "x\n").unwrap();
-        let stats = diff_stat(&repo, "main").unwrap();
-        assert_eq!(stats.get("loose.txt"), None);
+        // An untracked file is in no commit for `diff` to compare against, so the
+        // whole file is what a commit would add and its own lines are the count.
+        std::fs::write(repo.join("loose.txt"), "x\ny\n").unwrap();
+        let stats = diff_stat(&repo, "main", &worktree_changes(&repo).unwrap()).unwrap();
+        assert_eq!(stats.get("loose.txt"), Some(&(2, 0)));
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn an_untracked_files_own_lines_are_its_count() {
+        let repo = scratch_repo("untracked-lines", "main");
+        // The last line is a line whether or not it ends in a newline.
+        std::fs::write(repo.join("three.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(repo.join("two.txt"), "one\ntwo").unwrap();
+        std::fs::write(repo.join("empty.txt"), "").unwrap();
+        assert_eq!(untracked_lines(&repo.join("three.txt")), Some((3, 0)));
+        assert_eq!(untracked_lines(&repo.join("two.txt")), Some((2, 0)));
+        assert_eq!(untracked_lines(&repo.join("empty.txt")), Some((0, 0)));
+
+        // Nothing to count: a binary file, a directory, a path that is not there.
+        std::fs::write(repo.join("bin"), [0u8, 1, 2, b'\n']).unwrap();
+        assert_eq!(untracked_lines(&repo.join("bin")), None);
+        assert_eq!(untracked_lines(&repo), None);
+        assert_eq!(untracked_lines(&repo.join("gone.txt")), None);
 
         let _ = std::fs::remove_dir_all(&repo);
     }
@@ -1534,6 +1616,25 @@ mod tests {
         assert!(worktree_changes(&repo).unwrap().is_empty());
         let tracked = run_git_ok(&repo, &["ls-files"]).unwrap();
         assert!(tracked.contains("untracked.txt"), "{tracked}");
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn the_commit_diff_holds_tracked_and_untracked_work() {
+        let repo = scratch_repo("commit-diff", "main");
+        std::fs::write(repo.join("README.md"), "hello\nworld\n").unwrap();
+        std::fs::write(repo.join("fresh.txt"), "new\n").unwrap();
+
+        let diff = commit_diff(&repo).unwrap();
+        assert!(
+            diff.contains("+world"),
+            "the tracked change is missing: {diff}"
+        );
+        assert!(
+            diff.contains("fresh.txt") && diff.contains("+new"),
+            "the untracked file is missing: {diff}"
+        );
 
         let _ = std::fs::remove_dir_all(&repo);
     }

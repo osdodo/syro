@@ -358,6 +358,15 @@ git:
   message:
     en: Message
     zh-CN: 提交信息
+  generate_message:
+    en: Generate commit message with AI
+    zh-CN: 用 AI 生成提交信息
+  generating_message:
+    en: Writing the commit message…
+    zh-CN: 正在生成提交信息…
+  nothing_to_describe:
+    en: There is nothing to describe
+    zh-CN: 没有可描述的更改
   commit_message:
     en: Commit message
     zh-CN: 提交信息
@@ -367,9 +376,9 @@ git:
   more_view_all:
     en: "%{count} more — View all"
     zh-CN: "还有 %{count} 个 —— 查看全部"
-  committed_on:
-    en: "Committed on Branch %{count}"
-    zh-CN: "已在分支上提交 %{count}"
+  changes_count:
+    en: "Changes %{count}"
+    zh-CN: "更改 %{count}"
   outgoing:
     en: Outgoing Changes
     zh-CN: 待推送更改
@@ -516,6 +525,24 @@ sessions:
   delete_question:
     en: "Delete %{title}? The transcript is removed from disk and cannot be undone."
     zh-CN: "删除“%{title}”？会话记录会从磁盘删除，无法恢复。"
+  select:
+    en: Select
+    zh-CN: 选择
+  select_session:
+    en: "Select %{title}"
+    zh-CN: "选择“%{title}”"
+  select_group:
+    en: "Select every session in %{name}"
+    zh-CN: "选中 %{name} 的全部会话"
+  delete_chosen:
+    en: "Delete (%{count})"
+    zh-CN: "删除 (%{count})"
+  delete_title_many:
+    en: Delete sessions
+    zh-CN: 删除会话
+  delete_question_many:
+    en: "Delete %{count} sessions? Their transcripts are removed from disk and cannot be undone."
+    zh-CN: "删除 %{count} 个会话？会话记录会从磁盘删除，无法恢复。"
 
 resource:
   unavailable:
@@ -767,6 +794,12 @@ settings:
   language_system:
     en: System
     zh-CN: 跟随系统
+  commit_message_command:
+    en: AI commit message command
+    zh-CN: AI 提交信息命令
+  commit_message_command_hint:
+    en: "Runs in the worktree, with the diff on stdin; its output is the message. Empty uses: %{default}"
+    zh-CN: "在工作树中运行，diff 从 stdin 传入，输出即提交信息。留空则使用：%{default}"
   computer_awake:
     en: Prevent computer sleep
     zh-CN: 防止电脑休眠

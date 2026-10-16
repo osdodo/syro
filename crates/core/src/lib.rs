@@ -4,6 +4,7 @@
 rust_i18n::i18n!("locales", fallback = "en");
 
 pub mod agent;
+pub mod commit_message;
 pub mod config;
 pub mod event;
 pub mod fs_tree;

@@ -4,6 +4,7 @@ use gpui_kit::base::{
     ColorTokens, Root, StyledExt as _, TestSupportExt as _, Theme, TypographyTokens,
 };
 use gpui_kit::component::button::Button;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::searchable_list::SearchableListItem;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
@@ -11,6 +12,7 @@ use gpui_kit::component::{IndexPath, Sizable as _, ThemeMode};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
+use syro_core::commit_message;
 use syro_core::config::{Appearance, ComputerAwakeMode, Settings};
 
 use crate::i18n;
@@ -418,6 +420,11 @@ pub struct SettingsView {
     blur_slider: Entity<SliderState>,
     font_size: f32,
     scrollback: u32,
+    /// The command the AI button runs to write a commit message, as typed in the
+    /// field. Empty is the default (see [`commit_message::DEFAULT_COMMAND`]).
+    command: String,
+    command_input: Entity<InputState>,
+    _command_events: Subscription,
     /// Whether, and when, the machine is kept from sleeping. The row shows the
     /// same three answers `settings.toml` spells out.
     computer_awake: ComputerAwakeMode,
@@ -434,6 +441,26 @@ impl SettingsView {
         let terminal = state.read(cx).settings().terminal.clone();
         let language = state.read(cx).settings().language.clone();
         let computer_awake = state.read(cx).settings().computer_awake;
+        let command = state
+            .read(cx)
+            .settings()
+            .commit_message_command
+            .clone()
+            .unwrap_or_default();
+        let command_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(command.clone())
+                .placeholder(commit_message::DEFAULT_COMMAND)
+        });
+        // Written as it is typed, the way every other row here lands at once: a
+        // command is short, and a form that needs a save button is a form that
+        // loses an edit.
+        let command_events = cx.subscribe(&command_input, |this, input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.command = input.read(cx).value().to_string();
+                this.commit(cx);
+            }
+        });
         let appearance = state.read(cx).settings().appearance;
         let opacity = clamp_opacity(state.read(cx).settings().background_opacity);
         let blur = state.read(cx).settings().background_blur.min(MAX_BLUR);
@@ -567,11 +594,14 @@ impl SettingsView {
             font_size: clamp_font(terminal.font_size),
             scrollback: clamp_scrollback(terminal.scrollback as i64),
             computer_awake,
+            command,
+            command_input,
             error: None,
             _events: events,
             _slider_events: [opacity_events, blur_events],
             _language_events: language_events,
             _appearance_events: appearance_events,
+            _command_events: command_events,
         }
     }
 
@@ -585,6 +615,9 @@ impl SettingsView {
         settings.background_opacity = self.opacity;
         settings.background_blur = self.blur;
         settings.computer_awake = self.computer_awake;
+        // Blank is "use the default", which is what `None` says in the file.
+        settings.commit_message_command =
+            Some(self.command.clone()).filter(|command| !command.trim().is_empty());
         settings
     }
 
@@ -978,7 +1011,37 @@ impl SettingsView {
                         ),
                     ),
             )
+            .child(self.commit_message_row(colors))
             .child(self.awake_row(colors, cx))
+            .into_any_element()
+    }
+
+    /// The command the AI button runs: one field, and the diff goes in on its
+    /// stdin. Blank is the default, which the placeholder names.
+    fn commit_message_row(&self, colors: &ColorTokens) -> AnyElement {
+        div()
+            .id("settings-commit-message")
+            .test_support()
+            .v_flex()
+            .w_full()
+            .gap_1()
+            .child(div().text_sm().child(t!("settings.commit_message_command")))
+            .child(
+                div()
+                    .id("settings-commit-message-input")
+                    .test_support()
+                    .w_full()
+                    .child(Input::new(&self.command_input)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(t!(
+                        "settings.commit_message_command_hint",
+                        default = commit_message::DEFAULT_COMMAND
+                    )),
+            )
             .into_any_element()
     }
 

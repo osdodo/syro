@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use gpui_kit::base::{ColorTokens, ObservedElement, StyledExt as _, TestSupportExt as _, Theme};
 use gpui_kit::component::button::ButtonVariant;
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Icon, IconName, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -59,6 +60,12 @@ pub struct SessionPanel {
     /// The rows a click has opened: the ones showing their details and their
     /// buttons.
     expanded: BTreeSet<String>,
+    /// Whether the panel is picking sessions for a batch rather than reading
+    /// them: a click on a row takes it, and the header offers the delete.
+    picking: bool,
+    /// The sessions a click has taken. Ids, not indexes: a scan that reorders
+    /// the list must not move a choice onto another session.
+    chosen: BTreeSet<String>,
     /// The running scan. Held so that a second one replaces the first.
     _scan: Option<Task<()>>,
     /// What makes the panel redraw when the state moves under it: the list is the repository
@@ -87,6 +94,8 @@ impl SessionPanel {
             _input_events: None,
             collapsed: BTreeSet::new(),
             expanded: BTreeSet::new(),
+            picking: false,
+            chosen: BTreeSet::new(),
             _scan: None,
             _events: events,
         }
@@ -103,6 +112,22 @@ impl SessionPanel {
     #[cfg(test)]
     pub fn sessions(&self) -> &[Session] {
         &self.sessions
+    }
+
+    /// How many rows a batch delete would take, for a test that asserts on the
+    /// choice rather than on the drawing.
+    #[cfg(test)]
+    pub fn chosen(&self) -> usize {
+        self.chosen.len()
+    }
+
+    /// Take or drop one row's checkmark.
+    fn set_chosen(&mut self, id: &str, on: bool) {
+        if on {
+            self.chosen.insert(id.to_string());
+        } else {
+            self.chosen.remove(id);
+        }
     }
 
     /// Read the transcripts again, off the UI thread.
@@ -200,7 +225,9 @@ impl SessionPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let session = &self.sessions[index];
-        let expanded = self.expanded.contains(&session.id);
+        // Picking is not reading: an opened row would only push the checkmarks
+        // apart, and its buttons would be four ways to hit the wrong one.
+        let expanded = self.expanded.contains(&session.id) && !self.picking;
         let mut meta = vec![
             session.agent.display().to_string(),
             t!("sessions.messages", count = session.messages).to_string(),
@@ -251,16 +278,43 @@ impl SessionPanel {
                     .child(SharedString::from(meta.join(" · "))),
             )
             .on_click(cx.listener(move |this, _event, _window, cx| {
-                if !this.expanded.remove(&toggled) {
+                if this.picking {
+                    let on = !this.chosen.contains(&toggled);
+                    this.set_chosen(&toggled, on);
+                } else if !this.expanded.remove(&toggled) {
                     this.expanded.insert(toggled.clone());
                 }
                 cx.notify();
             }));
 
+        // The checkmark sits beside the row rather than inside it, so a click on
+        // the box is the box's and does not also reach the row.
+        let picked = self.picking.then(|| {
+            let id = session.id.clone();
+            Checkbox::new(SharedString::from(format!("session-{id}-choose")))
+                .checked(self.chosen.contains(&session.id))
+                .accessibility_label(SharedString::from(
+                    t!("sessions.select_session", title = session.title).to_string(),
+                ))
+                .on_change(cx.listener(move |this, checked: &bool, _window, cx| {
+                    this.set_chosen(&id, *checked);
+                    cx.notify();
+                }))
+        });
+
         let mut row = div()
             .id(SharedString::from(format!("session-row-{}", session.id)))
-            .w_full()
-            .child(head);
+            .w_full();
+        row = match picked {
+            Some(check) => row
+                .h_flex()
+                .items_center()
+                .pl_2()
+                .gap_1()
+                .child(check)
+                .child(div().flex_1().min_w_0().child(head)),
+            None => row.child(head),
+        };
         if expanded {
             row = row.child(self.expanded_block(session, colors, cx));
         }
@@ -398,59 +452,94 @@ impl SessionPanel {
     ) -> AnyElement {
         let collapsed = self.collapsed.contains(&group.cwd);
         let cwd = group.cwd.clone();
+        // The group's own checkmark, which is how a project with fifty rows is
+        // cleared without fifty clicks.
+        let picked = self.picking.then(|| {
+            let ids: Vec<String> = group
+                .rows
+                .iter()
+                .map(|at| self.sessions[*at].id.clone())
+                .collect();
+            let all = ids.iter().all(|id| self.chosen.contains(id));
+            Checkbox::new(SharedString::from(format!(
+                "session-group-{}-choose",
+                group.cwd
+            )))
+            .checked(all)
+            .accessibility_label(SharedString::from(
+                t!("sessions.select_group", name = group.name).to_string(),
+            ))
+            .on_change(cx.listener(move |this, checked: &bool, _window, cx| {
+                for id in &ids {
+                    this.set_chosen(id, *checked);
+                }
+                cx.notify();
+            }))
+        });
+        let head = div()
+            .id(SharedString::from(format!(
+                "session-group-head-{}",
+                group.cwd
+            )))
+            .test_support()
+            .aria_label(SharedString::from(
+                t!("sessions.group", name = group.name).to_string(),
+            ))
+            .h_flex()
+            .items_center()
+            .gap_1()
+            .w_full()
+            .px_2()
+            .py_1()
+            .cursor_pointer()
+            .hover(|el| el.bg(colors.muted))
+            .child(
+                Icon::new(if collapsed {
+                    IconName::ChevronRight
+                } else {
+                    IconName::ChevronDown
+                })
+                .size(px(12.)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(SharedString::from(group.name.clone())),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(SharedString::from(group.rows.len().to_string())),
+            )
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                if !this.collapsed.remove(&cwd) {
+                    this.collapsed.insert(cwd.clone());
+                }
+                cx.notify();
+            }));
         let mut block = div()
             .id(SharedString::from(format!("session-group-{}", group.cwd)))
             .test_support()
             .v_flex()
-            .w_full()
-            .child(
+            .w_full();
+        block = match picked {
+            Some(check) => block.child(
                 div()
-                    .id(SharedString::from(format!(
-                        "session-group-head-{}",
-                        group.cwd
-                    )))
-                    .test_support()
-                    .aria_label(SharedString::from(
-                        t!("sessions.group", name = group.name).to_string(),
-                    ))
                     .h_flex()
                     .items_center()
-                    .gap_1()
                     .w_full()
-                    .px_2()
-                    .py_1()
-                    .cursor_pointer()
-                    .hover(|el| el.bg(colors.muted))
-                    .child(
-                        Icon::new(if collapsed {
-                            IconName::ChevronRight
-                        } else {
-                            IconName::ChevronDown
-                        })
-                        .size(px(12.)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(SharedString::from(group.name.clone())),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(colors.muted_foreground)
-                            .child(SharedString::from(group.rows.len().to_string())),
-                    )
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        if !this.collapsed.remove(&cwd) {
-                            this.collapsed.insert(cwd.clone());
-                        }
-                        cx.notify();
-                    })),
-            );
+                    .pl_2()
+                    .gap_1()
+                    .child(check)
+                    .child(div().flex_1().min_w_0().child(head)),
+            ),
+            None => block.child(head),
+        };
         if collapsed {
             return block.into_any_element();
         }
@@ -474,6 +563,64 @@ impl Render for SessionPanel {
         let groups = self.groups(cx);
         let shown: usize = groups.iter().map(|group| group.rows.len()).sum();
 
+        // The batch's two words, drawn only while picking: the checkmarks are a
+        // mode, and a delete that acts on a choice nobody can see is a trap.
+        let delete_chosen = action_button(
+            "sessions-delete-chosen".to_string(),
+            t!("sessions.delete_chosen", count = self.chosen.len()).to_string(),
+            &colors,
+        )
+        .on_click(cx.listener(move |this, _event, window, cx| {
+            let paths: Vec<std::path::PathBuf> = this
+                .sessions
+                .iter()
+                .filter(|session| this.chosen.contains(&session.id))
+                .map(|session| session.path.clone())
+                .collect();
+            if paths.is_empty() {
+                return;
+            }
+            let count = paths.len();
+            let panel = cx.weak_entity();
+            window.open_alert_dialog(cx, move |alert, _, _| {
+                let paths = paths.clone();
+                let panel = panel.clone();
+                alert
+                    .title(t!("sessions.delete_title_many").to_string())
+                    .description(t!("sessions.delete_question_many", count = count).to_string())
+                    .confirm()
+                    .ok_text(t!("sessions.delete"))
+                    .ok_variant(ButtonVariant::Danger)
+                    .on_ok(move |_, _, cx| {
+                        for path in &paths {
+                            let _ = std::fs::remove_file(path);
+                        }
+                        let _ = panel.update(cx, |panel, cx| {
+                            panel.chosen.clear();
+                            panel.picking = false;
+                            panel.refresh(cx);
+                        });
+                        true
+                    })
+            });
+        }));
+        let pick = action_button(
+            "sessions-pick".to_string(),
+            if self.picking {
+                t!("common.done").to_string()
+            } else {
+                t!("sessions.select").to_string()
+            },
+            &colors,
+        )
+        .on_click(cx.listener(|this, _event, _window, cx| {
+            this.picking = !this.picking;
+            // Leaving the mode drops the batch: a choice carried out of sight is
+            // the one that deletes the wrong thing a week later.
+            this.chosen.clear();
+            cx.notify();
+        }));
+
         let header = div()
             .id("sessions-header")
             .test_support()
@@ -490,22 +637,28 @@ impl Render for SessionPanel {
                     .child(t!("sessions.title")),
             )
             .child(
-                div().h_flex().items_center().gap_1().child(
-                    div()
-                        .id("sessions-refresh")
-                        .test_support()
-                        .aria_label(t!("sessions.refresh"))
-                        .h_flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(22.))
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .text_color(colors.muted_foreground)
-                        .hover(|el| el.bg(colors.muted))
-                        .child(Icon::new(IconName::RefreshCw).size(px(14.)))
-                        .on_click(cx.listener(|this, _event, _window, cx| this.refresh(cx))),
-                ),
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap_1()
+                    .when(self.picking, |el| el.child(delete_chosen))
+                    .child(pick)
+                    .child(
+                        div()
+                            .id("sessions-refresh")
+                            .test_support()
+                            .aria_label(t!("sessions.refresh"))
+                            .h_flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(22.))
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .text_color(colors.muted_foreground)
+                            .hover(|el| el.bg(colors.muted))
+                            .child(Icon::new(IconName::RefreshCw).size(px(14.)))
+                            .on_click(cx.listener(|this, _event, _window, cx| this.refresh(cx))),
+                    ),
             );
 
         // The count line, which is what says the list is capped: "26 shown · newest 250".
