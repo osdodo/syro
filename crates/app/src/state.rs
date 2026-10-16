@@ -764,11 +764,17 @@ impl AppState {
     /// `repo::Add`. `path` is validated and reduced to the repo root, so adding
     /// a subdirectory of a checkout adds the checkout.
     pub fn add_repo(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let root = match git::repo_root(&path) {
+        // A folder git does not know yet is made into a repository rather than
+        // refused: an empty directory becomes an empty repository, ready for a
+        // first commit, and a folder with files keeps them as untracked.
+        let root = match git::repo_root(&path).or_else(|error| match path.is_dir() {
+            true => git::init(&path).and_then(|()| git::repo_root(&path)),
+            false => Err(error),
+        }) {
             Ok(root) => root,
             Err(error) => {
-                // Not a repo at all: there is no repo to hang the error on, so
-                // it goes on the window's.
+                // Even `git init` could not make it one: there is no repo to
+                // hang the error on, so it goes on the window's.
                 self.state_error = Some(format!("{}: {error:#}", path.display()));
                 cx.notify();
                 return;
@@ -2082,7 +2088,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_directory_that_is_not_a_repo_is_reported_not_added(cx: &mut TestAppContext) {
+    fn a_directory_that_is_not_a_repo_becomes_one(cx: &mut TestAppContext) {
         let (state_path, store_dir) = temp_store("state-notrepo");
         let (dir, _, _) = scratch_repo("state-notrepo");
         let bare = dir.join("not-a-repo");
@@ -2091,12 +2097,18 @@ mod tests {
         let state = cx.update(|cx| {
             cx.new(|cx| AppState::open(Store::new(state_path), dir.join("workspaces"), cx))
         });
-        cx.update(|cx| state.update(cx, |state, cx| state.add_repo(bare, cx)));
+        cx.update(|cx| state.update(cx, |state, cx| state.add_repo(bare.clone(), cx)));
 
         cx.update(|cx| {
             let state = state.read(cx);
-            assert!(state.repos().is_empty());
-            assert!(state.state_error().is_some());
+            assert!(state.state_error().is_none(), "{:?}", state.state_error());
+            assert_eq!(state.repos().len(), 1);
+            assert_eq!(state.repos()[0].path, bare.canonicalize().unwrap());
+            assert!(
+                bare.join(".git").is_dir(),
+                "the directory was not made into a repository"
+            );
+            assert!(state.active().is_some(), "adding activates something");
         });
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -42,40 +42,25 @@ pub struct AddProject {
     mode: Option<AddMode>,
     /// The URL to clone, or the name of the project to start.
     value: Entity<InputState>,
-    /// Where it goes. Filled from what was typed until the user edits it, which
-    /// is the same "one field suggests the other" rule the worktree form uses.
-    destination: Entity<InputState>,
+    /// The parent directory, changed only through the native folder picker.
+    destination: PathBuf,
     /// Except for the clone/create call, which is a child process.
     busy: bool,
     error: Option<String>,
-    _inputs: Vec<Subscription>,
 }
 
 impl AddProject {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let value =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("add_project.url_or_name")));
-        // Empty, with the default in the placeholder: what the field says is
-        // what the user typed, and "where did it go" is answered by the hint line
-        // under it rather than by a value nobody chose.
-        let destination = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(projects_root().to_string_lossy().to_string())
-        });
-        let inputs = vec![
-            cx.subscribe(&value, |_this, _input, _event: &InputEvent, cx| cx.notify()),
-            cx.subscribe(&destination, |_this, _input, _event: &InputEvent, cx| {
-                cx.notify()
-            }),
-        ];
         Self {
             state,
             window: window.window_handle(),
             mode: None,
             value,
-            destination,
+            destination: projects_root(),
             busy: false,
             error: None,
-            _inputs: inputs,
         }
     }
 
@@ -103,8 +88,37 @@ impl AddProject {
         window.dispatch_action(Box::new(crate::state::repo::Add { path: None }), cx);
     }
 
-    fn cancel(&mut self, cx: &mut Context<Self>) {
-        close(self.window, cx);
+    fn select_destination(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(t!("add_project.choose_directory").to_string().into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let result = picked
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result);
+            this.update(cx, |form, cx| {
+                match result {
+                    Ok(Some(paths)) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            form.destination = path;
+                            form.error = None;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => form.error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Clone or create, on the background executor: a clone is a network round
@@ -125,16 +139,10 @@ impl AddProject {
             cx.notify();
             return;
         }
-        let typed = self.destination.read(cx).value().trim().to_string();
-        let root = if typed.is_empty() {
-            projects_root()
-        } else {
-            PathBuf::from(&typed)
-        };
         let destination = match mode {
             // The URL names the project: the last path segment, without `.git`.
-            AddMode::Clone => root.join(project_name_from_url(&value)),
-            AddMode::New => root.join(value.clone()),
+            AddMode::Clone => self.destination.join(project_name_from_url(&value)),
+            AddMode::New => self.destination.join(value.clone()),
         };
         // Both doors into one shape: run a child process and hand back the
         // directory it made. The clone's own progress goes nowhere, so what the
@@ -303,7 +311,7 @@ impl Render for AddProject {
         // The door that was opened, and its field. Only one at a time: the
         // dialog is one decision wide.
         if let Some(mode) = self.mode {
-            let mut fields = div()
+            let fields = div()
                 .id("add-project-fields")
                 .test_support()
                 .v_flex()
@@ -332,11 +340,14 @@ impl Render for AddProject {
                         .child(t!("add_project.in")),
                 )
                 .child(
-                    div()
-                        .id("add-project-destination")
-                        .test_support()
+                    Button::new("add-project-destination")
+                        .outline()
                         .w_full()
-                        .child(Input::new(&self.destination).focus_bordered(false)),
+                        .icon(IconName::Folder)
+                        .label(self.destination.display().to_string())
+                        .tooltip(self.destination.display().to_string())
+                        .disabled(self.busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.select_destination(cx))),
                 )
                 .child(
                     div().h_flex().gap_2().justify_end().child(
@@ -353,32 +364,6 @@ impl Render for AddProject {
                             .on_click(cx.listener(|this, _, _, cx| this.confirm(cx))),
                     ),
                 );
-            let name = match mode {
-                AddMode::Clone => project_name_from_url(self.value.read(cx).value().as_ref()),
-                AddMode::New => self.value.read(cx).value().to_string(),
-            };
-            let typed = self.destination.read(cx).value().trim().to_string();
-            let root = if typed.is_empty() {
-                projects_root()
-            } else {
-                PathBuf::from(&typed)
-            };
-            fields = fields.child(
-                div()
-                    .id("add-project-hint")
-                    .test_support()
-                    .aria_label(SharedString::from(root.join(&name).display().to_string()))
-                    .text_xs()
-                    .text_color(colors.muted_foreground)
-                    .child(SharedString::from(match name.is_empty() {
-                        true => t!("add_project.will_add").to_string(),
-                        false => t!(
-                            "add_project.will_add_path",
-                            path = root.join(&name).display()
-                        )
-                        .to_string(),
-                    })),
-            );
             form = form.child(fields);
         }
 
@@ -395,15 +380,7 @@ impl Render for AddProject {
             );
         }
 
-        form.child(
-            div().h_flex().justify_end().child(
-                Button::new("add-project-cancel")
-                    .small()
-                    .outline()
-                    .label(t!("common.cancel"))
-                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
-            ),
-        )
+        form
     }
 }
 
@@ -1681,6 +1658,23 @@ mod window_tests {
         false
     }
 
+    fn pick_project_directory(cx: &mut TestAppContext, fixture: &Fixture, path: Option<PathBuf>) {
+        for _ in 0..3 {
+            click(cx, fixture, "add-project-destination");
+            if cx.did_prompt_for_paths() {
+                break;
+            }
+        }
+        assert!(cx.did_prompt_for_paths(), "the folder picker did not open");
+        cx.simulate_path_prompt_response(|options| {
+            assert!(options.directories);
+            assert!(!options.files);
+            assert!(!options.multiple);
+            path.map(|path| vec![path])
+        });
+        draw(cx, fixture);
+    }
+
     fn found(cx: &mut TestAppContext, fixture: &Fixture, id: &str) -> bool {
         cx.update_window(fixture.window.into(), |_, window, _| {
             window.try_find(id.to_string()).is_some()
@@ -1792,6 +1786,7 @@ mod window_tests {
         // The dialog: browse, clone, create — and the two that need a
         // field reveal it rather than opening a second dialog.
         assert!(found(cx, &fixture, "add-project-browse"));
+        assert!(!found(cx, &fixture, "add-project-cancel"));
         assert!(
             !found(cx, &fixture, "add-project-value"),
             "a field before a door"
@@ -1814,12 +1809,34 @@ mod window_tests {
         std::fs::create_dir_all(&made).unwrap();
         std::fs::write(made.join("README.md"), "made by the test\n").unwrap();
         type_into(cx, &fixture, "add-project-value", "made-by-test");
-        type_into(
-            cx,
-            &fixture,
-            "add-project-destination",
-            &place.to_string_lossy(),
+        assert!(!found(cx, &fixture, "add-project-hint"));
+        assert_eq!(
+            label(cx, &fixture, "add-project-destination"),
+            Some(syro_core::projects_root().display().to_string())
         );
+        pick_project_directory(cx, &fixture, None);
+        assert_eq!(
+            label(cx, &fixture, "add-project-destination"),
+            Some(syro_core::projects_root().display().to_string())
+        );
+        pick_project_directory(cx, &fixture, Some(place.clone()));
+        assert_eq!(
+            label(cx, &fixture, "add-project-destination"),
+            Some(place.display().to_string())
+        );
+        click(cx, &fixture, "add-project-clone");
+        assert!(!found(cx, &fixture, "add-project-hint"));
+        assert!(!found(cx, &fixture, "add-project-cancel"));
+        assert_eq!(
+            label(cx, &fixture, "add-project-destination"),
+            Some(place.display().to_string())
+        );
+        pick_project_directory(cx, &fixture, None);
+        assert_eq!(
+            label(cx, &fixture, "add-project-destination"),
+            Some(place.display().to_string())
+        );
+        click(cx, &fixture, "add-project-new");
         click(cx, &fixture, "add-project-confirm");
 
         // Canonical, because that is the spelling git and `repo_root` report
@@ -1870,6 +1887,41 @@ mod window_tests {
                 "add-project"
             )),
             "the dialog stayed open after adding"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_add_project_dialog_clones_into_the_selected_directory(cx: &mut TestAppContext) {
+        let fixture = open(cx, "add-project-clone");
+        click(cx, &fixture, "repo-add");
+        click(cx, &fixture, "add-project-clone");
+        let source = fixture.dir.join("main");
+        type_into(cx, &fixture, "add-project-value", &source.to_string_lossy());
+        let place = fixture.dir.join("clone projects");
+        std::fs::create_dir_all(&place).unwrap();
+        pick_project_directory(cx, &fixture, Some(place.clone()));
+        click(cx, &fixture, "add-project-confirm");
+
+        let cloned = place.join("main");
+        assert!(
+            draw_until(cx, &fixture, |cx, fixture| cx.update(|cx| fixture
+                .state
+                .read(cx)
+                .repos()
+                .iter()
+                .any(
+                    |repo| repo.path == cloned.canonicalize().unwrap_or(cloned.clone())
+                ))),
+            "the clone never reached the sidebar"
+        );
+        assert!(syro_core::git::is_git_repo(&cloned));
+        assert!(
+            draw_until(cx, &fixture, |cx, fixture| !found(
+                cx,
+                fixture,
+                "add-project"
+            )),
+            "the dialog stayed open after cloning"
         );
     }
 

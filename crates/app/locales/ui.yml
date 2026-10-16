@@ -637,6 +637,9 @@ add_project:
   in:
     en: In
     zh-CN: 位置
+  choose_directory:
+    en: Choose directory
+    zh-CN: 选择目录
   cloning:
     en: Cloning…
     zh-CN: 正在克隆…
@@ -649,12 +652,6 @@ add_project:
   create_btn:
     en: Create
     zh-CN: 创建
-  will_add:
-    en: will be added to the sidebar
-    zh-CN: 将添加到侧边栏
-  will_add_path:
-    en: "%{path} will be added to the sidebar"
-    zh-CN: "%{path} 将添加到侧边栏"
   needs_url:
     en: a clone needs a URL
     zh-CN: 克隆需要 URL
