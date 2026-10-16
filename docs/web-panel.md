@@ -6,9 +6,9 @@ permission、回一句 prompt、删/建 worktree。
 用普通 web 技术栈：手写 HTTP（`std::net::TcpListener`）+ 一个静态 HTML，没有
 npm、没有构建链、没有 WASM。理由见文末「为什么不用 gpui-kit 的 WASM target」。
 
-M1（看）、M2（操控）、M3（完整终端）都已实现；默认视图仍是纯文本 snapshot，
-它不加载任何库，手机流量最小，「完整终端」是按需打开的增强。逐项的进度与证据
-见下面「进度」。
+M1（看）、M2（操控）、M3（完整终端）都已实现。列表页不加载终端库，进入会话时
+按需加载 xterm.js 并打开全屏终端；也可以切换到纯文本 snapshot，库加载失败时
+自动回退。逐项的进度与证据见下面「进度」。
 
 ## 进度
 
@@ -42,6 +42,7 @@ cargo run -p syro
 
 ```sh
 cargo test                  # 328 + 119，逐层覆盖面板的全部路径
+node --test crates/app/src/web/index.test.cjs  # 概览、会话生命周期、延迟加载与发送失败
 cargo fmt --all --check
 cargo clippy --all-targets  # 面板相关文件 0 条警告
 ```
@@ -199,9 +200,14 @@ port = 8777
   `key_bytes`、`keys_to_bytes`。
 - `crates/app/src/web.rs`（新）：accept 线程、路由、鉴权、token、内嵌页面、
   SSE 流（`serve_stream`）、hex。
-- `crates/app/src/web/index.html`（新）：一页，2s 轮询 `/api/state`；打开某个终端后
-  1.2s 轮询它的 snapshot；按键按钮 + 文本框 + 复制 resume 命令；建/删 worktree；
-  选 worktree + agent 启一个终端；「完整终端」按需加载 xterm.js。
+- `crates/app/src/web/index.html`：紧凑的响应式工作台，桌面端双栏、手机端单栏，跟随
+  系统深浅主题；状态与操作固定列对齐，会话编号区分同一 Agent 的多个终端。手机上
+  新建操作放在列表上方，工作树的 `+` 会预选工作树。进入会话打开全屏原生 dialog，
+  默认使用 xterm.js；返回按钮和浏览器后退释放终端连接并回到列表。终端随可视窗口
+  resize，常用按键和输入区始终位于底部。状态由 SSE 推送，不支持 `EventSource`
+  时降级为 2s 轮询；纯文本视图每 1.2s 获取 snapshot。
+- `crates/app/src/web/index.test.cjs`：用 Node 内置测试器验证概览计数、空状态、选择
+  保持、重连提示、会话连接释放、延迟加载隔离与发送失败保留输入，无额外依赖。
 - `crates/app/src/web/{xterm.js,xterm.css,xterm-addon-fit.js}`（新，vendored）。
 - `crates/app/src/main.rs`：`Workspace::start_web` / `serve_web` / `answer` /
   `run_web` / `web_snapshot` / `web_terminal_entity` / `web_repo_id`，以及 `main()`
@@ -254,9 +260,11 @@ gpui 侧只驱动 channel。
 
 ## 完整终端（M3）
 
-页面上的「完整终端」按钮把它切成 xterm.js 视图：颜色、TUI、滚动、鼠标都有；键盘是
-xterm 自己的隐藏 input（手机上就是系统输入法）。默认仍是纯文本 snapshot，
-xterm.js 只在按下那个按钮时才下载。
+列表里的「进入」按钮打开全屏 xterm.js 视图：颜色、TUI、滚动、鼠标都有；键盘是
+xterm 自己的隐藏 input（手机上就是系统输入法）。终端下方保留常用按键与文字输入，
+回车、Esc、Ctrl-C 和 y/n 排在最前。列表页不下载 xterm.js，首次进入会话时才加载。
+「简洁视图」切换到纯文本 snapshot；加载失败也会自动回退。Esc 在完整终端中交给
+Agent，返回按钮或浏览器后退关闭会话视图，底层桌面终端继续运行。
 
 **为什么用 SSE 而不是 WebSocket。** 上行已经是 POST（`/api/terminal/{id}/input`），
 只有下行是流，而浏览器自带 `EventSource`。SSE 不需要握手、不需要帧格式、不需要
