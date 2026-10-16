@@ -550,10 +550,7 @@ resource:
   usage_today:
     en: Today
     zh-CN: 今天
-  # The panel's own title, and the heading over the share legend.
-  usage_title:
-    en: Usage
-    zh-CN: 用量
+  # The heading over the share legend.
   usage_share:
     en: By model
     zh-CN: 按模型

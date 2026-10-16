@@ -1970,10 +1970,16 @@ impl Workspace {
             dialog
                 // No title and no close corner: the field says what the list is,
                 // and with no heading the X would float over the input. Escape
-                // and a click outside still close it — the footer says so.
+                // is the way out — the footer says so.
                 .close_button(false)
                 .w(px(840.))
                 .bg(dialog_background(cx))
+                // No scrim, like the settings form: the list floats over the
+                // window rather than alerting over it, and the window behind it
+                // is what the transparency setting was asked for. The dimmed
+                // area was also the click-away target, so a click outside is
+                // now nothing at all — the dialog still occludes the window.
+                .overlay(false)
                 .content(move |content, _, _| content.child(form.clone()))
         });
     }
@@ -7471,6 +7477,42 @@ mod window_tests {
         label(cx, fixture, "palette-footer")
     }
 
+    /// The palette floats over the window instead of dimming it: no scrim, like
+    /// the settings form. A click outside is therefore neither a way out nor a
+    /// click on what is behind — the dialog still occludes the window — so
+    /// Escape is the one way out, which is what the footer says.
+    #[gpui_kit::test]
+    fn the_palette_floats_without_a_scrim(cx: &mut TestAppContext) {
+        let fixture = open(cx, "palette-no-scrim");
+        activate(cx, &fixture);
+        press(cx, &fixture, "cmd-p");
+        assert!(
+            draw_until(cx, &fixture, |cx| found(cx, &fixture, "palette-input")),
+            "cmd-p did not open the palette"
+        );
+
+        // A click outside it: the palette stays up, and the control behind it —
+        // the usage chip, which opens its own panel — does not see it. Not a
+        // probe under the dialog's own box, because the dimmed area used to be
+        // the click-away target and this is the click it no longer answers to.
+        let palette = bounds_of(cx, &fixture, "palette");
+        let chip = bounds_of(cx, &fixture, "usage-open");
+        assert!(
+            !palette.contains(&chip.center()),
+            "the probe is under the palette: {chip:?}, {palette:?}"
+        );
+        click(cx, &fixture, "usage-open".to_string());
+        draw(cx, &fixture);
+        assert!(
+            found(cx, &fixture, "palette-input"),
+            "the palette closed on a click outside it"
+        );
+        assert!(
+            !found(cx, &fixture, "usage-panel"),
+            "the click went past the palette"
+        );
+    }
+
     #[gpui_kit::test]
     fn escape_closes_the_palette_and_leaves_nothing_behind(cx: &mut TestAppContext) {
         let fixture = open(cx, "palette-escape");
@@ -9041,14 +9083,25 @@ mod window_tests {
         assert!(found(cx, &fixture, "usage-days-box"), "no day chart");
         assert!(found(cx, &fixture, "usage-share-box"), "no share ring");
 
-        // The panel is a strip down the window's leading side: narrow, clear of the strip
+        // The panel is a strip down the window's trailing side: narrow, clear of the strip
         // it reports on — and its body scrolls, because the list of models can be longer
         // than any window. It is only as tall as the list makes it.
         let panel = bounds_of(cx, &fixture, "usage-panel");
         let strip = bounds_of(cx, &fixture, "resource-bar");
+        // The chip that opened it sits at the bar's trailing end, over the panel.
+        let chip = bounds_of(cx, &fixture, "usage-open");
         assert!(
-            panel.origin.x > px(24.) && panel.origin.x < px(120.),
-            "the panel is not just off the leading edge: {panel:?}"
+            strip.origin.x + strip.size.width - (chip.origin.x + chip.size.width) < px(32.),
+            "the usage chip is not at the status bar's trailing end: {chip:?}, {strip:?}"
+        );
+        let window_bounds = bounds_of(cx, &fixture, "usage-scrim");
+        let trailing = window_bounds.origin.x + window_bounds.size.width
+            - (panel.origin.x + panel.size.width);
+        // Off the trailing edge, but only just: the panel is placed where the
+        // red line was drawn, not against the window's own corner.
+        assert!(
+            trailing > px(8.) && trailing < px(32.),
+            "the panel is not just off the trailing edge: {panel:?}, {window_bounds:?}"
         );
         assert!(
             panel.size.width <= px(560.),
@@ -9068,9 +9121,11 @@ mod window_tests {
             !found(cx, &fixture, "usage-tail"),
             "the panel still has a tail"
         );
+        // No header row: the card is charts and the list, and the scrim behind it and
+        // escape are what close it.
         assert!(
-            found(cx, &fixture, "usage-close"),
-            "the card has no way out"
+            !found(cx, &fixture, "usage-title") && !found(cx, &fixture, "usage-close"),
+            "the card still has a header"
         );
         // The box the scroller was given, and the content inside it: the content being
         // taller is what the scrollbar is for, and a wheel over it has to move the list
@@ -9214,20 +9269,7 @@ mod window_tests {
             "the hover painted nothing over the panel: the tooltip is behind the card"
         );
 
-        // The card's own close button is the way out that does not need the window
-        // behind it.
-        click_visible(cx, &fixture, "usage-close");
-        assert!(
-            draw_until(cx, &fixture, |cx| !found(cx, &fixture, "usage-panel")),
-            "the close button left the panel up"
-        );
-        click_visible(cx, &fixture, "usage-open");
-        assert!(
-            draw_until(cx, &fixture, |cx| found(cx, &fixture, "usage-panel")),
-            "the chip did not open the panel again"
-        );
-
-        // And a click on the bar behind it dismisses it — without reaching the bar,
+        // A click on the bar behind it dismisses it — without reaching the bar,
         // so the settings form does not open as well. (Not the window's top edge,
         // which is the title bar's drag zone and ignores the press.)
         click(cx, &fixture, "resource-bar".to_string());

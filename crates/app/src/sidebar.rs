@@ -1577,12 +1577,16 @@ impl Sidebar {
             .h(px(24.))
             .px_2()
             .rounded_md()
-            .bg(colors.background)
+            // A wash of the text colour, like the worktree cards below: the box
+            // sits *on* the panel, and `colors.background` here is the window's
+            // own fill, so a see-through window drew it a layer denser than the
+            // panel it lies on — a near-solid black slab.
+            .bg(colors.foreground.alpha(0.04))
             .border_1()
             .border_color(colors.input)
             .cursor_pointer()
             .text_color(colors.muted_foreground)
-            .hover(|el| el.bg(colors.muted))
+            .hover(|el| el.bg(colors.foreground.alpha(0.08)))
             .child(Icon::new(IconName::Search).size(px(14.)).flex_shrink_0())
             .child(
                 div()

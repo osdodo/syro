@@ -758,6 +758,7 @@ impl Render for Palette {
 
         div()
             .id("palette")
+            .test_support()
             .v_flex()
             .gap_2()
             .w_full()

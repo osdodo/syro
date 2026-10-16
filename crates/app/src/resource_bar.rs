@@ -33,14 +33,13 @@ const USAGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 /// The strip's height.
 const BAR_HEIGHT: f32 = 24.;
 
-/// The panel's own measurements: its padding, the height of the title row above the
-/// scrolling body, the headline under it, the gap between any two of its rows, and how
-/// far it stands off the window's leading edge.
+/// The panel's own measurements: its padding, the headline at the top of its body,
+/// the gap between any two of its rows, and how far it stands off the window's
+/// trailing edge — close to it, but not against it.
 const PANEL_PADDING: f32 = 16.;
-const PANEL_TITLE: f32 = 24.;
 const PANEL_HEADLINE: f32 = 52.;
 const PANEL_GAP: f32 = 12.;
-const PANEL_INSET: f32 = 44.;
+const PANEL_INSET: f32 = 16.;
 
 /// One legend row, and the heading above the first of them: the only part of the panel
 /// that grows with the data, and so the only part its height is worked out from.
@@ -379,8 +378,8 @@ impl ResourceBar {
             .into_any_element()
     }
 
-    /// Open the usage detail: the panel the strip's chip drops down, centred over the
-    /// window.
+    /// Open the usage detail: the panel the strip's chip drops down over the window's
+    /// trailing side.
     ///
     /// Not `window.open_dialog`: a dialog's own surface is painted in a layer above the
     /// deferred pass its content draws in, so a chart's tooltip — which a chart draws
@@ -412,7 +411,7 @@ impl ResourceBar {
         let colors = Theme::global(cx).tokens.colors.clone();
         let strip = cx.entity().downgrade();
         // The panel's own size, worked out rather than negotiated: every piece of it is
-        // a number this side picks. A strip down the window's leading side — tall and
+        // a number this side picks. A strip down the window's trailing side — tall and
         // narrow, so the charts stay dense — with the model list running past the bottom,
         // where scrolling picks it up. The floor is the legend's own width: below it the
         // four columns would be the thing that overflowed.
@@ -427,8 +426,7 @@ impl ResourceBar {
             .as_ref()
             .map(|usage| usage.models.len())
             .unwrap_or(0);
-        let content = px(PANEL_TITLE
-            + PANEL_PADDING * 2.
+        let content = px(PANEL_PADDING * 2.
             + PANEL_HEADLINE
             + PANEL_GAP * 3.
             + LEGEND_HEAD
@@ -482,18 +480,17 @@ impl ResourceBar {
                         .h(window.height)
                         // Against the strip end of the window rather than the top: the
                         // panel hangs off the bar it reports on, and grows upward as the
-                        // list does. Off the leading edge by an inset, and clear of the
+                        // list does. Off the trailing edge by an inset, and clear of the
                         // strip by the same.
-                        .items_start()
+                        .items_end()
                         .justify_end()
                         .pb(px(PANEL_FOOT))
-                        .pl(px(PANEL_INSET))
+                        .pr(px(PANEL_INSET))
                         .child(usage_panel(
                             usage,
                             appear_key,
                             size(days_height, share_height),
                             panel,
-                            strip,
                             &colors,
                             cx,
                         )),
@@ -535,7 +532,6 @@ fn usage_panel(
     appear_key: u64,
     charts: Size<Pixels>,
     panel: Size<Pixels>,
-    strip: WeakEntity<ResourceBar>,
     colors: &ColorTokens,
     cx: &App,
 ) -> AnyElement {
@@ -544,9 +540,8 @@ fn usage_panel(
     // The ring is a share of the box it is drawn in, and the box the panel's own
     // width: both grow with the window rather than with a table of constants.
     let ring = (share_height - px(16.)).as_f32() * 0.4;
-    // What the body has to scroll within: the panel less its own padding and the
-    // title row above it.
-    let body_height = (height - px(PANEL_TITLE + PANEL_PADDING * 2.)).max(px(120.));
+    // What the body has to scroll within: the panel less its own padding.
+    let body_height = (height - px(PANEL_PADDING * 2.)).max(px(120.));
 
     let headline = |label: String, totals: &syro_core::session::Usage| {
         div()
@@ -635,7 +630,6 @@ fn usage_panel(
         // to.
         .occlude()
         .v_flex()
-        .gap(px(PANEL_GAP))
         .w(width)
         .h(height)
         .p(px(PANEL_PADDING))
@@ -643,42 +637,6 @@ fn usage_panel(
         .border_1()
         .border_color(colors.border)
         .bg(crate::settings_view::solid(colors.surface))
-        .child(
-            div()
-                .h_flex()
-                .justify_between()
-                .items_center()
-                .child(
-                    div()
-                        .id("usage-title")
-                        .test_support()
-                        .text_sm()
-                        .text_color(colors.muted_foreground)
-                        .child(SharedString::from(t!("resource.usage_title").to_string())),
-                )
-                .child(
-                    div()
-                        .id("usage-close")
-                        .test_support()
-                        .aria_label(t!("common.close"))
-                        .h_flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(20.))
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .hover(|el| el.bg(colors.muted))
-                        .child(Icon::new(IconName::Close).size(px(12.)))
-                        .on_click(move |_event, _, cx| {
-                            strip
-                                .update(cx, |bar, cx| {
-                                    bar.chart_open = false;
-                                    cx.notify();
-                                })
-                                .ok();
-                        }),
-                ),
-        )
         .child(
             // A column, scrolled: the panel is a tall strip down the window's side, and
             // the list of models is what runs past the bottom of it. The box the scroller
@@ -942,14 +900,18 @@ impl Render for ResourceBar {
                         Some(app) => format_bytes(app.rss_bytes),
                         None => "—".to_string(),
                     })),
-            )
-            .child(self.usage_chip(&colors, cx));
+            );
 
         if let Some(error) = &self.error {
             strip = strip.child(SharedString::from(
                 t!("resource.error", error = error).to_string(),
             ));
         }
+
+        // The chip waits at the bar's trailing end, and the spacer is what puts it
+        // there: the readout — and any error beside it — keep the leading side.
+        strip = strip.child(div().flex_1());
+        strip = strip.child(self.usage_chip(&colors, cx));
 
         if self.chart_open {
             strip = strip.child(self.chart_overlay(window.bounds().size, cx));
