@@ -869,6 +869,12 @@ impl Render for SettingsView {
                                         .v_flex()
                                         .w_full()
                                         .flex_shrink_0()
+                                        // A slider's thumb hangs 8px past either end
+                                        // of its track, and the rows are drawn under
+                                        // the scroller's clip: it needs that much room
+                                        // beside the track, or it is cut in half at the
+                                        // value whose end it is parked at.
+                                        .pl_2()
                                         .pr_3()
                                         .pb_4()
                                         .child(

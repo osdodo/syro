@@ -13,8 +13,8 @@ use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::event::CoreEvent;
 use syro_core::git;
+use syro_core::home_dir;
 use syro_core::model::{AgentId, AgentSpec, RepoId, WorktreeId};
-use syro_core::projects_root;
 
 use crate::Workspace;
 use crate::state::{AppState, terminal, worktree, worktree_name_problem};
@@ -58,7 +58,7 @@ impl AddProject {
             window: window.window_handle(),
             mode: None,
             value,
-            destination: projects_root(),
+            destination: home_dir(),
             busy: false,
             error: None,
         }
@@ -649,6 +649,7 @@ impl NewWorktree {
             agent: Some(agent),
             resume: None,
             seed: None,
+            model: None,
         };
         cx.defer(move |cx| {
             workspace.update(cx, |workspace, cx| workspace.start_terminal(&action, cx));
@@ -1812,12 +1813,12 @@ mod window_tests {
         assert!(!found(cx, &fixture, "add-project-hint"));
         assert_eq!(
             label(cx, &fixture, "add-project-destination"),
-            Some(syro_core::projects_root().display().to_string())
+            Some(syro_core::home_dir().display().to_string())
         );
         pick_project_directory(cx, &fixture, None);
         assert_eq!(
             label(cx, &fixture, "add-project-destination"),
-            Some(syro_core::projects_root().display().to_string())
+            Some(syro_core::home_dir().display().to_string())
         );
         pick_project_directory(cx, &fixture, Some(place.clone()));
         assert_eq!(

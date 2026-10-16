@@ -10,6 +10,7 @@ use gpui_kit::base::{ColorTokens, StyledExt as _, TestSupportExt as _, Theme};
 use gpui_kit::component::chart::PieChart;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::model::AgentStatus;
@@ -328,7 +329,11 @@ impl ResourceBar {
                 "resource.usage",
                 days = USAGE_DAYS,
                 tokens = format_tokens(usage.total.tokens),
-                cost = format!("${:.2}", usage.total.cost),
+                cost = format_cost(
+                    usage.total.cost,
+                    usage.total.estimated,
+                    usage.total.unpriced
+                ),
             )
             .to_string(),
         }
@@ -337,13 +342,24 @@ impl ResourceBar {
     /// The same numbers as a sentence, for the chip's aria label.
     fn usage_label(&self) -> String {
         match &self.usage {
-            Some(usage) if usage.total.tokens > 0 => t!(
-                "resource.usage_aria",
-                days = USAGE_DAYS,
-                tokens = format_tokens(usage.total.tokens),
-                cost = format!("${:.2}", usage.total.cost),
-            )
-            .to_string(),
+            Some(usage) if usage.total.tokens > 0 => {
+                let label = t!(
+                    "resource.usage_aria",
+                    days = USAGE_DAYS,
+                    tokens = format_tokens(usage.total.tokens),
+                    cost = format_cost(
+                        usage.total.cost,
+                        usage.total.estimated,
+                        usage.total.unpriced
+                    ),
+                )
+                .to_string();
+                if usage.total.estimated || usage.total.unpriced {
+                    format!("{label}. {}", t!("resource.usage_price_note"))
+                } else {
+                    label
+                }
+            }
             // Measuring, or nothing recorded: the short form already reads as one.
             _ => self.usage_text(),
         }
@@ -426,7 +442,17 @@ impl ResourceBar {
             .as_ref()
             .map(|usage| usage.models.len())
             .unwrap_or(0);
-        let content = px(PANEL_PADDING * 2.
+        let price_note_height = if self
+            .usage
+            .as_ref()
+            .is_some_and(|usage| usage.total.estimated || usage.total.unpriced)
+        {
+            44.
+        } else {
+            0.
+        };
+        let content = px(price_note_height
+            + PANEL_PADDING * 2.
             + PANEL_HEADLINE
             + PANEL_GAP * 3.
             + LEGEND_HEAD
@@ -556,11 +582,11 @@ fn usage_panel(
                         .text_color(colors.muted_foreground)
                         .child(SharedString::from(label)),
                 )
-                .child(
-                    div()
-                        .text_lg()
-                        .child(SharedString::from(format!("${:.2}", totals.cost))),
-                )
+                .child(div().text_lg().child(SharedString::from(format_cost(
+                    totals.cost,
+                    totals.estimated,
+                    totals.unpriced,
+                ))))
                 .child(div().text_xs().text_color(colors.muted_foreground).child(
                     SharedString::from(format!("{} tok", format_tokens(totals.tokens))),
                 ))
@@ -611,6 +637,8 @@ fn usage_panel(
                         model: SharedString::from(slice.model.clone()),
                         tokens: slice.tokens,
                         cost: slice.cost,
+                        estimated: slice.estimated,
+                        unpriced: slice.unpriced,
                         color: color_of(&slice.model),
                     })
                     .collect(),
@@ -625,9 +653,9 @@ fn usage_panel(
         .tooltip_name(|share| share.label.clone())
         .tooltip_value(|share, _, _| {
             SharedString::from(format!(
-                "{} tok · ${:.2}",
+                "{} tok · {}",
                 format_tokens(share.tokens),
-                share.cost
+                format_cost(share.cost, share.estimated, share.unpriced)
             ))
         })
         .inner_radius(ring * 0.62)
@@ -702,6 +730,18 @@ fn usage_panel(
                                             &usage.today,
                                         )),
                                 )
+                                .when(usage.total.estimated || usage.total.unpriced, |body| {
+                                    body.child(
+                                        div()
+                                            .id("usage-price-note")
+                                            .test_support()
+                                            .text_xs()
+                                            .text_color(colors.muted_foreground)
+                                            .child(SharedString::from(
+                                                t!("resource.usage_price_note").to_string(),
+                                            )),
+                                    )
+                                })
                                 .child(
                                     div()
                                         .id("usage-days-box")
@@ -734,6 +774,8 @@ struct Share {
     label: SharedString,
     tokens: u64,
     cost: f64,
+    estimated: bool,
+    unpriced: bool,
     /// The share of the window's tokens, which is what the ring's arcs are laid out
     /// from and what the legend's last column prints.
     percent: f64,
@@ -752,6 +794,8 @@ fn shares_of(usage: &UsageSummary, cx: &App) -> Vec<Share> {
             label: SharedString::from(model.label.clone()),
             tokens: model.tokens,
             cost: model.cost,
+            estimated: model.estimated,
+            unpriced: model.unpriced,
             percent: if total == 0 {
                 0.
             } else {
@@ -815,10 +859,10 @@ fn legend(shares: &[Share], max_height: Pixels, colors: &ColorTokens) -> AnyElem
                 .id(SharedString::from(format!("usage-legend-{}", share.label)))
                 .test_support()
                 .aria_label(SharedString::from(format!(
-                    "{}: {} tok · ${:.2} · {:.0}%",
+                    "{}: {} tok · {} · {:.0}%",
                     share.label,
                     format_tokens(share.tokens),
-                    share.cost,
+                    format_cost(share.cost, share.estimated, share.unpriced),
                     share.percent
                 )))
                 .h_flex()
@@ -850,7 +894,10 @@ fn legend(shares: &[Share], max_height: Pixels, colors: &ColorTokens) -> AnyElem
                     LEGEND_TOKENS,
                     format!("{} tok", format_tokens(share.tokens)),
                 ))
-                .child(number(LEGEND_COST, format!("${:.2}", share.cost)))
+                .child(number(
+                    LEGEND_COST,
+                    format_cost(share.cost, share.estimated, share.unpriced),
+                ))
                 .child(number(LEGEND_PERCENT, format!("{:.0}%", share.percent))),
         );
     }
@@ -973,9 +1020,19 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Tokens as a person reads them, and as a strip 24 points tall can hold: a
-/// transcript's own tokens run to billions, so the number is a decimal and a
-/// letter rather than a count.
+/// Keep estimated and incomplete costs distinct from recorded prices, in every chart.
+pub fn format_cost(cost: f64, estimated: bool, unpriced: bool) -> String {
+    if unpriced && cost == 0. {
+        return t!("resource.usage_unknown").to_string();
+    }
+    format!(
+        "{}${cost:.2}{}",
+        if estimated { "~" } else { "" },
+        if unpriced { "+" } else { "" }
+    )
+}
+
+/// Tokens as a person reads them, in units a 24-point strip can hold.
 pub fn format_tokens(tokens: u64) -> String {
     let tokens = tokens as f64;
     if tokens >= 1e9 {
@@ -1004,7 +1061,7 @@ mod tests {
 
     use gpui_kit::Task;
 
-    use super::{LiveTerminal, MODEL_HUES, ResourceBar, format_tokens, model_hue};
+    use super::{LiveTerminal, MODEL_HUES, ResourceBar, format_cost, format_tokens, model_hue};
 
     /// Two worktrees, three terminals, one of them with a child of its own.
     fn table() -> ProcessTable {
@@ -1076,15 +1133,19 @@ mod tests {
             model: model.to_string(),
             tokens,
             cost,
+            estimated: false,
+            unpriced: false,
         };
         UsageSummary {
             total: Usage {
                 tokens: 2_500_000_000,
                 cost: 1824.49,
+                ..Usage::default()
             },
             today: Usage {
                 tokens: 40_000_000,
                 cost: 4.46,
+                ..Usage::default()
             },
             days: vec![
                 UsageDay {
@@ -1104,11 +1165,15 @@ mod tests {
                 label: "iotex".to_string(),
                 tokens: 1_564_000_000,
                 cost: 12.64,
+                estimated: false,
+                unpriced: false,
             }],
             models: vec![UsageGroup {
                 label: "claude-opus-5-5".to_string(),
                 tokens: 1_564_000_000,
                 cost: 12.64,
+                estimated: false,
+                unpriced: false,
             }],
         }
     }
@@ -1131,6 +1196,22 @@ mod tests {
         // Nothing recorded is not the same as not having looked.
         bar.usage = Some(UsageSummary::default());
         assert_eq!(bar.usage_text(), "Usage: none");
+    }
+
+    #[test]
+    fn estimates_and_unpriced_usage_are_not_shown_as_actual_zero_cost() {
+        assert_eq!(format_cost(1.25, false, false), "$1.25");
+        assert_eq!(format_cost(1.25, true, false), "~$1.25");
+        assert_eq!(format_cost(0., false, true), "Unknown");
+        assert_eq!(format_cost(1.25, true, true), "~$1.25+");
+        assert_eq!(format_cost(0., false, false), "$0.00");
+        let mut bar = bar();
+        let mut usage = usage();
+        usage.total.estimated = true;
+        usage.total.unpriced = true;
+        bar.set_usage(usage);
+        assert!(bar.usage_text().contains("~$1824.49+"));
+        assert!(bar.usage_label().contains("OpenAI"));
     }
 
     /// Every model's colour has to be a different one: the palette this replaced was

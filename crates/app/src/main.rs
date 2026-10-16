@@ -983,6 +983,7 @@ impl Workspace {
                 path: session.path.clone(),
             }),
             seed: None,
+            model: None,
         };
         self.start_terminal(&action, cx);
     }
@@ -1033,12 +1034,17 @@ impl Workspace {
             self.terminal_error = Some(t!("workspace.no_resume_args", name = name).to_string());
             return None;
         }
-        let spec = match &agent {
+        let mut spec = match &agent {
             Some(agent) => {
                 term_spec_for_agent(agent, worktree.path.clone(), size, action.resume.as_ref())
             }
             None => TermSpec::shell(worktree.path.clone(), size),
         };
+        if action.resume.is_none() && agent.is_some() {
+            if let Some(model) = &action.model {
+                spec.args.extend(["--model".into(), model.clone()]);
+            }
+        }
         let spec = with_settings(spec, &settings);
         let spec = match startable(spec) {
             Ok(spec) => spec,
@@ -1069,6 +1075,7 @@ impl Workspace {
             agent: None,
             resume: None,
             seed: None,
+            model: None,
         };
         self.start_terminal(&action, cx);
     }
@@ -1090,6 +1097,7 @@ impl Workspace {
             agent: None,
             resume: None,
             seed: None,
+            model: None,
         };
         let Some(view) = self.open_terminal(&action, cx) else {
             return;
@@ -1297,6 +1305,7 @@ impl Workspace {
                 agent: None,
                 resume: None,
                 seed: None,
+                model: None,
             },
         )];
         for spec in self.state.read(cx).agents() {
@@ -1309,6 +1318,7 @@ impl Workspace {
                     agent: Some(spec.id.clone()),
                     resume: None,
                     seed: None,
+                    model: None,
                 },
             ));
         }
@@ -5683,6 +5693,44 @@ mod window_tests {
         );
     }
 
+    /// A repository with nothing to switch to is a branch name, not a switcher: git
+    /// reports `main` from HEAD before there is a ref for it, which is the state a
+    /// plain folder added as a project is in, and a menu there is an empty box.
+    #[gpui_kit::test]
+    fn the_git_panel_offers_no_switch_with_no_branch_to_switch_to(cx: &mut TestAppContext) {
+        let fixture = open_with(cx, "git-one-branch", Settings::default(), |root, _| {
+            // Every local ref, and not only `main`: the fixture's own two worktree
+            // branches are refs in the same repository, and either would be
+            // something to switch to.
+            for branch in ["main", "wt-one", "wt-two"] {
+                let ref_name = format!("refs/heads/{branch}");
+                git(root, &["update-ref", "-d", &ref_name]);
+            }
+            Vec::new()
+        });
+        let panel = cx.update(|cx| fixture.workspace.read(cx).git.clone());
+        show_panel(cx, &fixture, "panel-git", Some(Panel::Git));
+        assert!(
+            draw_until(cx, &fixture, |cx| cx
+                .update(|cx| panel.read(cx).status().is_some())),
+            "the panel never read the branch"
+        );
+
+        // The branch is on screen, and the line is a label: it says nothing about
+        // switching, and there is no menu behind it — no box with nothing in it.
+        assert!(
+            label(cx, &fixture, "git-branch-name").is_some_and(|name| name.contains("main")),
+            "the branch name is not drawn: {:?}",
+            label(cx, &fixture, "git-branch-name")
+        );
+        click_visible(cx, &fixture, "git-branch-name");
+        draw(cx, &fixture);
+        assert!(
+            !found(cx, &fixture, "git-branch-menu"),
+            "the branch menu opened with no branch in it"
+        );
+    }
+
     /// The source control panel: the branch on screen, what it has against its
     /// upstream, and the commits that got it there.
     #[gpui_kit::test]
@@ -6978,6 +7026,7 @@ mod window_tests {
                 agent: Some("quitter".to_string()),
                 resume: None,
                 seed: None,
+                model: None,
             },
         );
 
@@ -7290,12 +7339,9 @@ mod window_tests {
     #[gpui_kit::test]
     fn a_session_row_opens_onto_its_details_and_its_buttons(cx: &mut TestAppContext) {
         let fixture = open(cx, "sessions-expand");
-        let roots = pi_history(
-            &fixture._dir.join("home"),
-            &fixture.root,
-            "aaaa1111",
-            "carry on",
-        );
+        let home = fixture._dir.join("home");
+        let roots = pi_history(&home, &fixture.root, "aaaa1111", "carry on");
+        pi_history(&home, &fixture.root, "bbbb2222", "another session");
         let _ = open_sessions(cx, &fixture, roots);
 
         // Shut until asked: a list where every row drew three buttons would be a
@@ -7318,6 +7364,16 @@ mod window_tests {
         assert!(found(cx, &fixture, "session-aaaa1111-cwd"));
         assert!(found(cx, &fixture, "session-aaaa1111-id"));
 
+        // Reading another session closes the previous one.
+        click_visible(cx, &fixture, "session-bbbb2222");
+        draw(cx, &fixture);
+        assert!(found(cx, &fixture, "session-bbbb2222-resume"));
+        assert!(!found(cx, &fixture, "session-aaaa1111-resume"));
+        click_visible(cx, &fixture, "session-aaaa1111");
+        draw(cx, &fixture);
+        assert!(found(cx, &fixture, "session-aaaa1111-resume"));
+        assert!(!found(cx, &fixture, "session-bbbb2222-resume"));
+
         // And the same click shuts it.
         click(cx, &fixture, "session-aaaa1111".to_string());
         assert!(
@@ -7330,6 +7386,60 @@ mod window_tests {
         );
     }
 
+    /// Leaving the session list drops the open row, including project changes
+    /// dispatched without a mouse click.
+    #[gpui_kit::test]
+    fn a_session_row_closes_when_leaving_the_list(cx: &mut TestAppContext) {
+        let fixture = open(cx, "sessions-reset");
+        let second = add_second_repo(cx, &fixture);
+        cx.update(|cx| {
+            fixture.state.update(cx, |state, cx| {
+                state.activate(fixture.root.to_str().unwrap(), cx);
+            });
+        });
+        let roots = pi_history(
+            &fixture._dir.join("home"),
+            &fixture.root,
+            "aaaa1111",
+            "carry on",
+        );
+        let _ = open_sessions(cx, &fixture, roots);
+
+        for destination in ["project", "tab-0", "panel-files"] {
+            click_visible(cx, &fixture, "session-aaaa1111");
+            draw(cx, &fixture);
+            assert!(found(cx, &fixture, "session-aaaa1111-resume"));
+
+            if destination == "project" {
+                cx.update(|cx| {
+                    fixture.state.update(cx, |state, cx| {
+                        state.activate(second.to_str().unwrap(), cx);
+                    });
+                });
+                draw(cx, &fixture);
+                assert!(!found(cx, &fixture, "session-aaaa1111"));
+                cx.update(|cx| {
+                    fixture.state.update(cx, |state, cx| {
+                        state.activate(fixture.root.to_str().unwrap(), cx);
+                    });
+                });
+            } else {
+                click_visible(cx, &fixture, destination);
+                draw(cx, &fixture);
+                if destination == "panel-files" {
+                    assert!(!found(cx, &fixture, "session-panel"));
+                    click_visible(cx, &fixture, "panel-sessions");
+                }
+            }
+            draw(cx, &fixture);
+            assert!(found(cx, &fixture, "session-aaaa1111"));
+            assert!(
+                !found(cx, &fixture, "session-aaaa1111-resume"),
+                "the row stayed open after leaving for {destination}"
+            );
+        }
+    }
+
     /// "Start a new session" opens a fresh agent — the same worktree, the same
     /// preset, no resume flags — seeded with a handoff from the transcript it came
     /// from.
@@ -7340,7 +7450,7 @@ mod window_tests {
                 id: "pi".into(),
                 name: "Pi (test)".into(),
                 command: "/bin/sh".into(),
-                args: vec!["-c".into(), "echo carried=\"$1\"; sleep 30".into()],
+                args: vec!["-c".into(), "echo carried=\"$*\"; sleep 30".into()],
                 resume_args: vec!["--session".into(), "{path}".into()],
                 new_args: vec!["{id}".into(), "{prompt}".into()],
                 env: Default::default(),
@@ -7398,6 +7508,20 @@ mod window_tests {
                     .text()
                     .contains("Original request: carry on")))),
             "the handoff never reached the new session"
+        );
+        assert!(
+            cx.update(
+                |cx| fixture
+                    .workspace
+                    .read(cx)
+                    .active_terminal(cx)
+                    .is_some_and(|terminal| terminal
+                        .read(cx)
+                        .screen()
+                        .text()
+                        .contains("anthropic/claude-opus-5"))
+            ),
+            "the original model was not passed to the new session"
         );
     }
 
@@ -7779,6 +7903,51 @@ mod window_tests {
         assert_eq!(
             file_tabs(&active_tabs(cx, &fixture))[0],
             fixture.root.join(NOTES)
+        );
+    }
+
+    /// The keyboard can walk past the last row on screen: the list scrolls with
+    /// the selection, so the row the arrows reached is the row in view.
+    #[gpui_kit::test]
+    fn the_list_scrolls_with_the_selection(cx: &mut TestAppContext) {
+        let fixture = open(cx, "palette-scroll");
+        // More tracked files than the list can show at once, so walking to the
+        // end has to move the view, not just the highlight.
+        for index in 0..60 {
+            std::fs::write(
+                fixture.root.join("src").join(format!("many-{index:02}.rs")),
+                "fn main() {}\n",
+            )
+            .unwrap();
+        }
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&fixture.root)
+            .args(["add", "-A"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        activate(cx, &fixture);
+        press(cx, &fixture, "cmd-p");
+        assert!(draw_until(cx, &fixture, |cx| palette_row(cx, &fixture, 0).is_some()));
+
+        // The list is capped at fifty rows, so fifty downs land on the last one.
+        for _ in 0..50 {
+            press(cx, &fixture, "down");
+        }
+        let viewport = bounds_of(cx, &fixture, "palette-rows");
+        let last = bounds_of(cx, &fixture, "palette-item-49");
+        // `Bounds::contains` is half-open, and the row that was scrolled to sits
+        // flush against the bottom edge, so the check is the two edges themselves.
+        assert!(
+            last.origin.y >= viewport.origin.y
+                && last.origin.y + last.size.height <= viewport.origin.y + viewport.size.height,
+            "the last row is not in view: {last:?} in {viewport:?}"
         );
     }
 
@@ -8502,6 +8671,7 @@ mod window_tests {
                     agent: Some("chatty".into()),
                     resume: None,
                     seed: None,
+                    model: None,
                 }),
                 cx,
             );
@@ -9169,20 +9339,26 @@ mod window_tests {
             model: model.to_string(),
             tokens,
             cost,
+            estimated: false,
+            unpriced: false,
         };
         let model = |label: &str, tokens: u64, cost: f64| UsageGroup {
             label: label.to_string(),
             tokens,
             cost,
+            estimated: false,
+            unpriced: false,
         };
         let usage = UsageSummary {
             total: Usage {
                 tokens: 2_500_000_000,
                 cost: 1824.49,
+                ..Usage::default()
             },
             today: Usage {
                 tokens: 40_000_000,
                 cost: 4.46,
+                ..Usage::default()
             },
             days: vec![
                 UsageDay {
@@ -9206,6 +9382,8 @@ mod window_tests {
                 label: "iotex".to_string(),
                 tokens: 1_564_000_000,
                 cost: 12.64,
+                estimated: false,
+                unpriced: false,
             }],
             // Ten of them, which is what the panel has to hold: the list runs past the
             // bottom of the strip it is drawn in, and the body scrolls to it.
@@ -9459,6 +9637,68 @@ mod window_tests {
         assert!(
             !found(cx, &fixture, "settings"),
             "the click went past the panel"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_usage_panel_marks_official_estimates_and_unknown_prices(cx: &mut TestAppContext) {
+        let fixture = open(cx, "usage-estimate");
+        let usage = UsageSummary {
+            total: Usage {
+                tokens: 1_000,
+                cost: 1.25,
+                estimated: true,
+                unpriced: true,
+            },
+            days: vec![UsageDay {
+                label: "10-16".into(),
+                tokens: 1_000,
+                cost: 1.25,
+                models: vec![],
+            }],
+            models: vec![
+                UsageGroup {
+                    label: "gpt-6.1-sol".into(),
+                    tokens: 900,
+                    cost: 1.25,
+                    estimated: true,
+                    unpriced: false,
+                },
+                UsageGroup {
+                    label: "gpt-unknown".into(),
+                    tokens: 100,
+                    cost: 0.,
+                    estimated: false,
+                    unpriced: true,
+                },
+            ],
+            ..UsageSummary::default()
+        };
+        let bar = cx.update(|cx| fixture.workspace.read(cx).resource_bar().clone());
+        bar.update(cx, |bar, cx| {
+            bar.set_usage(usage);
+            cx.notify();
+        });
+        assert!(
+            label(cx, &fixture, "usage-open")
+                .unwrap()
+                .contains("OpenAI")
+        );
+        click_visible(cx, &fixture, "usage-open");
+        assert!(draw_until(cx, &fixture, |cx| found(
+            cx,
+            &fixture,
+            "usage-price-note"
+        )));
+        assert!(
+            label(cx, &fixture, "usage-legend-gpt-6.1-sol")
+                .unwrap()
+                .contains("~$1.25")
+        );
+        assert!(
+            label(cx, &fixture, "usage-legend-gpt-unknown")
+                .unwrap()
+                .contains("Unknown")
         );
     }
 
@@ -9760,6 +10000,68 @@ mod window_tests {
             component.highlight_theme.style.editor_gutter_background, None,
             "the gutter's own fill did not come back as the theme has it"
         );
+    }
+
+    /// The thumb is wider than the track is high and sits centred on it, so it
+    /// hangs past either end of the travel. That overhang has to stay inside the
+    /// pane the rows are drawn in — the rows scroll, and the scroller's clip is
+    /// the pane's own edge, which drew the solid end of the transparency slider
+    /// as a half circle.
+    #[gpui_kit::test]
+    fn a_slider_thumb_is_whole_at_the_ends_of_its_track(cx: &mut TestAppContext) {
+        let fixture = open(cx, "settings-thumb");
+        open_settings_tab(cx, &fixture, "settings-tab-appearance");
+        let state = fixture.state.clone();
+
+        let scale = cx
+            .update_window(fixture.window.into(), |_, window, _| window.scale_factor())
+            .unwrap();
+        // What a clip does to a frame is only readable off the quads: they carry
+        // the bounds they were painted at beside the clip they were drawn under.
+        let cut = |cx: &mut TestAppContext, at: &str| {
+            let row = bounds_of(cx, &fixture, "settings-opacity").scale(scale);
+            let quads = cx
+                .update_window(fixture.window.into(), |_, window, _| window.painted_quads())
+                .unwrap();
+            let cut: Vec<_> = quads
+                .into_iter()
+                .filter(|quad| {
+                    let (painted, clip) = (&quad.bounds, &quad.content_mask.bounds);
+                    row.contains(&painted.center())
+                        && !(clip.left() <= painted.left()
+                            && clip.top() <= painted.top()
+                            && clip.right() >= painted.right()
+                            && clip.bottom() >= painted.bottom())
+                })
+                .collect();
+            assert!(
+                cut.is_empty(),
+                "{at}: this row is painted outside the clip it is drawn under: {cut:?}"
+            );
+        };
+
+        // The solid end is where the form opens, so it is on screen already.
+        draw(cx, &fixture);
+        cut(cx, "the solid end");
+        // And the far end, once the value the click asked for has landed in the
+        // state that moves the thumb.
+        let at_min = |cx: &mut TestAppContext| {
+            cx.update(|cx| state.read(cx).settings().background_opacity == MIN_OPACITY)
+        };
+        let mut reached = false;
+        for _ in 0..3 {
+            click_at_fraction(cx, &fixture, "settings-opacity-slider", 1.);
+            if draw_until(cx, &fixture, at_min) {
+                reached = true;
+                break;
+            }
+        }
+        assert!(
+            reached,
+            "the click at the far end of the track never got there"
+        );
+        draw(cx, &fixture);
+        cut(cx, "the transparent end");
     }
 
     /// The settings form floats over the window instead of dimming it: no scrim,
@@ -10525,6 +10827,7 @@ mod window_tests {
                     agent: None,
                     resume: None,
                     seed: None,
+                    model: None,
                 }),
                 cx,
             );

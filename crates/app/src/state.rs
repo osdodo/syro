@@ -117,6 +117,8 @@ pub mod terminal {
         /// into the preset's `{prompt}` `new_args`; ignored by a preset with no
         /// such argument.
         pub seed: Option<String>,
+        /// The model to select when starting a fresh Pi session.
+        pub model: Option<String>,
     }
 
     /// A new shell tab in the worktree on screen. The tab bar's `+` and `cmd-t`

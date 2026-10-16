@@ -57,9 +57,8 @@ pub struct SessionPanel {
     input: Option<Entity<InputState>>,
     _input_events: Option<Subscription>,
     collapsed: BTreeSet<String>,
-    /// The rows a click has opened: the ones showing their details and their
-    /// buttons.
-    expanded: BTreeSet<String>,
+    /// Only the current row shows its details and buttons.
+    expanded: Option<String>,
     /// Whether the panel is picking sessions for a batch rather than reading
     /// them: a click on a row takes it, and the header offers the delete.
     picking: bool,
@@ -77,10 +76,12 @@ pub struct SessionPanel {
 
 impl SessionPanel {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let events = cx.subscribe(&state, |_this, _state, event: &CoreEvent, cx| match event {
-            CoreEvent::ActiveWorktreeChanged { .. }
-            | CoreEvent::WorktreeCreated { .. }
-            | CoreEvent::WorktreeRemoved { .. } => cx.notify(),
+        let events = cx.subscribe(&state, |this, _state, event: &CoreEvent, cx| match event {
+            CoreEvent::ActiveWorktreeChanged { .. } => {
+                this.expanded = None;
+                cx.notify();
+            }
+            CoreEvent::WorktreeCreated { .. } | CoreEvent::WorktreeRemoved { .. } => cx.notify(),
             _ => {}
         });
         Self {
@@ -94,7 +95,7 @@ impl SessionPanel {
             input: None,
             _input_events: None,
             collapsed: BTreeSet::new(),
-            expanded: BTreeSet::new(),
+            expanded: None,
             picking: false,
             chosen: BTreeSet::new(),
             _scan: None,
@@ -230,7 +231,7 @@ impl SessionPanel {
         let session = &self.sessions[index];
         // Picking is not reading: an opened row would only push the checkmarks
         // apart, and its buttons would be four ways to hit the wrong one.
-        let expanded = self.expanded.contains(&session.id) && !self.picking;
+        let expanded = self.expanded.as_ref() == Some(&session.id) && !self.picking;
         let mut meta = vec![
             session.agent.display().to_string(),
             t!("sessions.messages", count = session.messages).to_string(),
@@ -284,8 +285,9 @@ impl SessionPanel {
                 if this.picking {
                     let on = !this.chosen.contains(&toggled);
                     this.set_chosen(&toggled, on);
-                } else if !this.expanded.remove(&toggled) {
-                    this.expanded.insert(toggled.clone());
+                } else {
+                    this.expanded =
+                        (this.expanded.as_ref() != Some(&toggled)).then(|| toggled.clone());
                 }
                 cx.notify();
             }));
@@ -395,12 +397,18 @@ impl SessionPanel {
                                 // A compact handoff from the transcript, so the
                                 // fresh context window starts on the work already done.
                                 let seed = session::handoff(for_new.agent, &for_new.path);
+                                let model = for_new
+                                    .provider
+                                    .as_ref()
+                                    .zip(for_new.model.as_ref())
+                                    .map(|(provider, model)| format!("{provider}/{model}"));
                                 window.dispatch_action(
                                     Box::new(terminal::New {
                                         worktree_id,
                                         agent: Some(agent),
                                         resume: None,
                                         seed,
+                                        model,
                                     }),
                                     cx,
                                 );
@@ -720,6 +728,12 @@ impl Render for SessionPanel {
         div()
             .id("session-panel")
             .test_support()
+            .when(self.expanded.is_some() && !self.picking, |el| {
+                el.on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                    this.expanded = None;
+                    cx.notify();
+                }))
+            })
             .v_flex()
             .w_full()
             .flex_1()
@@ -812,6 +826,7 @@ mod tests {
             title: "Fix the flaky test".into(),
             preview: "On it.".into(),
             model: Some("claude-opus-5".into()),
+            provider: Some("anthropic".into()),
             messages: 2,
             updated_ms: 0,
         }

@@ -26,6 +26,8 @@ pub struct ModelSpend {
     pub model: SharedString,
     pub tokens: u64,
     pub cost: f64,
+    pub estimated: bool,
+    pub unpriced: bool,
     pub color: Hsla,
 }
 
@@ -180,16 +182,20 @@ impl Plot for ModelBars {
         // One row per model, in the same colours and the same order as the column.
         let mut tokens = 0;
         let mut cost = 0.;
+        let mut estimated = false;
+        let mut unpriced = false;
         for model in &day.models {
             tokens += model.tokens;
             cost += model.cost;
+            estimated |= model.estimated;
+            unpriced |= model.unpriced;
             tooltip = tooltip.row(
                 model.color,
                 model.model.clone(),
                 format!(
-                    "{} tok · ${:.2}",
+                    "{} tok · {}",
                     crate::resource_bar::format_tokens(model.tokens),
-                    model.cost
+                    crate::resource_bar::format_cost(model.cost, model.estimated, model.unpriced)
                 ),
             );
         }
@@ -198,9 +204,9 @@ impl Plot for ModelBars {
                 .plain_row(
                     "",
                     format!(
-                        "{} tok · ${:.2}",
+                        "{} tok · {}",
                         crate::resource_bar::format_tokens(tokens),
-                        cost
+                        crate::resource_bar::format_cost(cost, estimated, unpriced)
                     ),
                 )
                 .into_any_element(),

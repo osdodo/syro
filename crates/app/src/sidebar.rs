@@ -21,72 +21,47 @@ const MAX_WIDTH: f32 = 500.;
 /// The header's height: the 24 px search field plus 12 px above and below, so
 /// the field sits well clear of the window's top edge.
 const HEADER_HEIGHT: f32 = 48.;
-/// One row of a menu, so that the submenu beside it can be put on the row that
-/// opened it rather than a guess away from it.
-const MENU_ROW_HEIGHT: f32 = 23.;
-/// The menu panel's width, which is also where its submenu starts.
-const MENU_WIDTH: f32 = 190.;
+/// The menu row height and panel width.
+const MENU_ROW_HEIGHT: f32 = 28.;
+const MENU_WIDTH: f32 = 204.;
 /// The menu's own padding, which is where its first row starts.
-const MENU_PADDING: f32 = 4.;
-/// The air between two rows, which the submenu's own position has to count.
+const MENU_PADDING: f32 = 6.;
+/// The air between two rows.
 const MENU_GAP: f32 = 2.;
-/// The columns a worktree row ends in: the status word, and the two numbers the
-/// readout measured. The word's column is the width of the widest word plus the
-/// breathing dot that rides beside `Working` — a row with no word keeps it too,
-/// so every name ends at the same place rather than a shell's title running
-/// through the status column to reach the numbers. The two numbers are floors
-/// rather than widths, and they are read at the widest they get — `100%`,
-/// `1023 MB`: a number that outgrows its column takes the room from the name,
-/// where a fixed width would fold it onto a second line and paint that line over
-/// the row below.
+/// The status column and numeric column floors. Numeric widths are measured
+/// once for the sidebar, so wider values take space from every title equally.
 const STATUS_MAX_WIDTH: f32 = 64.;
 const CPU_WIDTH: f32 = 30.;
 const MEM_WIDTH: f32 = 46.;
-/// The length a terminal row ends in: wide enough for `1h05m`, so a running
-/// terminal's numbers do not creep left as its minutes turn into hours. A floor
-/// like the numbers above, for the same reason. The columns are all as narrow as
-/// their own contents, because a 240-point sidebar has to hold a status, a
-/// title, a cost and a length on one line.
+/// Enough room for `1h05m` before longer durations widen the shared column.
 const UPTIME_WIDTH: f32 = 38.;
 
-/// How the worktrees of each repository are ordered.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-enum Sort {
-    /// The order git reports, which is the order this panel has always drawn:
-    /// the repository's own checkout first.
-    #[default]
-    Project,
-    /// By the branch, alphabetically.
-    Name,
-    /// By what the agents in it are doing: waiting for you, then working, then
-    /// everything else.
-    AgentActivity,
-    /// By when this window was last pointed at it.
-    Recent,
+#[derive(Clone, Copy)]
+struct ColumnWidths {
+    uptime: f32,
+    cpu: f32,
+    mem: f32,
 }
 
-impl Sort {
-    /// In the order the menu lists them, which is what the submenu shows.
-    const ALL: [Sort; 4] = [Self::Name, Self::AgentActivity, Self::Recent, Self::Project];
-
-    fn label(self) -> String {
-        match self {
-            Self::Project => t!("sidebar.sort_project"),
-            Self::Name => t!("sidebar.sort_name"),
-            Self::AgentActivity => t!("sidebar.sort_activity"),
-            Self::Recent => t!("sidebar.sort_recent"),
+impl ColumnWidths {
+    fn for_rows(rows: impl IntoIterator<Item = Row>, window: &mut Window) -> Self {
+        let font_size = window.rem_size() * 0.75;
+        let mut measure = |text: String| {
+            gpui_kit::base::plot::label::measure_text_width(&text.into(), font_size, window).ceil()
+        };
+        let mut widths = Self {
+            uptime: UPTIME_WIDTH.max(measure(t!("resource.column_uptime").to_string())),
+            cpu: CPU_WIDTH.max(measure(t!("resource.column_cpu").to_string())),
+            mem: MEM_WIDTH.max(measure(t!("resource.column_rss").to_string())),
+        };
+        for row in rows {
+            widths.uptime = widths
+                .uptime
+                .max(measure(row.uptime.map(format_uptime).unwrap_or_default()));
+            widths.cpu = widths.cpu.max(measure(format!("{:.0}%", row.cpu_pct)));
+            widths.mem = widths.mem.max(measure(format_bytes(row.rss_bytes)));
         }
-        .to_string()
-    }
-
-    /// The id a test clicks an entry by.
-    fn id(self) -> &'static str {
-        match self {
-            Self::Project => "sort-project",
-            Self::Name => "sort-name",
-            Self::AgentActivity => "sort-activity",
-            Self::Recent => "sort-recent",
-        }
+        widths
     }
 }
 
@@ -100,8 +75,6 @@ struct Menu {
     /// above the panel (see `menu_overlay`), because the rows scroll and a menu
     /// drawn inside them would be clipped at the panel's edge.
     at: Point<Pixels>,
-    /// Whether the sort submenu is open beside it.
-    sort_open: bool,
 }
 
 /// What a menu's entries act on: the panel itself, one worktree, or a whole
@@ -149,7 +122,6 @@ impl Target {
 enum MenuItem {
     ShowHidden,
     HideAsleep,
-    SortBy,
     NewWorktree,
     SharedPaths,
     Reveal,
@@ -166,7 +138,7 @@ impl MenuItem {
     /// repository, and the repository's own menu is where it is.
     fn for_target(target: &Target) -> &'static [MenuItem] {
         match target {
-            Target::Sidebar => &[Self::ShowHidden, Self::HideAsleep, Self::SortBy],
+            Target::Sidebar => &[Self::ShowHidden, Self::HideAsleep],
             Target::Worktree { .. } => &[Self::Reveal, Self::RemoveWorktree],
             Target::Repo { .. } => &[
                 Self::NewWorktree,
@@ -181,7 +153,6 @@ impl MenuItem {
         match self {
             Self::ShowHidden => t!("sidebar.show_hidden"),
             Self::HideAsleep => t!("sidebar.hide_asleep"),
-            Self::SortBy => t!("sidebar.sort_by"),
             Self::NewWorktree => t!("sidebar.new_worktree"),
             Self::SharedPaths => t!("sidebar.shared_paths"),
             Self::Reveal => t!("sidebar.reveal_worktree"),
@@ -205,7 +176,6 @@ impl MenuItem {
         let entry = match self {
             Self::ShowHidden => "show-hidden",
             Self::HideAsleep => "hide-asleep",
-            Self::SortBy => "sort-by",
             Self::NewWorktree => "new",
             Self::SharedPaths => "shared-paths",
             Self::Reveal => "reveal",
@@ -213,12 +183,6 @@ impl MenuItem {
             Self::RemoveWorktree | Self::RemoveRepo => "delete",
         };
         format!("{}-{entry}", target.prefix())
-    }
-
-    /// Whether the entry opens something beside the menu rather than doing
-    /// something itself.
-    fn opens_submenu(self) -> bool {
-        self == Self::SortBy
     }
 
     /// Whether the entry is one that throws something away: drawn in the
@@ -252,13 +216,8 @@ pub struct Sidebar {
     /// it lives with the view and not in `state.json` — the list is the same
     /// list either way.
     collapsed: HashSet<RepoId>,
-    /// How the worktrees of each repository are ordered.
-    sort: Sort,
     /// Whether worktrees with nothing working in them are left out of the list.
     hide_asleep: bool,
-    /// The worktrees this window has been pointed at, newest first. What
-    /// `Sort::Recent` orders by, and only for as long as the window is open.
-    recent: Vec<String>,
     /// A row's menu, open on one worktree or on one repository.
     menu: Option<Menu>,
 }
@@ -276,18 +235,7 @@ impl Sidebar {
             },
         );
         let resources_changed = cx.observe(&resources, |_this, _resources, cx| cx.notify());
-        let changes = cx.observe(&state, |this, state, cx| {
-            // What "recent" means: the worktree the window was last pointed at,
-            // newest first. Recorded here rather than in the state, because it is
-            // about this window's list and nothing else reads it.
-            if let Some(id) = state.read(cx).active_id().cloned() {
-                if this.recent.first() != Some(&id) {
-                    this.recent.retain(|recent| recent != &id);
-                    this.recent.insert(0, id);
-                }
-            }
-            cx.notify();
-        });
+        let changes = cx.observe(&state, |_this, _state, cx| cx.notify());
         // The width a previous run was dragged to, or the default width.
         // `WidthDrag::new` clamps, so a width written by a wider window cannot
         // open this one wider than the panel is allowed to be.
@@ -301,9 +249,7 @@ impl Sidebar {
             _changes: changes,
             _resources: resources_changed,
             collapsed: HashSet::new(),
-            sort: Sort::default(),
             hide_asleep: false,
-            recent: Vec::new(),
             menu: None,
         }
     }
@@ -346,42 +292,6 @@ impl Sidebar {
         self.state.read(cx).status_of(&worktree.id) != Some(AgentStatus::Working)
     }
 
-    /// Order one repository's worktrees as the chosen sort says. The repository's
-    /// own checkout is not special here: a sort is a sort.
-    fn sort_worktrees(&self, worktrees: &mut [Worktree], cx: &App) {
-        match self.sort {
-            // The order git reports, which is the order this panel has always
-            // drawn: the repository's own checkout first.
-            Sort::Project => {}
-            Sort::Name => worktrees.sort_by(|a, b| branch_or_name(a).cmp(branch_or_name(b))),
-            Sort::AgentActivity => worktrees
-                .sort_by_key(|worktree| std::cmp::Reverse(self.activity_rank(worktree, cx))),
-            // Both sorts are stable, so worktrees with the same rank keep the
-            // order git gave them.
-            Sort::Recent => worktrees.sort_by_key(|worktree| self.recent_rank(&worktree.id)),
-        }
-    }
-
-    /// How much a worktree wants the reader: one waiting for you first, then one
-    /// working, then anything else.
-    fn activity_rank(&self, worktree: &Worktree, cx: &App) -> u8 {
-        match self.state.read(cx).status_of(&worktree.id) {
-            Some(AgentStatus::Permission) => 3,
-            Some(AgentStatus::Working) => 2,
-            Some(AgentStatus::Idle) => 1,
-            None => 0,
-        }
-    }
-
-    /// Where a worktree sits in this window's recent list: lower is more recent,
-    /// and one that has never been opened is last.
-    fn recent_rank(&self, worktree_id: &str) -> usize {
-        self.recent
-            .iter()
-            .position(|id| id == worktree_id)
-            .unwrap_or(usize::MAX)
-    }
-
     /// Escape backs out of the row menu. Enter is a *click* on a focused
     /// element, so Escape is the only key that means "never mind".
     fn handle_escape(
@@ -422,11 +332,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.menu = Some(Menu {
-            target,
-            at,
-            sort_open: false,
-        });
+        self.menu = Some(Menu { target, at });
         // The keyboard goes to the panel, so Escape reaches the handler that
         // closes this — a menu is a thing you can back out of.
         window.focus(&self.focus, cx);
@@ -435,21 +341,10 @@ impl Sidebar {
 
     /// Do what an entry says to what the menu is open on.
     fn run_menu_item(&mut self, item: MenuItem, window: &mut Window, cx: &mut Context<Self>) {
-        // The submenu opens beside the menu rather than replacing it, so this one
-        // entry leaves the menu up.
-        if item.opens_submenu() {
-            if let Some(menu) = self.menu.as_mut() {
-                menu.sort_open = true;
-            }
-            cx.notify();
-            return;
-        }
         let Some(menu) = self.menu.take() else {
             return;
         };
         match item {
-            // Handled above: this one opens a submenu.
-            MenuItem::SortBy => {}
             MenuItem::ShowHidden => self.state.update(cx, |state, cx| state.show_all_repos(cx)),
             MenuItem::HideAsleep => self.hide_asleep = !self.hide_asleep,
             MenuItem::NewWorktree => {
@@ -550,7 +445,7 @@ impl Sidebar {
             .w(px(MENU_WIDTH))
             .p(px(MENU_PADDING))
             .gap(px(MENU_GAP))
-            .rounded_md()
+            .rounded_lg()
             .border_1()
             .border_color(colors.border)
             // A readable tint over the window's native blur.
@@ -593,83 +488,12 @@ impl Sidebar {
                             .position(menu.at)
                             .anchor(Anchor::TopLeft)
                             .snap_to_window_with_margin(px(8.))
-                            .child(panel)
-                            // The submenu, on the row that opened it and just past
-                            // the menu's own edge: one a guess away from its row is
-                            // a menu that looks detached from it.
-                            .when(menu.sort_open, |el| {
-                                el.child(
-                                    anchored()
-                                        .position(point(
-                                            menu.at.x + px(MENU_WIDTH),
-                                            menu.at.y
-                                                + px(MENU_PADDING
-                                                    + 2. * (MENU_ROW_HEIGHT + MENU_GAP)),
-                                        ))
-                                        .anchor(Anchor::TopLeft)
-                                        .snap_to_window_with_margin(px(8.))
-                                        .child(self.sort_menu(colors, cx)),
-                                )
-                            }),
+                            .child(panel),
                     ),
             ),
         )
         .with_priority(gpui_kit::base::POPUP_PRIORITY)
         .into_any_element()
-    }
-
-    /// The sort submenu: every order the list can be in, with the one it is in
-    /// marked.
-    fn sort_menu(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
-        let mut panel = div()
-            .id("sidebar-sort-menu")
-            .test_support()
-            .v_flex()
-            .w(px(150.))
-            .p(px(MENU_PADDING))
-            .gap(px(MENU_GAP))
-            .rounded_md()
-            .border_1()
-            .border_color(colors.border)
-            .bg(crate::settings_view::popup_surface(colors.surface))
-            .shadow_lg()
-            .occlude()
-            .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
-        for sort in Sort::ALL {
-            let chosen = self.sort == sort;
-            panel = panel.child(
-                div()
-                    .id(SharedString::from(sort.id()))
-                    .test_support()
-                    .aria_label(sort.label())
-                    .aria_selected(chosen)
-                    .h_flex()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .h(px(MENU_ROW_HEIGHT))
-                    .rounded_sm()
-                    .text_xs()
-                    .text_color(colors.foreground)
-                    .cursor_pointer()
-                    .hover(|el| el.bg(colors.muted))
-                    .child(
-                        // The dot the chosen one carries, and the same 6 px of
-                        // nothing for the rest, so the names line up.
-                        div()
-                            .size(px(6.))
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .when(chosen, |el| el.bg(colors.primary)),
-                    )
-                    .child(SharedString::from(sort.label()))
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        this.sort = sort;
-                        this.close_menu(cx);
-                    })),
-            );
-        }
-        panel.into_any_element()
     }
 
     /// One entry of a row menu.
@@ -681,30 +505,24 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let this = cx.entity().downgrade();
-        // What the entry says beside its name: the sort the list is in, and
-        // whether the sleeping ones are hidden.
-        let value = match item {
-            MenuItem::SortBy => Some(self.sort.label()),
-            MenuItem::HideAsleep => Some(
-                if self.hide_asleep {
-                    t!("common.on")
-                } else {
-                    t!("common.off")
-                }
-                .to_string(),
-            ),
-            _ => None,
-        };
+        let checked = item == MenuItem::HideAsleep && self.hide_asleep;
         div()
             .id(SharedString::from(item.id(target)))
             .test_support()
             .aria_label(item.label(target))
+            .when(item == MenuItem::HideAsleep, |el| {
+                el.role(Role::MenuItemCheckBox).aria_toggled(if checked {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
+            })
             .h_flex()
             .items_center()
             .gap_2()
-            .px_2()
+            .px(px(10.))
             .h(px(MENU_ROW_HEIGHT))
-            .rounded_sm()
+            .rounded_md()
             .text_xs()
             .text_color(if item.is_destructive() {
                 colors.destructive
@@ -714,18 +532,14 @@ impl Sidebar {
             .cursor_pointer()
             .hover(|el| el.bg(colors.muted))
             .child(div().flex_1().min_w_0().child(item.label(target)))
-            .when_some(value, |el, value| {
+            .when(checked, |el| {
                 el.child(
                     div()
-                        .text_color(colors.muted_foreground)
-                        .child(SharedString::from(value)),
-                )
-            })
-            .when(item.opens_submenu(), |el| {
-                el.child(
-                    Icon::new(IconName::ChevronRight)
-                        .size(px(12.))
-                        .text_color(colors.muted_foreground),
+                        .id("sidebar-menu-hide-asleep-check")
+                        .test_support()
+                        .size(px(14.))
+                        .flex_shrink_0()
+                        .child(Icon::new(IconName::Check).size(px(14.))),
                 )
             })
             .on_click(move |_event, window, cx| {
@@ -738,7 +552,13 @@ impl Sidebar {
     /// One worktree row: the branch, what its agents are doing, and one line per
     /// terminal under it with what that terminal costs. The active one is marked
     /// with an accent background.
-    fn row(&self, worktree: Worktree, active: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn row(
+        &self,
+        worktree: Worktree,
+        active: bool,
+        columns: ColumnWidths,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let colors = Theme::global(cx).tokens.colors.clone();
         // What the worktree's terminals cost, from the readout's last sweep. A
         // worktree with nothing running in it has no numbers and draws none, and
@@ -818,7 +638,7 @@ impl Sidebar {
                     // read as columns, and a worktree with nothing running in it
                     // has none to name.
                     .when_some(usage.as_ref(), |line, _| {
-                        line.child(column_labels(&worktree.id, &colors))
+                        line.child(column_labels(&worktree.id, columns, &colors))
                     }),
             );
 
@@ -827,7 +647,7 @@ impl Sidebar {
         if let Some(usage) = &usage {
             let mut terminals = div().v_flex().w_full();
             for row in &usage.terminals {
-                terminals = terminals.child(terminal_line(&worktree.id, row, &colors));
+                terminals = terminals.child(terminal_line(&worktree.id, row, columns, &colors));
             }
             card = card.child(terminals);
         }
@@ -879,7 +699,7 @@ impl Sidebar {
 /// own line — which is the header those rows hang under. Each label keeps the
 /// width its column is drawn at below, so a name sits over the column it names
 /// rather than beside it.
-fn column_labels(worktree_id: &str, colors: &ColorTokens) -> AnyElement {
+fn column_labels(worktree_id: &str, columns: ColumnWidths, colors: &ColorTokens) -> AnyElement {
     // The word a row draws first, before the length and the numbers, in the
     // column the row keeps even when it has no word: the name beside it stops at
     // this column's left edge either way.
@@ -897,7 +717,8 @@ fn column_labels(worktree_id: &str, colors: &ColorTokens) -> AnyElement {
                 "terminal-columns-{column}-{worktree_id}"
             )))
             .test_support()
-            .min_w(px(width))
+            .w(px(width))
+            .flex_shrink_0()
             .text_right()
             .child(name)
     };
@@ -926,17 +747,17 @@ fn column_labels(worktree_id: &str, colors: &ColorTokens) -> AnyElement {
         // follow. This order is the order the rows below draw in.
         .child(number(
             "uptime",
-            UPTIME_WIDTH,
+            columns.uptime,
             t!("resource.column_uptime").to_string(),
         ))
         .child(number(
             "cpu",
-            CPU_WIDTH,
+            columns.cpu,
             t!("resource.column_cpu").to_string(),
         ))
         .child(number(
             "mem",
-            MEM_WIDTH,
+            columns.mem,
             t!("resource.column_rss").to_string(),
         ))
         .into_any_element()
@@ -945,7 +766,13 @@ fn column_labels(worktree_id: &str, colors: &ColorTokens) -> AnyElement {
 /// The two numbers a row ends in, in the columns every row keeps. Labelled for
 /// the screen reader as one line, because two numbers in two different units are
 /// one reading.
-fn row_metrics(id: SharedString, cpu_pct: f32, rss_bytes: u64, colors: &ColorTokens) -> AnyElement {
+fn row_metrics(
+    id: SharedString,
+    cpu_pct: f32,
+    rss_bytes: u64,
+    columns: ColumnWidths,
+    colors: &ColorTokens,
+) -> AnyElement {
     div()
         .id(id)
         .test_support()
@@ -962,14 +789,16 @@ fn row_metrics(id: SharedString, cpu_pct: f32, rss_bytes: u64, colors: &ColorTok
         .text_xs()
         .child(
             div()
-                .min_w(px(CPU_WIDTH))
+                .w(px(columns.cpu))
+                .flex_shrink_0()
                 .text_right()
                 .text_color(colors.muted_foreground)
                 .child(SharedString::from(format!("{cpu_pct:.0}%"))),
         )
         .child(
             div()
-                .min_w(px(MEM_WIDTH))
+                .w(px(columns.mem))
+                .flex_shrink_0()
                 .text_right()
                 .child(SharedString::from(format_bytes(rss_bytes))),
         )
@@ -979,7 +808,12 @@ fn row_metrics(id: SharedString, cpu_pct: f32, rss_bytes: u64, colors: &ColorTok
 /// One terminal under a worktree: what its agent is doing, what it is called, and
 /// what it costs. Its numbers are in the same columns as the worktree's own,
 /// because they are the same two numbers a step down.
-fn terminal_line(worktree_id: &str, row: &Row, colors: &ColorTokens) -> AnyElement {
+fn terminal_line(
+    worktree_id: &str,
+    row: &Row,
+    columns: ColumnWidths,
+    colors: &ColorTokens,
+) -> AnyElement {
     // Empty before the agent has worked: the column stays, so the numbers do not move.
     let uptime = row.uptime.map(format_uptime).unwrap_or_default();
     div()
@@ -1042,9 +876,7 @@ fn terminal_line(worktree_id: &str, row: &Row, colors: &ColorTokens) -> AnyEleme
                 )))
                 .test_support()
                 .aria_label(SharedString::from(uptime.clone()))
-                // The one column that moves on its own, so it has a width of its
-                // own rather than letting the numbers beside it shift every tick.
-                .min_w(px(UPTIME_WIDTH))
+                .w(px(columns.uptime))
                 .flex_shrink_0()
                 .text_xs()
                 .text_right()
@@ -1055,6 +887,7 @@ fn terminal_line(worktree_id: &str, row: &Row, colors: &ColorTokens) -> AnyEleme
             SharedString::from(format!("terminal-metrics-{worktree_id}-{}", row.title)),
             row.cpu_pct,
             row.rss_bytes,
+            columns,
             colors,
         ))
         .into_any_element()
@@ -1298,6 +1131,21 @@ impl Render for Sidebar {
         // Read once: a hidden repository is not drawn at all, and what is left of
         // the list is what the count at the bottom is about.
         let hidden = self.state.read(cx).hidden_repos().to_vec();
+        let rows = self
+            .state
+            .read(cx)
+            .worktrees()
+            .iter()
+            .filter(|worktree| {
+                !hidden.contains(&worktree.repo_id)
+                    && !self.collapsed.contains(&worktree.repo_id)
+                    && (active.as_deref() == Some(worktree.id.as_str())
+                        || !self.hide_asleep
+                        || !self.is_asleep(worktree, cx))
+            })
+            .filter_map(|worktree| self.resources.read(cx).worktree_usage(&worktree.id))
+            .flat_map(|usage| usage.terminals);
+        let columns = ColumnWidths::for_rows(rows, window);
         for repo in repos {
             if hidden.contains(&repo.id) {
                 continue;
@@ -1314,7 +1162,7 @@ impl Render for Sidebar {
                 .read(cx)
                 .pending_for(&repo.id)
                 .map(str::to_string);
-            let mut matching: Vec<Worktree> = worktrees
+            let matching: Vec<Worktree> = worktrees
                 .into_iter()
                 .filter(|worktree| {
                     let is_active = active.as_deref() == Some(worktree.id.as_str());
@@ -1325,7 +1173,6 @@ impl Render for Sidebar {
                     is_active || !self.hide_asleep || !self.is_asleep(worktree, cx)
                 })
                 .collect();
-            self.sort_worktrees(&mut matching, cx);
             // A repository with nothing left to show is not a heading with nothing
             // under it: hiding the sleeping ones narrows the list rather than
             // annotating it.
@@ -1443,7 +1290,7 @@ impl Render for Sidebar {
             if !folded {
                 for worktree in matching {
                     let is_active = active.as_deref() == Some(worktree.id.as_str());
-                    group = group.child(self.row(worktree, is_active, cx));
+                    group = group.child(self.row(worktree, is_active, columns, cx));
                 }
             }
 
@@ -2232,6 +2079,7 @@ mod window_tests {
                 agent: Some("title-agent".to_string()),
                 resume: None,
                 seed: None,
+                model: None,
             },
         );
 
@@ -2363,6 +2211,7 @@ mod window_tests {
                 agent: Some("width-agent".to_string()),
                 resume: None,
                 seed: None,
+                model: None,
             },
         );
         // Read back through the readout rather than guessed from the fixture: the
@@ -2806,75 +2655,38 @@ mod window_tests {
         );
     }
 
-    /// The panel's own menu: what is hidden, whether the sleeping ones are drawn,
-    /// and the order the list is in — the sort opening beside the menu, on the row
-    /// that opened it.
+    /// The sleep filter carries a right-hand check only while enabled; the
+    /// active worktree stays visible and switching worktrees keeps their order.
     #[gpui_kit::test]
-    fn the_sidebar_menu_sorts_and_hides_the_sleeping(cx: &mut TestAppContext) {
-        let fixture = open(cx, "sidebar-menu-sort");
+    fn the_sidebar_menu_checks_and_hides_the_sleeping(cx: &mut TestAppContext) {
+        let fixture = open(cx, "sidebar-menu-sleep");
         let (active, other) = active_and_other(cx, &fixture);
         let active_row = row_id(Path::new(&active));
         let other_row = row_id(Path::new(&other));
-
-        // The menu, and the submenu beside it rather than in place of it.
-        click(cx, &fixture, "sidebar-menu-open");
-        assert!(
-            draw_until(cx, &fixture, |cx| found(
-                cx,
-                &fixture,
-                "sidebar-menu-sort-by"
-            )),
-            "the panel's menu did not open"
-        );
-        assert!(
-            !found(cx, &fixture, "sidebar-sort-menu"),
-            "the sort submenu was open before it was asked for"
-        );
-        click(cx, &fixture, "sidebar-menu-sort-by");
-        assert!(
-            draw_until(cx, &fixture, |cx| found(cx, &fixture, "sidebar-sort-menu")),
-            "the sort submenu did not open"
-        );
-        for sort in ["sort-name", "sort-activity", "sort-recent", "sort-project"] {
-            assert!(found(cx, &fixture, sort), "the submenu has no {sort}");
-        }
-        // Where it is: beside the menu, on the row that opened it. A submenu a
-        // guess away from its own row is a menu that looks detached from it.
-        let menu = bounds(cx, &fixture, "sidebar-menu");
-        let submenu = bounds(cx, &fixture, "sidebar-sort-menu");
-        let opener = bounds(cx, &fixture, "sidebar-menu-sort-by");
-        assert!(
-            submenu.origin.x >= menu.origin.x + menu.size.width,
-            "the submenu is not beside the menu: {submenu:?}, {menu:?}"
-        );
-        assert!(
-            (submenu.origin.y - opener.origin.y).as_f32().abs() <= 2.,
-            "the submenu is not on the row that opened it: {submenu:?}, {opener:?}"
-        );
-
-        // "Recent" is the one order this test can prove: point the window at the
-        // other worktree, ask for that order, and it comes first. The menu is
-        // backed out of first, because its scrim covers the rows behind it.
-        press(cx, &fixture, "escape");
+        let active_first =
+            bounds(cx, &fixture, &active_row).origin.y < bounds(cx, &fixture, &other_row).origin.y;
         click(cx, &fixture, &other_row);
-        click(cx, &fixture, "sidebar-menu-open");
-        click(cx, &fixture, "sidebar-menu-sort-by");
-        click(cx, &fixture, "sort-recent");
-        assert!(
-            draw_until(cx, &fixture, |cx| !found(cx, &fixture, "sidebar-menu")),
-            "picking a sort left the menu up"
-        );
-        let first = bounds(cx, &fixture, &other_row).origin.y;
-        let second = bounds(cx, &fixture, &active_row).origin.y;
-        assert!(
-            first < second,
-            "the recent sort did not put the worktree just opened first: {first:?}, {second:?}"
+        assert_eq!(
+            bounds(cx, &fixture, &active_row).origin.y < bounds(cx, &fixture, &other_row).origin.y,
+            active_first,
+            "switching worktrees changed their default order"
         );
 
-        // And the sleeping ones: nothing is running in this fixture, so every
-        // worktree but the one on screen is asleep — and that one stays, because a
-        // list that hides what you are looking at looks broken.
+        let checked = |cx: &mut TestAppContext| {
+            cx.update_window(fixture.window.into(), |_, window, _| {
+                window
+                    .try_find("sidebar-menu-hide-asleep")
+                    .and_then(|el| el.checked())
+            })
+            .expect("read the filter's checked state")
+        };
         click(cx, &fixture, "sidebar-menu-open");
+        assert!(found(cx, &fixture, "sidebar-menu-show-hidden"));
+        assert!(!found(cx, &fixture, "sidebar-menu-sort-by"));
+        assert!(!found(cx, &fixture, "sidebar-sort-menu"));
+        assert!(!found(cx, &fixture, "sidebar-menu-hide-asleep-check"));
+        assert_eq!(checked(cx), Some(false));
+
         click(cx, &fixture, "sidebar-menu-hide-asleep");
         assert!(
             draw_until(cx, &fixture, |cx| !found(cx, &fixture, &active_row)),
@@ -2882,8 +2694,27 @@ mod window_tests {
         );
         assert!(
             found(cx, &fixture, &other_row),
-            "hiding the sleeping ones hid the worktree on screen"
+            "the active worktree was hidden"
         );
+        assert!(!found(cx, &fixture, "sidebar-menu"));
+
+        click(cx, &fixture, "sidebar-menu-open");
+        assert_eq!(checked(cx), Some(true));
+        let check = bounds(cx, &fixture, "sidebar-menu-hide-asleep-check");
+        let row = bounds(cx, &fixture, "sidebar-menu-hide-asleep");
+        assert!(
+            check.origin.x > row.origin.x + row.size.width / 2.,
+            "the check icon is not on the right"
+        );
+        click(cx, &fixture, "sidebar-menu-hide-asleep");
+        assert!(draw_until(cx, &fixture, |cx| found(
+            cx,
+            &fixture,
+            &active_row
+        )));
+        click(cx, &fixture, "sidebar-menu-open");
+        assert_eq!(checked(cx), Some(false));
+        assert!(!found(cx, &fixture, "sidebar-menu-hide-asleep-check"));
     }
 
     /// The header is how a repository gets added at all: every other affordance
@@ -3041,6 +2872,7 @@ mod window_tests {
                 agent: Some("title-agent".to_string()),
                 resume: None,
                 seed: None,
+                model: None,
             },
         );
 
@@ -3234,12 +3066,134 @@ mod window_tests {
         );
     }
 
+    #[gpui_kit::test]
+    fn wide_metrics_keep_status_and_uptime_aligned(cx: &mut TestAppContext) {
+        let window = cx.update(|cx| {
+            gpui_kit::init(cx);
+            let (window, _) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        Point::default(),
+                        size(px(320.), px(120.)),
+                    ))),
+                    ..Default::default()
+                },
+                cx,
+                |_, cx| cx.new(|_| TerminalColumns),
+            )
+            .expect("open a blank window");
+            window.downcast::<Root>().expect("Base Root")
+        });
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+        })
+        .expect("draw a frame");
+        let mut bounds = |id: &str| {
+            cx.update_window(window.into(), |_, window, _| {
+                window.try_find(id.to_string()).map(|el| el.bounds())
+            })
+            .expect("read the frame")
+            .unwrap_or_else(|| panic!("{id} is not on screen"))
+        };
+        let status = bounds("terminal-columns-status-columns");
+        let uptime = bounds("terminal-columns-uptime-columns");
+        let cpu = bounds("terminal-columns-cpu-columns");
+        let metrics_height = bounds("terminal-metrics-columns-small").size.height;
+        for title in ["small", "wide", "idle"] {
+            let word = bounds(&format!("terminal-status-columns-{title}"));
+            let duration = bounds(&format!("terminal-uptime-columns-{title}"));
+            let metrics = bounds(&format!("terminal-metrics-columns-{title}"));
+            assert!(
+                (word.right() - status.right()).as_f32().abs() < 1.,
+                "{title}'s status shifted: {word:?} against {status:?}"
+            );
+            assert_eq!(
+                duration.origin.x, uptime.origin.x,
+                "{title}'s uptime shifted"
+            );
+            assert_eq!(metrics.origin.x, cpu.origin.x, "{title}'s CPU shifted");
+            assert_eq!(
+                metrics.size.height, metrics_height,
+                "{title}'s metrics wrapped"
+            );
+            let name = bounds(&format!("terminal-name-columns-{title}"));
+            assert!(
+                name.right() <= status.origin.x,
+                "the title overlaps the status"
+            );
+        }
+        let shell = bounds("terminal-uptime-columns-shell");
+        assert_eq!(
+            shell.origin.x, uptime.origin.x,
+            "the shell's empty column shifted"
+        );
+    }
+
+    struct TerminalColumns;
+
+    impl Render for TerminalColumns {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let colors = Theme::global(cx).tokens.colors;
+            let rows = [
+                ("small", Some(AgentStatus::Working), Some(60), 1., 9),
+                (
+                    "wide",
+                    Some(AgentStatus::Working),
+                    Some(360_000_000),
+                    1234.,
+                    1023,
+                ),
+                ("idle", Some(AgentStatus::Idle), Some(480), 0., 241),
+                ("shell", None, None, 0., 5),
+            ]
+            .map(
+                |(title, status, seconds, cpu_pct, mb)| crate::resource_bar::Row {
+                    title: title.into(),
+                    status,
+                    stalled: false,
+                    exit: None,
+                    busy: false,
+                    uptime: seconds.map(std::time::Duration::from_secs),
+                    cpu_pct,
+                    rss_bytes: mb * 1024 * 1024,
+                },
+            );
+            let columns = super::ColumnWidths::for_rows(rows.clone(), window);
+            div()
+                .v_flex()
+                .w(px(312.))
+                .child(
+                    div()
+                        .h_flex()
+                        .justify_end()
+                        .child(super::column_labels("columns", columns, &colors)),
+                )
+                .children(
+                    rows.iter()
+                        .map(|row| super::terminal_line("columns", row, columns, &colors)),
+                )
+        }
+    }
+
     /// Two cost columns, the second wider than the room it is given.
     struct MetricsColumn;
 
     impl Render for MetricsColumn {
-        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let colors = Theme::global(cx).tokens.colors;
+            let columns = super::ColumnWidths::for_rows(
+                [crate::resource_bar::Row {
+                    title: "wide".into(),
+                    status: None,
+                    stalled: false,
+                    exit: None,
+                    busy: false,
+                    uptime: None,
+                    cpu_pct: 140.,
+                    rss_bytes: 999 * 1024 * 1024,
+                }],
+                window,
+            );
             div()
                 .v_flex()
                 .w(px(232.))
@@ -3247,12 +3201,14 @@ mod window_tests {
                     SharedString::from("terminal-metrics-small"),
                     1.0,
                     9 * 1024 * 1024,
+                    columns,
                     &colors,
                 ))
                 .child(super::row_metrics(
                     SharedString::from("terminal-metrics-wide"),
                     140.0,
                     999 * 1024 * 1024,
+                    columns,
                     &colors,
                 ))
         }

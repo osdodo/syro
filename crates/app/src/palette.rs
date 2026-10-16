@@ -181,6 +181,7 @@ pub fn actions() -> Vec<&'static ActionSpec> {
                         agent: None,
                         resume: None,
                         seed: None,
+                        model: None,
                     }),
                     cx,
                 );
@@ -531,6 +532,9 @@ pub struct Palette {
     /// Indices into `items`, filtered and ranked; the top [`MAX_ROWS`] are drawn.
     shown: Vec<usize>,
     selected: usize,
+    /// The list's own scroll position, so the keyboard can walk the selection
+    /// past the last row on screen without losing sight of it.
+    scroll: ScrollHandle,
     query: Entity<InputState>,
     _events: Subscription,
 }
@@ -549,6 +553,7 @@ impl Palette {
             items,
             shown: Vec::new(),
             selected: 0,
+            scroll: ScrollHandle::new(),
             query,
             _events: events,
         };
@@ -578,6 +583,9 @@ impl Palette {
         }
         let next = self.selected as isize + delta;
         self.selected = next.clamp(0, count as isize - 1) as usize;
+        // The selected row is the child at that index of the scrolling list
+        // (see `render`), which is what `scroll_to_item` measures against.
+        self.scroll.scroll_to_item(self.selected);
         cx.notify();
     }
 
@@ -707,13 +715,20 @@ impl Render for Palette {
             .max(px(80.))
             .min(px(620.));
 
+        // The rows are the direct children of the scrolling element: the scroll
+        // handle measures the selection by child index, so a wrapper around them
+        // would hide every row but the first.
         let mut list = div()
-            .id("palette-list")
+            .id("palette-rows")
+            .test_support()
             .v_flex()
             .gap_1()
             .py_1()
             .pr_1()
-            .w_full();
+            .w_full()
+            .max_h(list_height)
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll);
         for position in 0..drawn {
             let index = self.shown[position];
             list = list.child(self.row(position, index, cx));
@@ -733,9 +748,9 @@ impl Render for Palette {
             );
         }
 
-        // How many of how many, said out loud as well as drawn: the count is
-        // information (a capped list is not a short list), and a label is what
-        // a screen reader and a test both read.
+        // How many of how many, said out loud but not drawn: the count is a
+        // label for a screen reader and a test, and the footer itself is only
+        // the keys.
         let mut counted = t!("palette.count", shown = drawn, total = self.shown.len()).to_string();
         if self.shown.len() > drawn {
             counted = t!(
@@ -749,10 +764,10 @@ impl Render for Palette {
         let footer = div()
             .id("palette-footer")
             .test_support()
-            .aria_label(SharedString::from(counted.clone()))
+            .aria_label(SharedString::from(counted))
             .h_flex()
             .items_center()
-            .justify_between()
+            .justify_end()
             .gap_3()
             .w_full()
             .px_3()
@@ -762,7 +777,6 @@ impl Render for Palette {
             .border_color(colors.border)
             .text_xs()
             .text_color(colors.muted_foreground)
-            .child(SharedString::from(counted))
             // The keys the list answers to, where a reader looks for them: the
             // palette is opened by a key and driven by three more.
             .child(div().flex_shrink_0().child(t!("palette.hint")));
@@ -811,16 +825,9 @@ impl Render for Palette {
                     .text_sm()
                     .w_full(),
             )
-            .child(
-                // A long file list is the normal case, so the list scrolls and
-                // the field and the footer do not.
-                div()
-                    .id("palette-rows")
-                    .max_h(list_height)
-                    .overflow_y_scroll()
-                    .w_full()
-                    .child(list),
-            )
+            // A long file list is the normal case, so the list scrolls and the
+            // field and the footer do not.
+            .child(list)
             .child(footer)
     }
 }

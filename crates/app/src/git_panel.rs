@@ -213,6 +213,10 @@ pub struct GitPanel {
     /// The worktree's directory: what the panel's relative paths are relative
     /// *to*, and what opening one in the editor has to make them absolute with.
     root: PathBuf,
+    /// The `origin` remote's page, when there is one to open. Read with the rest
+    /// and held, because whether there is a button at all is a fact about the
+    /// repository that has to be known before anyone can click it.
+    remote: Option<String>,
     /// Which sections are folded away. The chevron in a section's header is what
     /// changes these; a remembered per-panel option needs somewhere else to live.
     files_collapsed: bool,
@@ -220,7 +224,9 @@ pub struct GitPanel {
     /// The menu that is up, and where it was opened. `None` is no menu, which is
     /// the same shape the pane's menu and the tab bar's use.
     menu: Option<Menu>,
-    /// Every local branch this checkout can switch to, read with the rest.
+    /// Every local branch this checkout can switch to, read with the rest. The
+    /// branch line is a control only while there is another one in here: a
+    /// repository with nothing but the branch on screen has nothing to pick.
     branches: Vec<Branch>,
     /// The commit message, mirrored from the field on every keystroke.
     message: String,
@@ -311,6 +317,7 @@ impl GitPanel {
             dirty: false,
             base_ref: String::new(),
             root: PathBuf::new(),
+            remote: None,
             files_collapsed: false,
             commits_collapsed: false,
             menu: None,
@@ -353,6 +360,8 @@ impl GitPanel {
             self.dirty = false;
             self.base_ref.clear();
             self.root.clear();
+            self.remote = None;
+            self.branches.clear();
             self.error = None;
             self.read = true;
             cx.notify();
@@ -401,6 +410,18 @@ impl GitPanel {
             .unwrap_or(false);
         self.base_ref = worktree.base_ref.clone();
         self.root = worktree.path.clone();
+        self.remote = git::remote_url(&worktree.path);
+        // Read with the rest, and not on the click: whether the branch line is a
+        // control at all is a fact about the refs, and the line has to be drawn
+        // before anyone can click it. A remote-tracking branch is not one to
+        // switch to — checking it out would leave a detached HEAD — so only the
+        // local ones are kept. A branch git has no ref for yet (a repository
+        // initialized but never committed) has none, and yields nothing here.
+        self.branches = git::branches(&worktree.path)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|branch| branch.remote.is_none())
+            .collect();
         self.read = true;
         self.stale = false;
         cx.notify();
@@ -570,16 +591,6 @@ impl GitPanel {
         if self.busy {
             return;
         }
-        // Read the branches here, on the click: the menu is the only thing that
-        // needs them, and a `for-each-ref` on every tick would be a process
-        // nobody asked for. A remote-tracking branch is not one to switch to —
-        // checking it out would leave a detached HEAD — so only the local ones
-        // are kept.
-        self.branches = git::branches(&self.root)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|branch| branch.remote.is_none())
-            .collect();
         self.menu = Some(Menu::Branch(event.position()));
         // The keyboard goes to the panel so Escape can close it, the same road
         // the header's menu takes.
@@ -769,6 +780,31 @@ impl GitPanel {
             .into_any_element()
     }
 
+    /// The way out to the repository's page on its host: the `origin` remote in
+    /// the https form a browser takes. Drawn only when there is one to point at —
+    /// a repository with no remote, or one whose remote is a local path, has no
+    /// page to open.
+    fn repo_button(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let url = self.remote.clone()?;
+        Some(
+            div()
+                .id("git-repo")
+                .test_support()
+                .aria_label(t!("git.repo"))
+                .h_flex()
+                .items_center()
+                .justify_center()
+                .size(px(22.))
+                .rounded_sm()
+                .cursor_pointer()
+                .text_color(colors.muted_foreground)
+                .hover(|el| el.bg(colors.muted))
+                .child(Icon::new(IconName::Github).size(px(14.)))
+                .on_click(cx.listener(move |_this, _event, _window, cx| cx.open_url(&url)))
+                .into_any_element(),
+        )
+    }
+
     /// The header's menu button: fetching, pulling and pushing. It sits beside
     /// the fresh-read button because a reader who wants the remote's history, or
     /// wants to send their own, is looking at that end of the header.
@@ -903,6 +939,12 @@ impl GitPanel {
     /// switching to it would leave a detached HEAD — and the current one has
     /// nothing to switch to, so it only carries the mark.
     fn branch_menu(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
+        // A menu open while the branch list shrank under it — a branch deleted,
+        // another worktree picked — is an empty box in the panel, which is worse
+        // than no menu: the scrim alone closes it on the next click.
+        if self.branches.is_empty() {
+            return div().into_any_element();
+        }
         let this = cx.entity().downgrade();
         let current = self
             .status
@@ -999,6 +1041,10 @@ impl GitPanel {
         let Some(status) = &self.status else {
             return block.into_any_element();
         };
+        // The name is a switcher only when there is another branch to switch to:
+        // one branch, or none yet, is a label, and a name with a chevron that
+        // opens onto nothing is worse than a name with no chevron at all.
+        let switchable = self.branches.iter().any(|branch| !branch.current);
         let (added, deleted) = self.totals();
         block = block.child(
             div()
@@ -1011,17 +1057,21 @@ impl GitPanel {
                     div()
                         .id("git-branch-name")
                         .test_support()
-                        .aria_label(SharedString::from(
-                            t!("git.switch_branch", branch = status.name()).to_string(),
-                        ))
+                        .aria_label(SharedString::from(if switchable {
+                            t!("git.switch_branch", branch = status.name()).to_string()
+                        } else {
+                            status.name().to_string()
+                        }))
                         .h_flex()
                         .items_center()
                         .gap_1()
                         .min_w_0()
                         .overflow_hidden()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .hover(|el| el.bg(colors.muted))
+                        .when(switchable, |el| {
+                            el.rounded_sm()
+                                .cursor_pointer()
+                                .hover(|el| el.bg(colors.muted))
+                        })
                         .child(
                             div()
                                 .min_w_0()
@@ -1032,10 +1082,12 @@ impl GitPanel {
                                 .child(SharedString::from(status.name().to_string())),
                         )
                         // The chevron says the name is a control, not a label.
-                        .child(Icon::new(IconName::ChevronDown).size(px(12.)))
-                        .on_click(cx.listener(|this, event, window, cx| {
-                            this.open_branch_menu(event, window, cx)
-                        })),
+                        .when(switchable, |el| {
+                            el.child(Icon::new(IconName::ChevronDown).size(px(12.)))
+                                .on_click(cx.listener(|this, event, window, cx| {
+                                    this.open_branch_menu(event, window, cx)
+                                }))
+                        }),
                 )
                 .when(added > 0 || deleted > 0, |el| {
                     // `+85 -9`, the two numbers a reader checks before deciding
@@ -1879,6 +1931,7 @@ impl Render for GitPanel {
                     .h_flex()
                     .items_center()
                     .gap_1()
+                    .children(self.repo_button(&colors, cx))
                     .child(self.sync_button(&colors, cx))
                     .child(self.refresh_button(&colors, cx)),
             );

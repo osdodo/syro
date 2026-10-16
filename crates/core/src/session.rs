@@ -99,6 +99,7 @@ pub struct Session {
     pub title: String,
     pub preview: String,
     pub model: Option<String>,
+    pub provider: Option<String>,
     pub messages: u64,
     /// Last write, in epoch milliseconds: what the rows sort by.
     pub updated_ms: i64,
@@ -142,20 +143,24 @@ pub struct Scan {
     pub usage: UsageSummary,
 }
 
-/// Tokens and money one stretch of transcripts used. The cost is what the agent
-/// recorded for it, and Claude Code often records none — a stretch with no price is
-/// tokens only, not a zero.
+/// Tokens and money one stretch of transcripts used: recorded prices where available,
+/// otherwise an OpenAI standard-rate estimate. Unpriced usage is not free usage.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Usage {
     pub tokens: u64,
     pub cost: f64,
+    /// At least part of the cost was calculated from official OpenAI rates.
+    pub estimated: bool,
+    /// Some tokens have no known price; `cost` is only the priced subtotal.
+    pub unpriced: bool,
 }
 
 impl Usage {
-    /// Add one turn's tokens and its price.
-    fn add(&mut self, tokens: u64, cost: f64) {
-        self.tokens += tokens;
-        self.cost += cost;
+    fn add(&mut self, usage: Self) {
+        self.tokens += usage.tokens;
+        self.cost += usage.cost;
+        self.estimated |= usage.estimated;
+        self.unpriced |= usage.unpriced;
     }
 }
 
@@ -180,6 +185,8 @@ pub struct UsageSlice {
     pub model: String,
     pub tokens: u64,
     pub cost: f64,
+    pub estimated: bool,
+    pub unpriced: bool,
 }
 
 /// One agent, or one provider under an agent: the chart's second cut.
@@ -191,6 +198,8 @@ pub struct UsageGroup {
     pub label: String,
     pub tokens: u64,
     pub cost: f64,
+    pub estimated: bool,
+    pub unpriced: bool,
 }
 
 /// What the transcripts a scan read have used over the last [`USAGE_DAYS`] days:
@@ -247,6 +256,7 @@ struct Fold {
     id: Option<String>,
     cwd: Option<PathBuf>,
     model: Option<String>,
+    provider: Option<String>,
     title: Option<String>,
     /// The preview's text, refreshed from the tail buffer at the end of a pass.
     preview: Option<String>,
@@ -271,6 +281,8 @@ struct Fold {
 struct Spent {
     tokens: u64,
     cost: f64,
+    estimated: bool,
+    unpriced: bool,
     provider: String,
     model: String,
 }
@@ -349,24 +361,14 @@ pub fn scan_at(roots: &SessionRoots, cache: &mut Cache, limit: usize, now: i64) 
                     continue;
                 }
                 let merged = days.entry(*day).or_default();
-                merged.usage.add(fold_day.usage.tokens, fold_day.usage.cost);
-                usage.add(fold_day.usage.tokens, fold_day.usage.cost);
+                merged.usage.add(fold_day.usage);
+                usage.add(fold_day.usage);
                 for (label, group) in &fold_day.providers {
-                    providers
-                        .entry(label.clone())
-                        .or_default()
-                        .add(group.tokens, group.cost);
+                    providers.entry(label.clone()).or_default().add(*group);
                 }
                 for (label, group) in &fold_day.models {
-                    models
-                        .entry(label.clone())
-                        .or_default()
-                        .add(group.tokens, group.cost);
-                    merged
-                        .models
-                        .entry(label.clone())
-                        .or_default()
-                        .add(group.tokens, group.cost);
+                    models.entry(label.clone()).or_default().add(*group);
+                    merged.models.entry(label.clone()).or_default().add(*group);
                 }
             }
         }
@@ -389,6 +391,8 @@ pub fn scan_at(roots: &SessionRoots, cache: &mut Cache, limit: usize, now: i64) 
                 label,
                 tokens: usage.tokens,
                 cost: usage.cost,
+                estimated: usage.estimated,
+                unpriced: usage.unpriced,
             })
             .collect();
         ranked.sort_by(|left, right| {
@@ -414,6 +418,8 @@ pub fn scan_at(roots: &SessionRoots, cache: &mut Cache, limit: usize, now: i64) 
                         model: group.label,
                         tokens: group.tokens,
                         cost: group.cost,
+                        estimated: group.estimated,
+                        unpriced: group.unpriced,
                     })
                     .collect(),
             })
@@ -739,6 +745,7 @@ fn scan_one(candidate: &Candidate, cache: &mut Cache, seen: &mut HashSet<u64>) -
             .unwrap_or_else(|| "(no prompt recorded)".to_string()),
         preview: fold.preview.clone().unwrap_or_default(),
         model: fold.model.clone(),
+        provider: fold.provider.clone(),
         messages: fold.messages,
         updated_ms: candidate.mtime_ms,
     };
@@ -834,6 +841,7 @@ fn consume(
                 fold.cwd = record.cwd.map(PathBuf::from).or(fold.cwd.take());
             }
             if record.kind == Some("model_change") {
+                fold.provider = record.provider.map(str::to_string).or(fold.provider.take());
                 fold.model = record.model_id.map(str::to_string).or(fold.model.take());
             }
             if record.kind == Some("message") {
@@ -917,17 +925,19 @@ fn consume(
             .or_else(|| local_day(now_ms()))
             .unwrap_or_default();
         let fold_day = fold.days.entry(day).or_default();
-        fold_day.usage.add(spent.tokens, spent.cost);
+        let usage = Usage {
+            tokens: spent.tokens,
+            cost: spent.cost,
+            estimated: spent.estimated,
+            unpriced: spent.unpriced,
+        };
+        fold_day.usage.add(usage);
         fold_day
             .providers
             .entry(spent.provider)
             .or_default()
-            .add(spent.tokens, spent.cost);
-        fold_day
-            .models
-            .entry(spent.model)
-            .or_default()
-            .add(spent.tokens, spent.cost);
+            .add(usage);
+        fold_day.models.entry(spent.model).or_default().add(usage);
     }
     // The newest few turns for the preview, and the first user turn for the title.
     tail.push_back(trimmed.to_string());
@@ -989,19 +999,18 @@ fn fold_codex(record: &Record<'_>, fold: &mut Fold, seen: &mut HashSet<u64>) {
         .or_else(|| local_day(now_ms()))
         .unwrap_or_default();
     let name = SessionAgent::Codex.display().to_string();
+    let model = fold.model.clone().unwrap_or_else(|| name.clone());
+    let price = usage.estimate(&model);
+    let spent = Usage {
+        tokens,
+        cost: price.unwrap_or(0.),
+        estimated: price.is_some(),
+        unpriced: price.is_none(),
+    };
     let fold_day = fold.days.entry(day).or_default();
-    // Codex is a subscription: it records tokens, never a price.
-    fold_day.usage.add(tokens, 0.);
-    fold_day
-        .providers
-        .entry(name.clone())
-        .or_default()
-        .add(tokens, 0.);
-    fold_day
-        .models
-        .entry(fold.model.clone().unwrap_or(name))
-        .or_default()
-        .add(tokens, 0.);
+    fold_day.usage.add(spent);
+    fold_day.providers.entry(name).or_default().add(spent);
+    fold_day.models.entry(model).or_default().add(spent);
 }
 
 /// The text of a turn record, the only thing this module decodes a whole record for.
@@ -1077,11 +1086,25 @@ struct Info {
 #[derive(Debug, Deserialize)]
 struct Tokens {
     input_tokens: Option<u64>,
+    cached_input_tokens: Option<u64>,
+    #[serde(alias = "cache_write_tokens")]
+    cache_write_input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     total_tokens: Option<u64>,
 }
 
 impl Tokens {
+    fn estimate(&self, model: &str) -> Option<f64> {
+        let read = self.cached_input_tokens.unwrap_or(0);
+        let write = self.cache_write_input_tokens.unwrap_or(0);
+        // Both cache categories are inside Codex's input, unlike Pi's separate counts.
+        let input = self
+            .input_tokens
+            .unwrap_or(0)
+            .checked_sub(read.checked_add(write)?)?;
+        openai_cost(model, input, self.output_tokens.unwrap_or(0), read, write)
+    }
+
     /// The tokens this report covers, and the pair a later event is matched against.
     fn spent(&self) -> (u64, (u64, u64, u64)) {
         let input = self.input_tokens.unwrap_or(0);
@@ -1093,6 +1116,34 @@ impl Tokens {
     }
 }
 
+/// OpenAI Standard USD per 1M tokens, checked 2026-10-16:
+/// https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing
+/// Cache-write rate (1.25x input): https://developers.openai.com/api/docs/guides/prompt-caching
+/// shortcut: a dated Standard-rate snapshot, refresh when OpenAI changes prices;
+/// Fast/Ultrafast, regional premiums and tool fees are not estimated.
+fn openai_cost(model: &str, input: u64, output: u64, read: u64, write: u64) -> Option<f64> {
+    let (input_rate, read_rate, output_rate) = match model {
+        "gpt-6.1-sol" => (2., 0.1, 10.),
+        "gpt-6-sol" => (2., 0.2, 10.),
+        // Current promotion, published as available at least through 2026-11-21.
+        "gpt-5.6-sol" => (4., 0.4, 20.),
+        _ => return None,
+    };
+    let prompt = input.checked_add(read)?.checked_add(write)?;
+    // Long-context prices apply to the whole request, not only the excess.
+    let (input_multiplier, output_multiplier) = if prompt > 272_000 {
+        (2., 1.5)
+    } else {
+        (1., 1.)
+    };
+    Some(
+        ((input as f64 * input_rate + read as f64 * read_rate + write as f64 * input_rate * 1.25)
+            * input_multiplier
+            + output as f64 * output_rate * output_multiplier)
+            / 1_000_000.,
+    )
+}
+
 /// One record, as far as the count needs it: every field optional and borrowed, so a line costs
 /// a scan rather than a document.
 #[derive(Debug, Deserialize)]
@@ -1101,6 +1152,7 @@ struct Record<'a> {
     kind: Option<&'a str>,
     #[serde(rename = "sessionId")]
     session_id: Option<&'a str>,
+    provider: Option<&'a str>,
     #[serde(rename = "modelId")]
     model_id: Option<&'a str>,
     cwd: Option<&'a str>,
@@ -1144,24 +1196,40 @@ impl Record<'_> {
                     .cost
                     .as_ref()
                     .and_then(|cost| cost.total)
-                    .unwrap_or(0.),
+                    .filter(|cost| cost.is_finite() && *cost > 0.),
             ),
             SessionAgent::Claude => (
                 usage.input_tokens.unwrap_or(0)
                     + usage.output_tokens.unwrap_or(0)
                     + usage.cache_read_input_tokens.unwrap_or(0)
                     + usage.cache_creation_input_tokens.unwrap_or(0),
-                self.cost_usd.unwrap_or(0.),
+                self.cost_usd.filter(|cost| cost.is_finite() && *cost >= 0.),
             ),
         };
-        if tokens == 0 && cost == 0. {
+        if tokens == 0 && cost.unwrap_or(0.) == 0. {
             return None;
         }
+        let recorded = cost;
+        let cost = recorded.or_else(|| {
+            if agent == SessionAgent::Pi {
+                openai_cost(
+                    message.model?,
+                    usage.input.unwrap_or(0),
+                    usage.output.unwrap_or(0),
+                    usage.cache_read.unwrap_or(0),
+                    usage.cache_write.unwrap_or(0),
+                )
+            } else {
+                None
+            }
+        });
         // An agent that records neither is named by the agent itself (`Claude Code`),
         // so a record is never labelled with nothing.
         Some(Spent {
             tokens,
-            cost,
+            cost: cost.unwrap_or(0.),
+            estimated: recorded.is_none() && cost.is_some(),
+            unpriced: cost.is_none(),
             provider: message
                 .provider
                 .map(str::to_string)
@@ -1364,6 +1432,155 @@ mod tests {
         .to_string()
     }
 
+    fn pi_gpt(at: &str, model: &str, input: u64, output: u64, read: u64, write: u64) -> String {
+        serde_json::json!({
+            "type": "message", "timestamp": at,
+            "message": {
+                "role": "assistant", "provider": "relay", "model": model,
+                "usage": {
+                    "input": input, "output": output, "cacheRead": read, "cacheWrite": write,
+                    "reasoning": output / 2, "cost": {"total": 0},
+                },
+            },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn pi_gpt_zero_or_missing_prices_use_official_rates() {
+        for (model, expected) in [
+            ("gpt-6.1-sol", 0.243),
+            ("gpt-6-sol", 0.251),
+            ("gpt-5.6-sol", 0.502),
+        ] {
+            let line = pi_gpt(
+                "2026-10-16T00:00:00Z",
+                model,
+                100_000,
+                1_000,
+                80_000,
+                10_000,
+            );
+            let record: Record<'_> = serde_json::from_str(&line).unwrap();
+            let spent = record.spent(SessionAgent::Pi).unwrap();
+            assert_eq!(spent.tokens, 191_000);
+            assert!(spent.estimated);
+            assert!(!spent.unpriced);
+            assert!(
+                (spent.cost - expected).abs() < 1e-10,
+                "{model}: {}",
+                spent.cost
+            );
+
+            let mut value: Value = serde_json::from_str(&line).unwrap();
+            value["message"]["usage"]
+                .as_object_mut()
+                .unwrap()
+                .remove("cost");
+            let missing = value.to_string();
+            let record: Record<'_> = serde_json::from_str(&missing).unwrap();
+            assert!((record.spent(SessionAgent::Pi).unwrap().cost - expected).abs() < 1e-10);
+            value["message"]["usage"]["cost"] = serde_json::json!({"total": 0.75});
+            let priced = value.to_string();
+            let record: Record<'_> = serde_json::from_str(&priced).unwrap();
+            let spent = record.spent(SessionAgent::Pi).unwrap();
+            assert_eq!(spent.cost, 0.75);
+            assert!(!spent.estimated && !spent.unpriced);
+        }
+    }
+
+    #[test]
+    fn pi_gpt_long_context_reprices_the_whole_request() {
+        for (input, expected) in [(172_000, 0.412), (172_001, 0.819004)] {
+            // Include both cache categories in the 272K threshold, but not output.
+            let line = pi_gpt(
+                "2026-10-16T00:00:00Z",
+                "gpt-6.1-sol",
+                input,
+                1_000,
+                80_000,
+                20_000,
+            );
+            let record: Record<'_> = serde_json::from_str(&line).unwrap();
+            assert!((record.spent(SessionAgent::Pi).unwrap().cost - expected).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn unsupported_models_and_invalid_cache_counts_remain_unpriced() {
+        let line = pi_gpt("2026-10-16T00:00:00Z", "gpt-6.1-sol-unknown", 100, 10, 0, 0);
+        let record: Record<'_> = serde_json::from_str(&line).unwrap();
+        let spent = record.spent(SessionAgent::Pi).unwrap();
+        assert_eq!(spent.cost, 0.);
+        assert!(spent.unpriced && !spent.estimated);
+        let counts: Tokens = serde_json::from_value(serde_json::json!({
+            "input_tokens": 190_000, "output_tokens": 1_000,
+            "cached_input_tokens": 80_000, "cache_write_input_tokens": 10_000,
+        }))
+        .unwrap();
+        assert!((counts.estimate("gpt-6.1-sol").unwrap() - 0.243).abs() < 1e-10);
+        let invalid: Tokens = serde_json::from_value(serde_json::json!({
+            "input_tokens": 100, "cached_input_tokens": 80, "cache_write_input_tokens": 30,
+        }))
+        .unwrap();
+        assert_eq!(invalid.estimate("gpt-6.1-sol"), None);
+    }
+
+    #[test]
+    fn codex_gpt_estimates_survive_model_changes_and_cached_scans() {
+        let home = home("codex-estimate");
+        let now = now_ms();
+        let at = iso_days_ago(now, 0);
+        let path = write_codex(
+            &home,
+            "estimate",
+            &[
+                &codex_meta("/Users/ada/code", "estimate"),
+                &codex_turn("gpt-6.1-sol"),
+                &codex_usage_record(&at, "estimate_a", 190_000, 80_000, 1_000),
+                &codex_token_event(&at, 190_000, 80_000, 1_000),
+            ],
+        );
+        let roots = SessionRoots::from_home(&home);
+        let mut cache = Cache::default();
+        let first = scan_at(&roots, &mut cache, DEFAULT_LIMIT, now).usage;
+        // Cached tokens are inside Codex input; reasoning is inside output.
+        assert!((first.total.cost - 0.238).abs() < 1e-10);
+        assert_eq!(first.total.tokens, 191_000);
+        assert!(first.total.estimated && !first.total.unpriced);
+        assert!(first.models[0].estimated && !first.models[0].unpriced);
+        assert!(first.days[0].models[0].estimated);
+        assert_eq!(first, scan_at(&roots, &mut cache, DEFAULT_LIMIT, now).usage);
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", codex_turn("gpt-6-sol")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            codex_usage_record(&at, "estimate_b", 200_000, 80_000, 1_000)
+        )
+        .unwrap();
+        let next = scan_at(&roots, &mut cache, DEFAULT_LIMIT, now).usage;
+        assert!((next.total.cost - (0.238 + 0.266)).abs() < 1e-10);
+        assert_eq!(next.total.tokens, 392_000);
+        assert_eq!(next.models.len(), 2);
+        assert_eq!(next.total.cost, next.today.cost);
+        assert_eq!(next.total.cost, next.providers[0].cost);
+        assert_eq!(next.total.cost, next.days[0].cost);
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", codex_turn("gpt-unknown")).unwrap();
+        writeln!(
+            file,
+            "{}",
+            codex_usage_record(&at, "estimate_c", 100, 0, 10)
+        )
+        .unwrap();
+        let mixed = scan_at(&roots, &mut cache, DEFAULT_LIMIT, now).usage;
+        assert_eq!(mixed.total.cost, next.total.cost);
+        assert!(mixed.total.estimated && mixed.total.unpriced);
+        assert!(mixed.today.unpriced && mixed.providers[0].unpriced);
+        let _ = fs::remove_dir_all(&home);
+    }
+
     /// A Claude Code assistant turn with usage on it. `cost` is `None` for a
     /// transcript that records no price, which the agent often does not.
     fn claude_spent(at: &str, input: u64, output: u64, cost: Option<f64>) -> String {
@@ -1525,6 +1742,7 @@ mod tests {
         assert_eq!(session.title, "查看 okx-mode.md，看看还有什么没做");
         assert_eq!(session.preview, "Reading the file first.");
         assert_eq!(session.model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(session.provider.as_deref(), Some("anthropic"));
         // Two turns: the tool result is not one.
         assert_eq!(session.messages, 2);
         assert!(session.updated_ms > 0);
@@ -1596,8 +1814,10 @@ mod tests {
         assert_eq!(usage.total.tokens, 28_750 + 1_500);
         assert_eq!(usage.today.tokens, 28_750);
         assert_eq!(usage.days.len(), 2);
-        // Codex records tokens, never a price: it is a subscription.
+        // No matching rate in our snapshot: unknown, not a free subscription.
         assert_eq!(usage.total.cost, 0.);
+        assert!(usage.total.unpriced);
+        assert!(!usage.total.estimated);
         assert_eq!(usage.providers[0].label, "Codex");
         assert_eq!(usage.models[0].label, "gpt-5-codex");
         assert_eq!(usage.models[0].tokens, 30_250);
@@ -2051,6 +2271,7 @@ mod tests {
             title: "t".into(),
             preview: String::new(),
             model: None,
+            provider: None,
             messages: 1,
             updated_ms: 0,
         };

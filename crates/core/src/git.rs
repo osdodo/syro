@@ -829,6 +829,27 @@ fn remotes(root: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+/// The page the repository can be opened at in a browser: the `origin` remote,
+/// with the ssh forms turned into the `https://` a browser takes. `None` when
+/// there is no remote, or when what it holds is not a URL at all (a local path
+/// is a remote, but it has no page).
+pub fn remote_url(root: &Path) -> Option<String> {
+    let raw = run_git_ok(root, &["remote", "get-url", "origin"]).ok()?;
+    let raw = raw.trim();
+    // `git@github.com:owner/repo.git` and `ssh://git@github.com/owner/repo.git`
+    // name the same page as the https URL; only the punctuation differs.
+    let http = if let Some(rest) = raw.strip_prefix("git@") {
+        format!("https://{}", rest.replacen(':', "/", 1))
+    } else if let Some(rest) = raw.strip_prefix("ssh://git@") {
+        format!("https://{rest}")
+    } else {
+        raw.to_string()
+    };
+    let url = http.trim_end_matches('/');
+    let url = url.strip_suffix(".git").unwrap_or(url);
+    url.starts_with("https://").then(|| url.to_string())
+}
+
 /// Fetch every remote, and drop the remote-tracking refs whose branch is gone
 /// from it. `--prune` is the point of fetching in a window like this one: a
 /// branch somebody deleted upstream is a branch the graph should stop drawing.
@@ -1047,6 +1068,40 @@ mod tests {
             .map(|line| line.trim().to_string())
             .filter(|line| !line.is_empty())
             .collect()
+    }
+
+    /// The page a repository is opened at: the https form of its `origin`, and
+    /// nothing at all for a remote that is not a URL.
+    #[test]
+    fn the_remote_url_is_the_https_form_of_origin() {
+        let dir = scratch_repo("remote-url", "main");
+        assert_eq!(remote_url(&dir), None, "no remote, no page");
+
+        for (remote, expected) in [
+            (
+                "git@github.com:owner/repo.git",
+                "https://github.com/owner/repo",
+            ),
+            (
+                "https://github.com/owner/repo.git",
+                "https://github.com/owner/repo",
+            ),
+            (
+                "ssh://git@github.com/owner/repo",
+                "https://github.com/owner/repo",
+            ),
+        ] {
+            if remotes(&dir).unwrap().is_empty() {
+                git_in(&dir, &["remote", "add", "origin", remote]);
+            } else {
+                git_in(&dir, &["remote", "set-url", "origin", remote]);
+            }
+            assert_eq!(remote_url(&dir).as_deref(), Some(expected), "{remote}");
+        }
+
+        // A local path is a remote, but it is not a page.
+        git_in(&dir, &["remote", "set-url", "origin", "/tmp/elsewhere.git"]);
+        assert_eq!(remote_url(&dir), None);
     }
 
     #[test]

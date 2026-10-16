@@ -130,8 +130,8 @@ mod tests {
     }
 }
 
-/// Where a project this app *makes* goes: `~/syro/projects/<name>`.
-pub fn projects_root() -> PathBuf {
+/// The user's home directory: where the add-project form's folder picker starts.
+pub fn home_dir() -> PathBuf {
     let home = std::env::var_os("HOME").expect("HOME is not set");
-    PathBuf::from(home).join("syro").join("projects")
+    PathBuf::from(home)
 }
