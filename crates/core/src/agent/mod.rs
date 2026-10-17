@@ -140,6 +140,24 @@ const NAME_DETAIL_CHARS: usize = 30;
 /// detail)` in pane order: `Pi - fix the build`. Two that would read the same are numbered,
 /// `Pi 1 - main` and `Pi 2 - main`, which is the only thing that tells them apart.
 pub fn names(terminals: &[(String, String)]) -> Vec<String> {
+    terminals
+        .iter()
+        .zip(numbered(terminals))
+        .map(|((agent, _), (number, detail))| {
+            if number == 0 {
+                format!("{agent} - {detail}")
+            } else {
+                format!("{agent} {number} - {detail}")
+            }
+        })
+        .collect()
+}
+
+/// The same names split so a readout can draw the agent's logo in place of its
+/// word: `(0, detail)` when the name is unique, and `(number, detail)` — numbered
+/// from 1 — when two would read the same. The detail is the trimmed, shortened
+/// task [`names`] builds the name from.
+pub fn numbered(terminals: &[(String, String)]) -> Vec<(usize, String)> {
     let short: Vec<(&str, String)> = terminals
         .iter()
         .map(|(agent, detail)| {
@@ -159,10 +177,10 @@ pub fn names(terminals: &[(String, String)]) -> Vec<String> {
         .map(|(index, (agent, detail))| {
             let same = |other: &&(&str, String)| other.0 == *agent && other.1 == *detail;
             if short.iter().filter(same).count() == 1 {
-                format!("{agent} - {detail}")
+                (0, detail.clone())
             } else {
                 let number = short[..=index].iter().filter(same).count();
-                format!("{agent} {number} - {detail}")
+                (number, detail.clone())
             }
         })
         .collect()
@@ -675,6 +693,27 @@ mod tests {
         assert_eq!(
             long,
             ["Pi - 查看 okx-mode.md，看看还有什么没做，然后把它们…"]
+        );
+    }
+
+    /// The split form numbers the same as the joined one, so a logo and the
+    /// words beside it agree on which of two identical agents is which.
+    #[test]
+    fn numbered_splits_the_name_it_numbers() {
+        let pair = |agent: &str, detail: &str| (agent.to_string(), detail.to_string());
+        assert_eq!(
+            numbered(&[
+                pair("Pi", "main"),
+                pair("Pi", "fix the build"),
+                pair("Pi", "main"),
+                pair("Claude Code", "main"),
+            ]),
+            [
+                (1, "main".to_string()),
+                (0, "fix the build".to_string()),
+                (2, "main".to_string()),
+                (0, "main".to_string()),
+            ]
         );
     }
 

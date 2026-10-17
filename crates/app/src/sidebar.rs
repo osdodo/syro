@@ -588,7 +588,7 @@ impl Sidebar {
             // rows beside it.
             .w_full()
             .px_2()
-            .py_1p5()
+            .py_1()
             // `md` rather than `lg`: a wide radius on a short card reads as a
             // pill, and this row is a list item.
             .rounded_md()
@@ -817,15 +817,16 @@ fn terminal_line(
 ) -> AnyElement {
     // Empty before the agent has worked: the column stays, so the numbers do not move.
     let uptime = row.uptime.map(format_uptime).unwrap_or_default();
+    let name = &row.name;
     div()
         .id(SharedString::from(format!(
             "terminal-{worktree_id}-{}",
-            row.title
+            name.aria
         )))
         .test_support()
         .aria_label(SharedString::from(format!(
             "{}: {uptime} · {:.1}% · {}",
-            row.title,
+            name.aria,
             row.cpu_pct,
             format_bytes(row.rss_bytes)
         )))
@@ -838,15 +839,27 @@ fn terminal_line(
             div()
                 .id(SharedString::from(format!(
                     "terminal-name-{worktree_id}-{}",
-                    row.title
+                    name.aria
                 )))
                 .test_support()
                 .flex_1()
                 .min_w_0()
-                .truncate()
+                .h_flex()
+                .items_center()
+                .gap_1()
                 .text_xs()
                 .text_color(colors.muted_foreground)
-                .child(SharedString::from(row.title.clone())),
+                // The agent's logo stands in for its name, so the words beside it
+                // are only the task.
+                .when_some(name.logo, |el, logo| {
+                    el.child(crate::agent_logo::logo_icon(logo, colors.muted_foreground))
+                })
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(name.text.clone())),
+                ),
         )
         // The word belongs to the columns the line ends in, under the branch's
         // own `状态` label: drawn before the name it would sit under the branch
@@ -859,7 +872,7 @@ fn terminal_line(
                 .h_flex()
                 .justify_end()
                 .children(status_word(
-                    SharedString::from(format!("terminal-status-{worktree_id}-{}", row.title)),
+                    SharedString::from(format!("terminal-status-{worktree_id}-{}", name.aria)),
                     row.status,
                     row.stalled,
                     row.exit,
@@ -873,7 +886,7 @@ fn terminal_line(
             div()
                 .id(SharedString::from(format!(
                     "terminal-uptime-{worktree_id}-{}",
-                    row.title
+                    name.aria
                 )))
                 .test_support()
                 .aria_label(SharedString::from(uptime.clone()))
@@ -885,7 +898,7 @@ fn terminal_line(
                 .child(SharedString::from(uptime)),
         )
         .child(row_metrics(
-            SharedString::from(format!("terminal-metrics-{worktree_id}-{}", row.title)),
+            SharedString::from(format!("terminal-metrics-{worktree_id}-{}", name.aria)),
             row.cpu_pct,
             row.rss_bytes,
             columns,
@@ -1188,7 +1201,7 @@ impl Render for Sidebar {
                 .id(SharedString::from(format!("repo-{}", repo.id)))
                 .test_support()
                 .v_flex()
-                .gap_1()
+                .gap_2()
                 .child(
                     div()
                         .id(SharedString::from(format!("repo-heading-{}", repo.id)))
@@ -1954,7 +1967,7 @@ mod window_tests {
                     .resource_bar()
                     .read(cx)
                     .worktree_usage(&active)
-                    .and_then(|usage| usage.terminals.first().map(|row| row.title.clone()))
+                    .and_then(|usage| usage.terminals.first().map(|row| row.name.aria.clone()))
             })
             .expect("a row");
         let left_of =
@@ -2110,7 +2123,7 @@ mod window_tests {
                             .terminals
                             .iter()
                             .find(|row| row.status.is_some())
-                            .map(|row| row.title.clone())
+                            .map(|row| row.name.aria.clone())
                     })
             })
             .expect("the agent has a row");
@@ -2157,7 +2170,7 @@ mod window_tests {
                             .terminals
                             .iter()
                             .find(|row| row.status.is_none())
-                            .map(|row| row.title.clone())
+                            .map(|row| row.name.aria.clone())
                     })
             })
             .expect("the shell has a row");
@@ -2231,7 +2244,7 @@ mod window_tests {
                             .terminals
                             .iter()
                             .find(|row| row.status == Some(AgentStatus::Working))
-                            .map(|row| format!("terminal-status-{id}-{}", row.title))
+                            .map(|row| format!("terminal-status-{id}-{}", row.name.aria))
                     })
             })
         };
@@ -3149,7 +3162,7 @@ mod window_tests {
             ]
             .map(
                 |(title, status, seconds, cpu_pct, mb)| crate::resource_bar::Row {
-                    title: title.into(),
+                    name: crate::resource_bar::TerminalName::plain(title.into()),
                     status,
                     stalled: false,
                     exit: None,
@@ -3184,7 +3197,7 @@ mod window_tests {
             let colors = Theme::global(cx).tokens.colors;
             let columns = super::ColumnWidths::for_rows(
                 [crate::resource_bar::Row {
-                    title: "wide".into(),
+                    name: crate::resource_bar::TerminalName::plain("wide".into()),
                     status: None,
                     stalled: false,
                     exit: None,

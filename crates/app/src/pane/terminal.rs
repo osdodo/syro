@@ -102,6 +102,21 @@ fn builtin_agents() -> &'static [AgentSpec] {
     AGENTS.get_or_init(agent::builtin_agents)
 }
 
+/// The builtin agent a user launched from a plain shell, if the command line
+/// starts with that agent's command.
+fn manual_agent(line: &str) -> Option<AgentSpec> {
+    let command = line.split_whitespace().next()?;
+    let command = command.trim_matches(['\'', '"']);
+    if command.starts_with("./") || command.starts_with("../") {
+        return None;
+    }
+    let command = command.rsplit('/').next()?;
+    builtin_agents()
+        .iter()
+        .find(|agent| agent.id == command)
+        .cloned()
+}
+
 /// A random v4 UUID, the shape Claude Code's `--session-id` insists on. No crate: std's
 /// randomly keyed hasher is random enough for an id nobody guesses at.
 fn new_session_id() -> String {
@@ -153,8 +168,13 @@ pub struct TerminalView {
     /// A builtin agent this shell's title says is running in it, when no preset started one:
     /// `pi` typed at the prompt is still Pi.
     seen: Option<AgentSpec>,
+    /// A builtin agent explicitly launched from this shell's command line.
+    manual: Option<AgentSpec>,
     /// The task the agent's title names (`agent::task_of`).
     task: Option<String>,
+    /// Printable input typed at the shell prompt, used to identify an agent
+    /// started manually before it has set a terminal title.
+    input_line: String,
     /// The first thing the user asked, from the transcript. Looked for until found.
     prompt: Option<String>,
     /// The child's `OSC 0` title, which is also what the status rules read.
@@ -446,7 +466,9 @@ impl TerminalView {
             resume,
             session_id,
             seen: None,
+            manual: None,
             task: None,
+            input_line: String::new(),
             title: None,
             scroll_pixels: 0.,
             marked: None,
@@ -480,14 +502,62 @@ impl TerminalView {
         self.agent.as_ref().map(|agent| &agent.id)
     }
 
+    /// The preset this terminal draws its logo from: the one it was started with,
+    /// or the one its title named — the same agent [`Self::agent_name`] names. A
+    /// recognised agent is not [`Self::agent_id`]: it has nothing to restore it as.
+    pub fn running_agent_id(&self) -> Option<&AgentId> {
+        self.running_agent().map(|agent| &agent.id)
+    }
+
+    /// The preset the readout names and draws this terminal as: an explicitly
+    /// launched agent takes precedence over ambiguous title-based detection.
+    fn running_agent(&self) -> Option<&AgentSpec> {
+        self.agent
+            .as_ref()
+            .or(self.manual.as_ref())
+            .or(self.seen.as_ref())
+    }
+
+    /// Remember a manually started builtin agent, which may not set an OSC title
+    /// that identifies itself.
+    fn note_manual_agent(&mut self, line: &str, cx: &mut Context<Self>) {
+        let Some(agent) = manual_agent(line) else {
+            return;
+        };
+        let changed = self.agent_name() != Some(agent.name.as_str());
+        self.manual = Some(agent);
+        self.task = None;
+        if changed {
+            cx.emit(PaneStatus {
+                status: self.status,
+                stalled: self.stalled,
+            });
+        }
+    }
+
+    /// Track enough shell input to identify an agent when Enter submits the command.
+    fn observe_input(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        for byte in bytes {
+            match *byte {
+                b'\r' | b'\n' => {
+                    let line = std::mem::take(&mut self.input_line);
+                    self.note_manual_agent(&line, cx);
+                }
+                0x03 | 0x04 => self.input_line.clear(),
+                0x7f => {
+                    self.input_line.pop();
+                }
+                0x20..=0x7e => self.input_line.push(*byte as char),
+                _ => {}
+            }
+        }
+    }
+
     /// What that preset is called — `Pi`, `Claude Code` — for the readouts that
     /// name a terminal by its agent rather than by its title, which is the task
     /// the agent is on and changes as it works.
     pub fn agent_name(&self) -> Option<&str> {
-        self.agent
-            .as_ref()
-            .or(self.seen.as_ref())
-            .map(|agent| agent.name.as_str())
+        self.running_agent().map(|agent| agent.name.as_str())
     }
 
     /// What the agent is on, for its name: the task its title names, else the first thing the
@@ -500,13 +570,19 @@ impl TerminalView {
     /// `PaneStatus`, which is what the readouts already re-read a terminal on.
     fn read_name(&mut self, title: Option<&str>, cx: &mut Context<Self>) {
         let before = (self.agent_name().map(str::to_string), self.task.clone());
-        if self.agent.is_none() {
-            self.seen = title.and_then(|title| {
+        if self.agent.is_none() && self.manual.is_none() {
+            if let Some(detected) = title.and_then(|title| {
                 let (id, _) = agent::classify_any(builtin_agents(), title)?;
                 builtin_agents().iter().find(|spec| spec.id == id).cloned()
-            });
+            }) {
+                self.seen = Some(detected);
+            }
         }
-        let spec = self.agent.as_ref().or(self.seen.as_ref());
+        let spec = self
+            .agent
+            .as_ref()
+            .or(self.manual.as_ref())
+            .or(self.seen.as_ref());
         self.task = spec
             .zip(title)
             .and_then(|(spec, title)| agent::task_of(spec, title));
@@ -628,6 +704,7 @@ impl TerminalView {
         if let Err(error) = self.session.write(&bytes) {
             tracing::warn!(%error, "terminal write failed");
         }
+        self.observe_input(&bytes, cx);
     }
 
     /// Everything the terminal said since the last look. A repaint is asked for
@@ -821,6 +898,7 @@ impl TerminalView {
         if let Err(error) = self.session.write(&bytes) {
             tracing::warn!(%error, "terminal write failed");
         }
+        self.observe_input(&bytes, cx);
         cx.stop_propagation();
     }
 
@@ -1014,6 +1092,7 @@ impl TerminalView {
             tracing::warn!(%error, "terminal write failed");
             return;
         }
+        self.observe_input(text.as_bytes(), cx);
         // A drop is the reader doing something deliberate to this pane, so the
         // keyboard belongs here afterwards — the terminal only takes it on a
         // press otherwise.
@@ -1219,7 +1298,7 @@ impl TerminalView {
 
     /// The same road for a paste the platform hands over rather than a `cmd-v`
     /// we caught: the input handler's `paste`.
-    fn paste_item(&mut self, item: ClipboardItem, _cx: &mut Context<Self>) {
+    fn paste_item(&mut self, item: ClipboardItem, cx: &mut Context<Self>) {
         let Some(text) = item.text() else {
             return;
         };
@@ -1232,6 +1311,7 @@ impl TerminalView {
         if let Err(error) = self.session.write(&paste_bytes(&text, bracketed)) {
             tracing::warn!(%error, "terminal paste failed");
         }
+        self.observe_input(text.as_bytes(), cx);
     }
 }
 
@@ -2266,9 +2346,27 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        ClipboardKey, Palette, clipboard_key, composition_bytes, key_to_bytes, paste_bytes,
-        shell_escape, xterm256,
+        ClipboardKey, Palette, clipboard_key, composition_bytes, key_to_bytes, manual_agent,
+        paste_bytes, shell_escape, xterm256,
     };
+
+    #[test]
+    fn manually_started_builtin_agents_are_recognized_from_the_command() {
+        assert_eq!(
+            manual_agent("codex --yolo").map(|agent| agent.id),
+            Some("codex".into())
+        );
+        assert_eq!(
+            manual_agent("claude").map(|agent| agent.id),
+            Some("claude".into())
+        );
+        assert_eq!(
+            manual_agent("/opt/homebrew/bin/codex resume").map(|agent| agent.id),
+            Some("codex".into())
+        );
+        assert_eq!(manual_agent("echo codex").map(|agent| agent.id), None);
+        assert_eq!(manual_agent("./codex").map(|agent| agent.id), None);
+    }
 
     /// The parser is the one gpui itself reads a keymap with, so the test table
     /// says the same thing a user's binding would.
@@ -2816,8 +2914,13 @@ mod window_tests {
                 .as_deref(),
             Some("review the diff")
         );
-        // And it is not a preset: nothing to restore it as.
+        // And it is not a preset: nothing to restore it as. Its logo is still
+        // Pi's, though — the readouts draw the agent the title named.
         assert_eq!(cx.update(|cx| view.read(cx).agent_id().cloned()), None);
+        assert_eq!(
+            cx.update(|cx| view.read(cx).running_agent_id().cloned()),
+            Some("pi".to_string())
+        );
     }
 
     #[gpui_kit::test]

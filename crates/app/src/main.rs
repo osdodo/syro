@@ -6,6 +6,7 @@
 // language is spoken.
 rust_i18n::i18n!("locales", fallback = "en");
 
+mod agent_logo;
 mod awake;
 mod dialogs;
 mod file_icons;
@@ -44,6 +45,7 @@ use syro_core::session;
 use syro_core::store::Store;
 use syro_core::term::{TermSize, TermSpec};
 
+use crate::agent_logo::{Logo, TERMINAL_LOGO, agent_logo};
 use crate::dialogs::{NewWorktree, RemoveWorktree};
 use crate::file_tree::FileTreeView;
 use crate::git_graph::GitGraph;
@@ -55,6 +57,7 @@ use crate::pane::editor::EditorView;
 use crate::pane::image::ImageView;
 use crate::pane::terminal::{PaneStatus, SessionRef, TerminalView, term_spec_for_agent};
 use crate::resize::WidthDrag;
+use crate::resource_bar::TerminalName;
 use crate::right_sidebar::Panel;
 use crate::session_panel::SessionPanel;
 use crate::sidebar::Sidebar;
@@ -226,6 +229,11 @@ struct DraggedTab {
 /// One row of the tab bar, read off the tab's tree before anything mutates.
 struct TabRow {
     title: SharedString,
+    /// The agent's logo, which stands in for its name in the row: `title` is then
+    /// only the task.
+    logo: Option<Logo>,
+    /// The agent and the task in words, for the screen reader.
+    aria: SharedString,
     dirty: bool,
     /// The tab is more than one pane, divided this way.
     axis: Option<split::Axis>,
@@ -1558,9 +1566,9 @@ impl Workspace {
                     let view = view.read(cx);
                     live.push(crate::resource_bar::LiveTerminal {
                         worktree: worktree_id.clone(),
-                        title: names
+                        name: names
                             .remove(pane)
-                            .unwrap_or_else(|| view.title(cx).to_string()),
+                            .unwrap_or_else(|| TerminalName::plain(view.title(cx).to_string())),
                         pid: view.process_id(),
                         span: view.span(),
                         exit_ok: view.exit_status().map(|status| status.success()),
@@ -1573,10 +1581,15 @@ impl Workspace {
         live
     }
 
-    /// What each agent terminal of a worktree is called, by pane: `Pi - <task>`, the task being
-    /// what its title names or the first thing it was asked, and the worktree's branch before
+    /// What each agent terminal of a worktree is called, by pane: the agent's logo with the task
+    /// beside it (`[π] fix the build`), or `Pi - <task>` for a preset with no logo. The task is
+    /// what the title names or the first thing it was asked, and the worktree's branch before
     /// either is known. The tab bar and the sidebar both read this, so a tab and its row match.
-    fn agent_names(&self, worktree_id: &WorktreeId, cx: &App) -> BTreeMap<split::Pane, String> {
+    fn agent_names(
+        &self,
+        worktree_id: &WorktreeId,
+        cx: &App,
+    ) -> BTreeMap<split::Pane, TerminalName> {
         let called = self
             .state
             .read(cx)
@@ -1584,7 +1597,8 @@ impl Workspace {
             .map(|worktree| branch_or_name(worktree).to_string())
             .unwrap_or_else(|| worktree_id.clone());
         let mut panes = Vec::new();
-        let mut terminals = Vec::new();
+        let mut names = Vec::new();
+        let mut logos = Vec::new();
         // Pane order, which is the order the readout lists them in: a collision's numbers agree.
         for (pane, view) in self.panes.get(worktree_id).into_iter().flatten() {
             if let PaneView::Terminal { view, .. } = view {
@@ -1592,13 +1606,43 @@ impl Workspace {
                 if let Some(agent) = view.agent_name() {
                     panes.push(*pane);
                     let detail = view.detail().unwrap_or(&called).to_string();
-                    terminals.push((agent.to_string(), detail));
+                    logos.push(
+                        view.running_agent_id()
+                            .and_then(|id| agent_logo(id.as_str())),
+                    );
+                    names.push((agent.to_string(), detail));
                 }
             }
         }
+        let numbered = syro_core::agent::numbered(&names);
         panes
             .into_iter()
-            .zip(syro_core::agent::names(&terminals))
+            .enumerate()
+            .map(|(index, pane)| {
+                let (agent, _) = &names[index];
+                let (number, detail) = &numbered[index];
+                let logo = logos[index];
+                let spelled = if *number == 0 {
+                    format!("{agent} - {detail}")
+                } else {
+                    format!("{agent} {number} - {detail}")
+                };
+                // The logo stands in for the agent's word; a number stays, because
+                // it is what tells two identical agents apart.
+                let text = match (logo, *number) {
+                    (Some(_), 0) => detail.clone(),
+                    (Some(_), number) => format!("{number} - {detail}"),
+                    (None, _) => spelled.clone(),
+                };
+                (
+                    pane,
+                    TerminalName {
+                        text,
+                        logo,
+                        aria: spelled,
+                    },
+                )
+            })
             .collect()
     }
 
@@ -2758,11 +2802,25 @@ impl Workspace {
                         let view = self.pane(&worktree_id, focused)?;
                         Some(TabRow {
                             title: match names.get(&focused) {
-                                Some(name) => name.clone().into(),
+                                Some(name) => name.text.clone().into(),
                                 // A shell has no agent to be named after, and its
                                 // title is where it is.
                                 None => view.title(cx),
                             },
+                            logo: match names.get(&focused) {
+                                Some(name) => name.logo,
+                                // A shell runs no agent, but it is still a
+                                // terminal: the glyph says which kind of tab it
+                                // is. An editor or a diff draws none.
+                                None if matches!(view, PaneView::Terminal { .. }) => {
+                                    Some(TERMINAL_LOGO)
+                                }
+                                None => None,
+                            },
+                            aria: names
+                                .get(&focused)
+                                .map(|name| name.aria.clone().into())
+                                .unwrap_or_else(|| view.title(cx)),
                             dirty: view.is_dirty(cx),
                             axis: layout.tab_axis(tab),
                             // The first pane of the tab whose child is gone: the
@@ -2871,6 +2929,8 @@ impl Workspace {
             let is_active = active == Some(index);
             let TabRow {
                 title,
+                logo,
+                aria,
                 dirty,
                 axis,
                 exited,
@@ -2882,10 +2942,17 @@ impl Workspace {
                 split::Axis::SideBySide => IconName::PanelRight,
                 split::Axis::Stacked => IconName::PanelBottom,
             });
+            // The tab's own colour, which the name's logo shares: a muted mark
+            // beside a bright one would read as a different thing.
+            let tab_color = if is_active {
+                colors.foreground
+            } else {
+                colors.muted_foreground
+            };
             let mut tab = div()
                 .id(SharedString::from(format!("tab-{index}")))
                 .test_support()
-                .aria_label(title.clone())
+                .aria_label(aria.clone())
                 .aria_selected(is_active)
                 .h_flex()
                 // Natural width, and the strip scrolls to the rest: a tab that
@@ -2903,11 +2970,7 @@ impl Workspace {
                 // bar around it.
                 .hover(|el| el.bg(colors.muted))
                 .text_xs()
-                .text_color(if is_active {
-                    colors.foreground
-                } else {
-                    colors.muted_foreground
-                });
+                .text_color(tab_color);
 
             // The mark goes *before* the name: a tab made of more than one pane
             // carries the glyph of the axis it is divided along. A lone pane has
@@ -2923,6 +2986,12 @@ impl Workspace {
                         .text_color(colors.muted_foreground)
                         .child(Icon::new(axis).size(px(12.))),
                 );
+            }
+
+            // The agent's logo takes the place of its name in the row, so the
+            // title beside it is only the task.
+            if let Some(logo) = logo {
+                tab = tab.child(crate::agent_logo::logo_icon(logo, tab_color));
             }
 
             tab = tab.child(title.clone());
@@ -3754,7 +3823,7 @@ fn main() {
         .init();
 
     // The default gpui-kit icon set, so the chrome can draw icons instead of glyphs.
-    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
+    let app = gpui_kit::application().with_assets(crate::agent_logo::AppAssets);
     app.on_reopen(reopen_windows);
     app.run(move |cx| {
         gpui_kit::init(cx);
@@ -4222,7 +4291,13 @@ mod window_tests {
                 .resource_bar()
                 .read(cx)
                 .worktree_usage(worktree_id)
-                .map(|usage| usage.terminals.into_iter().map(|row| row.title).collect())
+                .map(|usage| {
+                    usage
+                        .terminals
+                        .into_iter()
+                        .map(|row| row.name.aria)
+                        .collect()
+                })
                 .unwrap_or_default()
         })
     }
@@ -8781,7 +8856,7 @@ mod window_tests {
         use gpui_kit::AssetSource as _;
         use gpui_kit::assets::IconNamed as _;
 
-        let installed = gpui_kit::assets::Assets;
+        let installed = crate::agent_logo::AppAssets;
         let drawn = [
             ("Add repository", IconName::Plus),
             ("New worktree", IconName::Plus),

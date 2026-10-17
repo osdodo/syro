@@ -631,10 +631,11 @@ impl Palette {
             .h_flex()
             .items_center()
             .justify_between()
-            .gap_3()
+            .gap_2()
             .px_3()
-            .py_2()
+            .py_1()
             .min_h(px(40.))
+            .flex_shrink_0()
             .rounded_md()
             .cursor_pointer()
             .when(selected, |el| el.bg(colors.muted))
@@ -650,7 +651,7 @@ impl Palette {
         // Both lines shrink before the group badge, so long paths never cover it.
         let mut left = div()
             .v_flex()
-            .gap_1()
+            .gap_0()
             .flex_1()
             .min_w_0()
             .overflow_hidden()
@@ -682,10 +683,6 @@ impl Palette {
                 div()
                     .text_xs()
                     .text_color(colors.muted_foreground)
-                    .px_2()
-                    .py_0p5()
-                    .rounded_sm()
-                    .bg(colors.muted)
                     .child(item.group.clone()),
             );
         }
@@ -723,7 +720,7 @@ impl Render for Palette {
             .test_support()
             .v_flex()
             .gap_1()
-            .py_1()
+            .py_0()
             .pr_1()
             .w_full()
             .max_h(list_height)
@@ -808,7 +805,7 @@ impl Render for Palette {
             .id("palette")
             .test_support()
             .v_flex()
-            .gap_3()
+            .gap_2()
             .w_full()
             .child(click_away)
             // The keys are bound in this context (see `app_keymap`), because the

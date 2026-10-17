@@ -19,6 +19,7 @@ use syro_core::session::{
     self, Cache, DEFAULT_LIMIT, Session, SessionRoots, USAGE_DAYS, UsageSummary,
 };
 
+use crate::agent_logo::{Logo, TERMINAL_LOGO};
 use crate::usage_chart::{DaySpend, ModelBars, ModelSpend};
 
 /// How often the readout re-reads the process table. Five seconds is a number
@@ -62,6 +63,34 @@ const LEGEND_TOKENS: f32 = 78.;
 const LEGEND_COST: f32 = 72.;
 const LEGEND_PERCENT: f32 = 40.;
 
+/// What a terminal is called: the words drawn for it, the agent's logo drawn
+/// before them when its preset has one, and the whole name for a screen reader.
+///
+/// The split exists because a logo cannot live inside a string: a preset with a
+/// mark drops its name from the drawn words, and the screen reader still hears
+/// `Pi - fix the build`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TerminalName {
+    /// The words drawn: the task, or `Pi - fix the build` for a preset with no logo.
+    pub text: String,
+    /// The preset's logo, which stands in for the agent's name.
+    pub logo: Option<Logo>,
+    /// The agent and the task in words, for a screen reader.
+    pub aria: String,
+}
+
+impl TerminalName {
+    /// A terminal with no agent: its own title, the shell's glyph, and the same
+    /// words both ways.
+    pub fn plain(title: String) -> Self {
+        Self {
+            aria: title.clone(),
+            text: title,
+            logo: Some(TERMINAL_LOGO),
+        }
+    }
+}
+
 /// One live terminal, as the readout needs it: which worktree it is in, what to
 /// call it, the pid whose process tree is its cost, and what its agent is doing.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,7 +99,7 @@ pub struct LiveTerminal {
     /// two repositories can both have a worktree on `main`.
     pub worktree: String,
     /// What the row is called: the agent's name (`Pi - fix the build`), or a shell's own title.
-    pub title: String,
+    pub name: TerminalName,
     /// The child's pid, or `None` once it is gone: there is nothing left to
     /// measure, and the row stays with how it went rather than disappearing.
     pub pid: Option<u32>,
@@ -89,7 +118,7 @@ pub struct LiveTerminal {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     /// What the row is called: the agent's name, or a shell's own title.
-    pub title: String,
+    pub name: TerminalName,
     pub status: Option<AgentStatus>,
     pub stalled: bool,
     /// How the child ended, if it has.
@@ -291,7 +320,7 @@ impl ResourceBar {
             // live terminal's length grows on the readout's own tick and a
             // finished one's stops where its child did.
             usage.terminals.push(Row {
-                title: terminal.title.clone(),
+                name: terminal.name.clone(),
                 status: terminal.status,
                 stalled: terminal.stalled,
                 exit: terminal.exit_ok,
@@ -1059,6 +1088,7 @@ mod tests {
 
     use std::time::{Duration, Instant};
 
+    use super::TerminalName;
     use gpui_kit::Task;
 
     use super::{LiveTerminal, MODEL_HUES, ResourceBar, format_cost, format_tokens, model_hue};
@@ -1076,11 +1106,21 @@ mod tests {
         )
     }
 
+    /// A shell runs no agent, so it is named in its own words and drawn with the
+    /// terminal glyph rather than an agent's logo.
+    #[test]
+    fn a_shell_is_named_with_the_terminal_glyph() {
+        let name = TerminalName::plain("osdodo@matrix:~/w".to_string());
+        assert_eq!(name.text, "osdodo@matrix:~/w");
+        assert_eq!(name.aria, name.text);
+        assert_eq!(name.logo, Some(super::TERMINAL_LOGO));
+    }
+
     fn terminals() -> Vec<LiveTerminal> {
         vec![
             LiveTerminal {
                 worktree: "repo:/w/main".to_string(),
-                title: "Pi - main".to_string(),
+                name: TerminalName::plain("Pi - main".to_string()),
                 pid: Some(100),
                 span: None,
                 exit_ok: None,
@@ -1089,7 +1129,7 @@ mod tests {
             },
             LiveTerminal {
                 worktree: "repo:/w/main".to_string(),
-                title: "Pi - fix the build".to_string(),
+                name: TerminalName::plain("Pi - fix the build".to_string()),
                 pid: Some(200),
                 span: None,
                 exit_ok: None,
@@ -1098,7 +1138,7 @@ mod tests {
             },
             LiveTerminal {
                 worktree: "repo:/w/feature".to_string(),
-                title: "osdodo@matrix:~/w/feature".to_string(),
+                name: TerminalName::plain("osdodo@matrix:~/w/feature".to_string()),
                 pid: Some(300),
                 span: None,
                 exit_ok: None,
@@ -1265,8 +1305,8 @@ mod tests {
         assert_eq!(main.cpu_pct, 2.5 + 1.0 + 7.0);
         assert_eq!(main.rss_bytes, (51200 + 20480 + 40960) * 1024);
         // A row is called what the workspace named it, the same name its tab has.
-        assert_eq!(main.terminals[0].title, "Pi - main");
-        assert_eq!(main.terminals[1].title, "Pi - fix the build");
+        assert_eq!(main.terminals[0].name.text, "Pi - main");
+        assert_eq!(main.terminals[1].name.text, "Pi - fix the build");
         assert_eq!(main.terminals[0].status, Some(AgentStatus::Working));
         // 100's tree is 100 + 101, and it is the first terminal's own row.
         assert_eq!(main.terminals[0].rss_bytes, (51200 + 20480) * 1024);
@@ -1277,7 +1317,7 @@ mod tests {
             .expect("the sweep answered");
         assert_eq!(feature.terminals.len(), 1);
         assert_eq!(feature.rss_bytes, 10240 * 1024);
-        assert_eq!(feature.terminals[0].title, "osdodo@matrix:~/w/feature");
+        assert_eq!(feature.terminals[0].name.text, "osdodo@matrix:~/w/feature");
 
         // A worktree with nothing running in it has no numbers, not zeroes —
         // which is what the row draws nothing for.
@@ -1327,7 +1367,7 @@ mod tests {
         let mut bar = bar();
         bar.terminals.push(LiveTerminal {
             worktree: "repo:/w/main".to_string(),
-            title: "Pi - blog".to_string(),
+            name: TerminalName::plain("Pi - blog".to_string()),
             pid: None,
             span: Some((started, Some(finished))),
             exit_ok: Some(false),
@@ -1344,7 +1384,7 @@ mod tests {
             .worktree_usage("repo:/w/main")
             .expect("the sweep answered");
         let row = main.terminals.last().expect("the finished row");
-        assert_eq!(row.title, "Pi - blog");
+        assert_eq!(row.name.text, "Pi - blog");
         assert_eq!(row.exit, Some(false));
         // Counted from the start to the exit, not to now: it is not running.
         assert_eq!(row.uptime.map(|uptime| uptime.as_secs()), Some(540));
