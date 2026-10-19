@@ -1581,6 +1581,7 @@ impl GitPanel {
                         change,
                         colors,
                         self.focus.clone(),
+                        false,
                     ));
                 }
                 // The ceiling the changes section has, for the same reason: an
@@ -1643,6 +1644,7 @@ pub(crate) fn commit_file_row(
     change: &FileChange,
     colors: &ColorTokens,
     focus: FocusHandle,
+    new_tab: bool,
 ) -> AnyElement {
     let path = std::path::Path::new(&change.path);
     let name = path
@@ -1674,19 +1676,26 @@ pub(crate) fn commit_file_row(
         .cursor_pointer()
         .hover(|el| el.bg(colors.muted))
         .child(div().flex_shrink_0().child(SharedString::from(name)))
-        .when(!dir.is_empty(), |el| {
-            el.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_color(colors.muted_foreground)
-                    .child(SharedString::from(dir)),
-            )
-        })
+        // The directory slot is drawn even for a file in the repository's root:
+        // it is what pushes the letter to the trailing edge, and a row without
+        // one would leave its `M` stranded against the name while every row
+        // around it had it lined up at the right.
         .child(
             div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .text_color(colors.muted_foreground)
+                .child(SharedString::from(dir)),
+        )
+        .child(
+            div()
+                .id(SharedString::from(format!(
+                    "commit-file-status-{}",
+                    change.path
+                )))
+                .test_support()
                 .flex_shrink_0()
                 .text_color(colors.muted_foreground)
                 .child(SharedString::from(change.status.to_string())),
@@ -1697,6 +1706,7 @@ pub(crate) fn commit_file_row(
                 Box::new(diff::OpenCommitFile {
                     commit: id.clone(),
                     path: file.clone(),
+                    new_tab,
                 }),
                 cx,
             );
@@ -1784,17 +1794,19 @@ impl GitPanel {
             .cursor_pointer()
             .hover(|el| el.bg(colors.muted))
             .child(div().flex_shrink_0().child(SharedString::from(name)))
-            .when(!dir.is_empty(), |el| {
-                el.child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .text_color(colors.muted_foreground)
-                        .child(SharedString::from(dir)),
-                )
-            })
+            // Drawn even with no directory, for the same reason the commit's own
+            // rows do it: the `+N -M`, the jump and the letter are the row's
+            // trailing group, and the directory is what holds them at the right
+            // edge of every row alike.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(colors.muted_foreground)
+                    .child(SharedString::from(dir)),
+            )
             .when_some(stat.copied(), |el, (added, deleted)| {
                 // An untracked file has nothing to compare against in git's own
                 // diff, so its count is the file's own lines (`git::diff_stat`).
@@ -1839,6 +1851,11 @@ impl GitPanel {
             )
             .child(
                 div()
+                    .id(SharedString::from(format!(
+                        "git-file-status-{}",
+                        change.path
+                    )))
+                    .test_support()
                     .flex_shrink_0()
                     .text_color(colors.muted_foreground)
                     .child(SharedString::from(change.status.to_string())),

@@ -295,6 +295,9 @@ pub struct Workspace {
     /// open, so the history it read and the commit it has open survive the graph
     /// being closed and opened again.
     graph: Option<Entity<GitGraph>>,
+    /// The graph and its selection survive while a diff tab is in front; this is
+    /// only whether the graph is currently drawn over the panes.
+    graph_visible: bool,
     /// A file the tree opened and the opener refused. Shown as a line above the
     /// pane rather than instead of it: the tab that was already open is still
     /// the one the user is reading.
@@ -348,6 +351,7 @@ impl Workspace {
             tab_menu: None,
             focus_pending: false,
             graph: None,
+            graph_visible: false,
             open_error: None,
             focus: cx.focus_handle(),
             _events: events,
@@ -1275,8 +1279,8 @@ impl Workspace {
             cx.notify();
         }
         // Escape closes the graph, the way it closes every other overlay.
-        if self.graph.is_some() && event.keystroke.key == "escape" {
-            self.graph = None;
+        if self.graph_visible && event.keystroke.key == "escape" {
+            self.graph_visible = false;
             cx.stop_propagation();
             cx.notify();
         }
@@ -1778,6 +1782,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The graph is drawn over the editor area, so a pane shown while it is up
+        // is a pane nobody can see: a click on one of the graph's own file rows
+        // — or on a file in the tree beside it — would be a click that did
+        // nothing. The pane takes the front, which is the road VSCode's diff tab
+        // takes from its git graph, and the graph's own button is the way back.
+        if self.graph_visible {
+            self.graph_visible = false;
+            cx.notify();
+        }
         if let Some(layout) = self.layout_mut(worktree_id) {
             layout.focus_pane(pane);
         }
@@ -1901,8 +1914,52 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (commit, path) = (action.commit.clone(), action.path.clone());
-        self.show_commit_file(&commit, &path, window, cx);
+        self.open_commit_file_action(action, window, cx);
+    }
+
+    pub fn open_commit_file_action(
+        &mut self,
+        action: &state::diff::OpenCommitFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if action.new_tab {
+            self.open_commit_file_in_new_tab(&action.commit, &action.path, window, cx);
+        } else {
+            self.show_commit_file(&action.commit, &action.path, window, cx);
+        }
+    }
+
+    fn open_commit_file_in_new_tab(
+        &mut self,
+        commit: &str,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(worktree) = self.state.read(cx).active().cloned() else {
+            return;
+        };
+        let existing = self
+            .panes
+            .get(&worktree.id)
+            .into_iter()
+            .flat_map(|panes| panes.iter())
+            .find(|(_, pane)| {
+                matches!(pane, PaneView::Diff { view } if view.read(cx).shows_commit(commit, path))
+            })
+            .map(|(pane, _)| *pane);
+        if let Some(pane) = existing {
+            self.show_pane(&worktree.id, pane, window, cx);
+            return;
+        }
+        self.state.update(cx, |state, cx| state.refresh_changes(cx));
+        let view = cx.new(|cx| DiffView::new(window, cx, self.state.clone(), &worktree));
+        let pane = self.add_tab(&worktree.id, PaneView::Diff { view: view.clone() });
+        self.show_pane(&worktree.id, pane, window, cx);
+        view.update(cx, |view, cx| view.show_commit(commit, path, window, cx));
+        self.open_error = None;
+        self.persist_tabs(cx);
     }
 
     /// One commit's change to one file, in the diff tab that is already there.
@@ -1942,9 +1999,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.graph.take().is_some() {
-            // The keyboard goes back to the pane it came from, which is the
-            // reason the workspace holds it while the graph is up.
+        if self.graph_visible {
+            self.graph_visible = false;
+            // The keyboard goes back to the pane the graph covered.
             self.ensure_pane_focus(window, cx);
             cx.notify();
         }
@@ -1961,6 +2018,7 @@ impl Workspace {
             }
         };
         self.graph = Some(graph.clone());
+        self.graph_visible = true;
         // Read again on the way in: the view is kept across openings, and the
         // repository is not — a commit or a branch may have landed since the last
         // look.
@@ -2923,6 +2981,31 @@ impl Workspace {
             .h_full()
             .overflow_x_scroll();
 
+        if self.graph.is_some() && !self.graph_visible {
+            strip = strip.child(
+                div()
+                    .id("git-graph-tab")
+                    .test_support()
+                    .aria_label("Git Graph")
+                    .aria_selected(false)
+                    .h_flex()
+                    .items_center()
+                    .flex_shrink_0()
+                    .px_2()
+                    .h_full()
+                    .cursor_pointer()
+                    .border_r_1()
+                    .border_color(colors.border)
+                    .hover(|el| el.bg(colors.muted))
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child("Git Graph")
+                    .on_click(cx.listener(|this, _event, window, cx| {
+                        this.open_graph(window, cx);
+                    })),
+            );
+        }
+
         // No split buttons in this bar: the split's entries are in the pane's
 
         for (index, row) in rows.into_iter().enumerate() {
@@ -3179,7 +3262,7 @@ impl Render for Workspace {
             // not been resized yet — makes the pane area wider than the space it was given and
             // pushes the right sidebar out of the window, where nothing in it can be clicked.
             .min_w_0()
-            .when(self.graph.is_none(), |column| {
+            .when(!self.graph_visible, |column| {
                 column.child(self.tab_bar(cx, &colors))
             });
 
@@ -3211,7 +3294,7 @@ impl Render for Workspace {
         }
 
         // A transparent graph must not reveal the tabs and panes it replaces.
-        if self.graph.is_none() {
+        if !self.graph_visible {
             column = column.child(self.body(cx));
         }
 
@@ -3219,23 +3302,25 @@ impl Render for Workspace {
         // is a column wide. The sidebars and the readout stay where they are —
         // this is the editor area, which is where a log belongs, and the button
         // that opened it is still on screen.
-        if let Some(graph) = self.graph.clone() {
-            column = column.child(
-                div()
-                    .id("git-graph-overlay")
-                    .test_support()
-                    .bg(colors.background)
-                    // Absolute, so its height is the pane area's — which is the
-                    // height the rows inside it scroll in. A `flex_1` here would
-                    // be a percentage of an auto-sized box, and the rows would be
-                    // as tall as the history instead of the window.
-                    .absolute()
-                    .inset_0()
-                    // A click inside the graph is the graph's: without this it
-                    // would fall through to the pane under it.
-                    .occlude()
-                    .child(graph),
-            );
+        if self.graph_visible {
+            if let Some(graph) = self.graph.clone() {
+                column = column.child(
+                    div()
+                        .id("git-graph-overlay")
+                        .test_support()
+                        .bg(colors.background)
+                        // Absolute, so its height is the pane area's — which is the
+                        // height the rows inside it scroll in. A `flex_1` here would
+                        // be a percentage of an auto-sized box, and the rows would be
+                        // as tall as the history instead of the window.
+                        .absolute()
+                        .inset_0()
+                        // A click inside the graph is the graph's: without this it
+                        // would fall through to the pane under it.
+                        .occlude()
+                        .child(graph),
+                );
+            }
         }
 
         let root = div()
@@ -3754,7 +3839,7 @@ pub fn register_workspace_actions(workspace: &Entity<Workspace>, cx: &mut App) {
     // element listeners never see the action.
     let handle = workspace.clone();
     cx.on_action(move |action: &diff::OpenCommitFile, cx: &mut App| {
-        let (commit, path) = (action.commit.clone(), action.path.clone());
+        let action = action.clone();
         let handle = handle.clone();
         cx.defer(move |cx| {
             let Some(window) = cx.active_window() else {
@@ -3762,7 +3847,7 @@ pub fn register_workspace_actions(workspace: &Entity<Workspace>, cx: &mut App) {
             };
             let _ = window.update(cx, |_, window, cx| {
                 handle.update(cx, |workspace, cx| {
-                    workspace.show_commit_file(&commit, &path, window, cx)
+                    workspace.open_commit_file_action(&action, window, cx)
                 })
             });
         });
@@ -6709,11 +6794,28 @@ mod window_tests {
         .expect("wheel over the graph");
         draw(cx, &fixture);
 
-        let after = bounds_of(cx, &fixture, &first);
         assert!(
-            after.origin.y < before.origin.y,
-            "the wheel did not scroll the graph: {after:?} was {before:?}"
+            !found(cx, &fixture, &first),
+            "an offscreen commit remained mounted after scrolling"
         );
+        // A visible row after the scroll still receives clicks and expands inline.
+        let target = String::from_utf8_lossy(
+            &std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.root)
+                .args(["rev-parse", "--short", "HEAD~5"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        assert!(click_until(
+            cx,
+            &fixture,
+            format!("git-graph-commit-{target}"),
+            |cx| found(cx, &fixture, "git-graph-details")
+        ));
         // And the column names stay where they are while it does.
         let head = bounds_of(cx, &fixture, "git-graph-head");
         assert!(
@@ -6791,6 +6893,253 @@ mod window_tests {
         assert!(
             diff_text(cx, &fixture).contains("a later edit"),
             "`diff::Open` did not go back to the worktree's changes"
+        );
+    }
+
+    /// The graph's own file rows are the other way into a commit's diff, and the
+    /// one the reader is looking at when the graph is open: a click has to show
+    /// the diff and *not* leave the graph drawn over it, which is the editor area
+    /// the diff lands in.
+    #[gpui_kit::test]
+    fn a_file_under_a_commit_in_the_graph_shows_its_diff(cx: &mut TestAppContext) {
+        let fixture = open(cx, "git-graph-commit-diff");
+        show_panel(cx, &fixture, "panel-git", Some(Panel::Git));
+        // A change in the worktree, on top of the one the commit made: the two
+        // diffs of this file are different, which is what the test is about.
+        std::fs::write(
+            fixture.root.join(NOTES),
+            format!("{NOTES_TEXT}a later edit\n"),
+        )
+        .unwrap();
+        assert!(
+            click_until(cx, &fixture, "git-graph-open".to_string(), |cx| found(
+                cx,
+                &fixture,
+                "git-graph-rows"
+            )),
+            "the panel's fullscreen button did not open the graph"
+        );
+
+        let newest = String::from_utf8_lossy(
+            &std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.root)
+                .args(["rev-parse", "--short", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        let notes = format!("commit-file-{NOTES}");
+        assert!(
+            click_until(cx, &fixture, format!("git-graph-commit-{newest}"), |cx| {
+                found(cx, &fixture, &notes)
+            }),
+            "clicking a commit in the graph did not list the files it changed"
+        );
+        assert!(found(cx, &fixture, "git-graph-details"));
+        let selected = bounds_of(cx, &fixture, &format!("git-graph-commit-{newest}"));
+        let details = bounds_of(cx, &fixture, "git-graph-details");
+        assert!(
+            details.origin.y >= selected.origin.y + selected.size.height - px(1.),
+            "commit details are not expanded under the selected row: {details:?} vs {selected:?}"
+        );
+        assert!(details.size.height > px(0.));
+        assert!(click_until(
+            cx,
+            &fixture,
+            format!("git-graph-commit-{newest}"),
+            |cx| found(cx, &fixture, "git-graph-details")
+        ));
+        press(cx, &fixture, "escape");
+        assert!(
+            draw_until(cx, &fixture, |cx| !found(cx, &fixture, "git-graph-details")),
+            "Escape did not close the commit details"
+        );
+        assert!(found(cx, &fixture, "git-graph-rows"));
+        assert!(click_until(
+            cx,
+            &fixture,
+            format!("git-graph-commit-{newest}"),
+            |cx| found(cx, &fixture, "git-graph-details")
+        ));
+
+        let tabs_before_diff = active_tabs(cx, &fixture).len();
+        let workspace = fixture.workspace.clone();
+        let wanted = NOTES.to_string();
+        assert!(
+            click_until(cx, &fixture, notes.clone(), move |cx| cx.update(|cx| {
+                workspace
+                    .read(cx)
+                    .active_diff(cx)
+                    .is_some_and(|view| view.read(cx).selected() == Some(wanted.as_str()))
+            })),
+            "clicking a file under a commit in the graph did not show its diff"
+        );
+        assert!(!found(cx, &fixture, "git-graph-overlay"));
+        assert!(found(cx, &fixture, "git-graph-tab"));
+        assert_eq!(
+            active_tabs(cx, &fixture).len(),
+            tabs_before_diff + 1,
+            "the graph file did not open a new tab"
+        );
+        let text = diff_text(cx, &fixture);
+        assert!(
+            text.contains("+the tree put this here"),
+            "the commit's own change is not in the diff: {text:?}"
+        );
+        assert!(
+            !text.contains("a later edit"),
+            "the diff is the worktree's, not the commit's: {text:?}"
+        );
+        assert!(click_until(
+            cx,
+            &fixture,
+            "git-graph-tab".to_string(),
+            |cx| found(cx, &fixture, "git-graph-overlay")
+                && found(cx, &fixture, &format!("git-graph-commit-{newest}"))
+        ));
+        assert!(found(cx, &fixture, &notes));
+    }
+
+    #[gpui_kit::test]
+    fn scrolling_commit_files_does_not_scroll_the_graph_history(cx: &mut TestAppContext) {
+        let fixture = open(cx, "git-graph-inner-scroll");
+        for index in 0..30 {
+            std::fs::write(
+                fixture.root.join(format!("detail-{index:02}.md")),
+                "change\n",
+            )
+            .unwrap();
+        }
+        git(&fixture.root, &["add", "-A"]);
+        git(&fixture.root, &["commit", "-q", "-m", "many changed files"]);
+        show_panel(cx, &fixture, "panel-git", Some(Panel::Git));
+        assert!(click_until(
+            cx,
+            &fixture,
+            "git-graph-open".to_string(),
+            |cx| found(cx, &fixture, "git-graph-rows")
+        ));
+        let commit = String::from_utf8_lossy(
+            &std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.root)
+                .args(["rev-parse", "--short", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        assert!(click_until(
+            cx,
+            &fixture,
+            format!("git-graph-commit-{commit}"),
+            |cx| found(cx, &fixture, "git-graph-detail-files")
+        ));
+        let selected = format!("git-graph-commit-{commit}");
+        let selected_before = bounds_of(cx, &fixture, &selected);
+        let file_id = "commit-file-detail-00.md";
+        let file_before = bounds_of(cx, &fixture, file_id);
+        let at = bounds_of(cx, &fixture, "git-graph-detail-files").center();
+        cx.update_window(fixture.window.into(), |_, window, cx| {
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position: at,
+                    delta: gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., -3.)),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.render_frame(cx);
+        })
+        .expect("wheel over commit files");
+        draw(cx, &fixture);
+        let selected_after = bounds_of(cx, &fixture, &selected);
+        let file_after = bounds_of(cx, &fixture, file_id);
+        assert_eq!(
+            selected_after.origin.y, selected_before.origin.y,
+            "scrolling commit files moved the graph row: {selected_before:?} -> {selected_after:?}"
+        );
+        assert!(
+            file_after.origin.y < file_before.origin.y,
+            "the detail file list did not scroll: {file_before:?} -> {file_after:?}"
+        );
+    }
+
+    /// A status letter is a column a reader scans down, in both lists that draw
+    /// one — the panel's changes, and the files under a commit. A row for a file
+    /// in the repository's root has no directory to fill the middle of it, and
+    /// its letter used to end up against the name while every row around it had
+    /// its own at the right edge.
+    #[gpui_kit::test]
+    fn a_status_letter_keeps_to_one_column(cx: &mut TestAppContext) {
+        let fixture = open(cx, "git-status-column");
+        let panel = cx.update(|cx| fixture.workspace.read(cx).git.clone());
+        // One change in the root and one under `src`: the two rows that differ
+        // only in whether there is a directory to put between the name and the
+        // letter.
+        std::fs::write(fixture.root.join(NOTES), "rewritten\n").unwrap();
+        std::fs::write(
+            fixture.root.join("src").join("main.rs"),
+            "fn main() {}\n// a change\n",
+        )
+        .unwrap();
+        refresh(cx, &fixture);
+        show_panel(cx, &fixture, "panel-git", Some(Panel::Git));
+        assert!(
+            draw_until(cx, &fixture, |cx| cx.update(|cx| panel
+                .read(cx)
+                .changes()
+                .len()
+                == 2)),
+            "the panel never read the changes"
+        );
+
+        // The changes section's rows, and the same question of them.
+        let edge = |cx: &mut TestAppContext, id: &str| bounds_of(cx, &fixture, id).right().as_f32();
+        let root = edge(cx, &format!("git-file-status-{NOTES}"));
+        let nested = edge(cx, "git-file-status-src/main.rs");
+        assert!(
+            (root - nested).abs() <= 1.,
+            "the changes section's letters do not line up: {root} vs {nested}"
+        );
+
+        // And the rows the graph draws under a commit, which is the list the
+        // letter was reported off: the fixture's newest commit holds both files.
+        assert!(
+            click_until(cx, &fixture, "git-graph-open".to_string(), |cx| found(
+                cx,
+                &fixture,
+                "git-graph-rows"
+            )),
+            "the panel's fullscreen button did not open the graph"
+        );
+        let newest = String::from_utf8_lossy(
+            &std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.root)
+                .args(["rev-parse", "--short", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        assert!(
+            click_until(cx, &fixture, format!("git-graph-commit-{newest}"), |cx| {
+                found(cx, &fixture, &format!("commit-file-{NOTES}"))
+            }),
+            "clicking a commit in the graph did not list the files it changed"
+        );
+        let root = edge(cx, &format!("commit-file-status-{NOTES}"));
+        let nested = edge(cx, "commit-file-status-src/main.rs");
+        assert!(
+            (root - nested).abs() <= 1.,
+            "the graph's commit rows do not line up: {root} vs {nested}"
         );
     }
 

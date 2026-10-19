@@ -206,6 +206,8 @@ pub mod diff {
         pub commit: String,
         /// The path git reported, relative to the worktree.
         pub path: String,
+        /// Whether the file row asked for a new tab rather than reusing the diff tab.
+        pub new_tab: bool,
     }
 }
 

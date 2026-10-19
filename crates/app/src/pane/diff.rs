@@ -182,6 +182,10 @@ impl DiffView {
         self.selected.as_deref()
     }
 
+    pub fn shows_commit(&self, commit: &str, path: &str) -> bool {
+        self.commit.as_deref() == Some(commit) && self.selected.as_deref() == Some(path)
+    }
+
     /// The diff text the right-hand side is showing.
     #[allow(
         dead_code,

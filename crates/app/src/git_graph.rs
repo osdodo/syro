@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use gpui_kit::base::{ColorTokens, StyledExt as _, TestSupportExt as _, Theme};
 use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, WindowExt as _};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::event::CoreEvent;
@@ -21,20 +22,18 @@ use syro_core::session;
 use crate::git_panel::commit_file_row;
 use crate::state::{AppState, worktree};
 
-/// How much history the graph draws. Deeper than the panel's fifty — this is the
-/// view for reading a history, and a screenful is around forty rows — but still a
-/// ceiling, because `--all` on a repository with a decade of work would ask git
-/// for every commit it has.
+/// The graph's history cap. Rows are virtualized, so only the visible window is built.
 const COMMITS: usize = 400;
 
 /// How wide one lane is, and how tall one row. The row height is what the middle
 /// of a row — where the lines between lanes meet — is measured from.
-const LANE: f32 = 14.;
+const LANE: f32 = 8.;
 const ROW_HEIGHT: f32 = 22.;
 
 /// One commit's files, as its row opened onto them.
 struct OpenCommit {
     id: String,
+    loading: bool,
     /// What git said it changed, or why it would not say.
     files: Result<Vec<FileChange>, String>,
 }
@@ -189,6 +188,8 @@ pub struct GitGraph {
     stale: bool,
     refresh_generation: u64,
     focus: FocusHandle,
+    rows: ListState,
+    row_count: usize,
     _task: Option<Task<()>>,
     /// Re-reads when the repository's worktrees move.
     _events: Subscription,
@@ -229,6 +230,8 @@ impl GitGraph {
             stale: false,
             refresh_generation: 0,
             focus: cx.focus_handle(),
+            rows: ListState::new(0, ListAlignment::Top, px(100.)),
+            row_count: 0,
             _task: None,
             _events: events,
         };
@@ -271,6 +274,11 @@ impl GitGraph {
                 {
                     self.open = None;
                 }
+                let row_count = self.commits.len() + usize::from(self.open.is_some());
+                if self.row_count != row_count {
+                    self.rows.reset(row_count);
+                    self.row_count = row_count;
+                }
             }
             (branches, commits) => {
                 // git's own words: the branches' failure if there was one, the
@@ -285,19 +293,51 @@ impl GitGraph {
         cx.notify();
     }
 
-    /// Open a commit's files under its row, or close them if they are the ones
-    /// already open. Asked for on the click, like the panel's: `git show` for the
-    /// one row looked at, never for the four hundred above and below it.
+    /// Select a commit and show its files under the row. Re-selecting the same
+    /// row keeps the details open; Escape is the explicit way to dismiss them.
     fn toggle_commit(&mut self, commit: &Commit, cx: &mut Context<Self>) {
-        self.open = match &self.open {
-            Some(open) if open.id == commit.id => None,
-            _ => Some(OpenCommit {
-                id: commit.id.clone(),
-                files: git::commit_files(&self.root, &commit.id)
-                    .map_err(|error| format!("{error:#}")),
-            }),
-        };
+        if self.open.as_ref().is_some_and(|open| open.id == commit.id) {
+            return;
+        }
+        let previous = self
+            .open
+            .as_ref()
+            .and_then(|open| self.commits.iter().position(|item| item.id == open.id));
+        if let Some(index) = previous {
+            self.rows.splice(index + 1..index + 2, 0);
+        }
+        let selected = self
+            .commits
+            .iter()
+            .position(|item| item.id == commit.id)
+            .expect("the selected commit belongs to the graph");
+        let selected = selected - usize::from(previous.is_some_and(|index| index < selected));
+        self.rows.splice(selected + 1..selected + 1, 1);
+        self.row_count = self.commits.len() + 1;
+        let (id, root) = (commit.id.clone(), self.root.clone());
+        self.open = Some(OpenCommit {
+            id: id.clone(),
+            loading: true,
+            files: Ok(Vec::new()),
+        });
         cx.notify();
+        cx.spawn(async move |this, cx| {
+            let requested = id.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { git::commit_files(&root, &requested) })
+                .await
+                .map_err(|error| format!("{error:#}"));
+            this.update(cx, |graph, cx| {
+                if let Some(open) = graph.open.as_mut().filter(|open| open.id == id) {
+                    open.loading = false;
+                    open.files = result;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Ask before deleting: a branch is a name somebody chose, and the dialog is
@@ -805,16 +845,26 @@ impl GitGraph {
         cx.notify();
     }
 
-    /// Escape closes the menu, and only then the graph: the menu is the innermost
-    /// thing that is open. It stops here only while there is a menu to close.
+    /// Escape closes the innermost graph detail first: the branch menu, then the
+    /// selected commit. With neither open, it reaches the workspace and closes
+    /// the graph itself.
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.menu.is_some() && event.keystroke.key == "escape" {
-            self.menu = None;
+        if event.keystroke.key != "escape" {
+            return;
+        }
+        if self.menu.take().is_some() {
+            cx.stop_propagation();
+            cx.notify();
+        } else if let Some(open) = self.open.take() {
+            if let Some(index) = self.commits.iter().position(|commit| commit.id == open.id) {
+                self.rows.splice(index + 1..index + 2, 0);
+            }
+            self.row_count = self.commits.len();
             cx.stop_propagation();
             cx.notify();
         }
@@ -957,6 +1007,10 @@ impl GitGraph {
             .pr_2()
             .text_xs()
             .cursor_pointer()
+            .when(
+                self.open.as_ref().is_some_and(|open| open.id == commit.id),
+                |el| el.bg(colors.muted),
+            )
             .hover(|el| el.bg(colors.muted))
             .child(self.graph_cell(&self.cells[index], cx))
             .child(description)
@@ -986,7 +1040,10 @@ impl GitGraph {
                     .text_color(colors.muted_foreground)
                     .child(SharedString::from(commit.short.clone())),
             )
-            .on_click(cx.listener(move |this, _event, _window, cx| this.toggle_commit(&wanted, cx)))
+            .on_click(cx.listener(move |this, _event, window, cx| {
+                window.focus(&this.focus, cx);
+                this.toggle_commit(&wanted, cx);
+            }))
             .into_any_element()
     }
 }
@@ -1023,14 +1080,14 @@ impl Render for GitGraph {
             .size_full()
             .min_h_0()
             .w_full()
-            .child(self.toolbar(&colors, cx))
-            .child(self.head_row(&colors));
+            .child(self.toolbar(&colors, cx));
         // The menu outlives the early returns below: a branch can be deleted from
         // an empty history too, and the overlay is not part of the rows.
         let menu = self.menu_overlay(window.viewport_size(), &colors, cx);
 
         if let Some(error) = self.error.clone() {
             return body
+                .child(self.head_row(&colors))
                 .child(
                     div()
                         .id("git-graph-error")
@@ -1048,6 +1105,7 @@ impl Render for GitGraph {
         }
         if self.commits.is_empty() {
             return body
+                .child(self.head_row(&colors))
                 .child(
                     div()
                         .id("git-graph-empty")
@@ -1063,69 +1121,198 @@ impl Render for GitGraph {
                 .into_any_element();
         }
 
-        // The rows scroll inside the view: the toolbar and the column names stay
-        // where they are while a long history goes by.
-        let mut rows = div()
+        let rows = div()
             .id("git-graph-rows")
             .test_support()
-            .v_flex()
             .flex_1()
             .min_h_0()
             .w_full()
-            .overflow_y_scroll();
-        for (index, commit) in self.commits.iter().enumerate() {
-            rows = rows.child(self.commit_row(index, commit, &colors, cx));
-            if let Some(open) = self.open.as_ref().filter(|open| open.id == commit.id) {
-                rows = rows.child(match &open.files {
-                    Err(error) => under_commit(
-                        SharedString::from(format!("git-graph-error-{}", commit.short)),
-                        SharedString::from(error.clone()),
-                        colors.destructive,
-                    ),
-                    Ok(files) if files.is_empty() => under_commit(
-                        SharedString::from(format!("git-graph-empty-{}", commit.short)),
-                        SharedString::from(t!("git.commit_empty").to_string()),
-                        colors.muted_foreground,
-                    ),
-                    Ok(files) => {
-                        let mut block = div()
-                            .id(SharedString::from(format!(
-                                "git-graph-open-{}",
-                                commit.short
-                            )))
-                            .test_support()
-                            .v_flex()
-                            .w_full()
-                            .pb_1();
-                        for change in files.iter().take(30) {
-                            block = block.child(commit_file_row(
-                                &commit.id,
-                                change,
-                                &colors,
-                                self.focus.clone(),
-                            ));
-                        }
-                        block.into_any_element()
-                    }
-                });
-            }
-        }
-        body.child(rows).child(menu).into_any_element()
+            .child(list(self.rows.clone(), cx.processor(Self::render_list_item)).size_full());
+        body.child(self.head_row(&colors))
+            .child(rows)
+            .child(menu)
+            .into_any_element()
     }
 }
 
-/// One line under an open commit, indented past the graph column: the small print
-/// the panel uses for the same asides.
-fn under_commit(id: SharedString, text: SharedString, colour: Hsla) -> AnyElement {
-    div()
-        .id(id)
-        .test_support()
-        .pl(px(graph_width(3)))
-        .pr_2()
-        .text_xs()
-        .text_color(colour)
-        .child(text)
-        .into_any_element()
+impl GitGraph {
+    fn render_list_item(
+        &mut self,
+        index: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = Theme::global(cx).tokens.colors.clone();
+        if let Some(open) = self.open.as_ref() {
+            if let Some(selected) = self.commits.iter().position(|commit| commit.id == open.id) {
+                if index == selected + 1 {
+                    let commit = self.commits[selected].clone();
+                    return self.commit_details(&commit, open, &self.cells[selected], &colors, cx);
+                }
+                let commit_index = index - usize::from(index > selected + 1);
+                return self.commit_row(commit_index, &self.commits[commit_index], &colors, cx);
+            }
+        }
+        self.commit_row(index, &self.commits[index], &colors, cx)
+    }
+
+    /// The selected commit's details expand under its row, as part of the history.
+    fn commit_details(
+        &self,
+        commit: &Commit,
+        open: &OpenCommit,
+        cell: &GraphCell,
+        colors: &ColorTokens,
+        cx: &App,
+    ) -> AnyElement {
+        let mut details = div()
+            .id("git-graph-details")
+            .test_support()
+            .relative()
+            .h_flex()
+            .items_stretch()
+            .w_full()
+            .h(px(270.))
+            .overflow_hidden()
+            .border_b_1()
+            .border_color(colors.border);
+        let theme = cx.theme();
+        let palette = [
+            theme.blue,
+            theme.green,
+            theme.yellow,
+            theme.magenta,
+            theme.cyan,
+            theme.red,
+        ];
+        for lane in std::iter::once(&cell.lane)
+            .chain(cell.through.iter())
+            .chain(cell.from.iter())
+        {
+            details = details.child(
+                div()
+                    .absolute()
+                    .left(px(*lane as f32 * LANE + LANE / 2. - 0.5))
+                    .top(px(0.))
+                    .h_full()
+                    .w(px(1.))
+                    .bg(palette[*lane % palette.len()]),
+            );
+        }
+        let parents = if commit.parents.is_empty() {
+            "-".to_string()
+        } else {
+            commit
+                .parents
+                .iter()
+                .map(|parent| parent.chars().take(7).collect::<String>())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let metadata = div()
+            .id("git-graph-detail-metadata")
+            .test_support()
+            .v_flex()
+            .flex_1()
+            .min_w_0()
+            .p_2()
+            .gap_1()
+            .text_xs()
+            .child(SharedString::from(format!("Commit: {}", commit.short)))
+            .child(SharedString::from(format!("Parents: {parents}")))
+            .child(SharedString::from(format!("Author: {}", commit.author)))
+            .child(SharedString::from(format!(
+                "Date: {}",
+                session::relative_time(session::now_ms(), commit.at.saturating_mul(1000))
+            )))
+            .child(
+                div()
+                    .pt_2()
+                    .max_h(px(72.))
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(SharedString::from(commit.summary.clone())),
+            );
+        let mut files = div()
+            .id("git-graph-detail-files")
+            .test_support()
+            .v_flex()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .border_l_1()
+            .border_color(colors.border)
+            .py_1()
+            .overflow_y_scroll()
+            .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
+        if open.loading {
+            files = files.child(
+                div()
+                    .px_2()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child("Loading..."),
+            );
+        } else {
+            match &open.files {
+                Err(error) => {
+                    files = files.child(
+                        div()
+                            .id(format!("git-graph-error-{}", commit.short))
+                            .test_support()
+                            .px_2()
+                            .text_xs()
+                            .text_color(colors.destructive)
+                            .child(SharedString::from(error.clone())),
+                    );
+                }
+                Ok(changes) if changes.is_empty() => {
+                    files = files.child(
+                        div()
+                            .id(format!("git-graph-empty-{}", commit.short))
+                            .test_support()
+                            .px_2()
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child(t!("git.commit_empty")),
+                    );
+                }
+                Ok(changes) => {
+                    for change in changes.iter().take(30) {
+                        files = files.child(commit_file_row(
+                            &commit.id,
+                            change,
+                            colors,
+                            self.focus.clone(),
+                            true,
+                        ));
+                    }
+                    if changes.len() > 30 {
+                        files = files.child(
+                            div()
+                                .px_2()
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child(
+                                    t!("git.more_files", count = changes.len() - 30).to_string(),
+                                ),
+                        );
+                    }
+                }
+            }
+        }
+        details = details.child(
+            div()
+                .h_flex()
+                .items_stretch()
+                .h_full()
+                .min_w_0()
+                .pl(px(graph_width(self.width)))
+                .child(metadata)
+                .child(files),
+        );
+        details.into_any_element()
+    }
 }
 
 #[cfg(test)]
@@ -1143,6 +1330,28 @@ mod tests {
             refs: Vec::new(),
             parents: parents.iter().map(|parent| parent.to_string()).collect(),
         }
+    }
+
+    /// An octopus merge must allocate one lane per parent without leaking lanes.
+    #[test]
+    fn an_octopus_merge_uses_one_lane_per_parent() {
+        let parents: Vec<String> = (0..27).map(|index| format!("p{index}")).collect();
+        let merge = Commit {
+            id: "merge".into(),
+            short: "merge".into(),
+            summary: "merge".into(),
+            author: "Ada".into(),
+            at: 0,
+            refs: Vec::new(),
+            parents: parents.clone(),
+        };
+        let tips: Vec<Commit> = parents.iter().map(|id| commit(id, &[])).collect();
+        let mut history = vec![merge];
+        history.extend(tips);
+        let (cells, width) = cells(&history);
+        assert_eq!(width, parents.len());
+        assert_eq!(cells[0].from.len(), parents.len() - 1);
+        assert!(cells.iter().all(|cell| cell.lane < width));
     }
 
     /// A plain history is a straight line: one lane, one dot per row, nothing
