@@ -79,6 +79,8 @@ resume_args = ["--session", "{id}"]
 status = [
   { match = '[\x{2800}-\x{28FF}]', state = "working" },
   { match = '[\x{25D0}-\x{25D3}]', state = "working" },
+  # OpenCode's compact terminal title is `OC | <session>` while the session runs.
+  { match = '(?i)^OC\s*\|\s*\S', state = "working" },
   { match = '(?i)(?:action required|permission|waiting)', requires = "opencode", state = "permission" },
   { match = '(?i)(?:^|[^\w./\\-])(?:ready|idle|done)(?:$|[^\w-])', requires = "opencode", state = "idle" },
   { match = '(?i)(?:^|[^\w./\\-])(?:working|thinking|running)(?:$|[^\w-])', requires = "opencode", state = "working" },

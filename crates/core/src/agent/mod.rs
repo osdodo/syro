@@ -569,6 +569,8 @@ mod tests {
             ("opencode", "opencode running tests", Some(Working)),
             ("opencode", "opencode-blinker", None),
             ("opencode", "OpenCode - action required", Some(Permission)),
+            ("opencode", "OC | Screenshot UI issue", Some(Working)),
+            ("opencode", "OC |", None),
             // Pi: brand frames, the state marker, and the legacy π form.
             ("pi", "π - my-project", Some(Idle)),
             ("pi", "π - session-name - my-project", Some(Idle)),
