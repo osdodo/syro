@@ -980,9 +980,8 @@ impl TerminalView {
         if !self.inside_grid(event.position) {
             return;
         }
-        // A child that asked for the mouse gets the press: a TUI's buttons are drawn in the grid ("Jump
-        // to latest message" and the like), and a click on one is a click it has to hear about.
-        if self.child_has_the_mouse(&event.modifiers) {
+        // A child that asked for the mouse gets the press unless the platform modifier is held.
+        if self.child_has_the_mouse(&event.modifiers) && !event.modifiers.platform {
             self.report_mouse(
                 MouseReport::Press(Report::Left),
                 event.position,
@@ -993,6 +992,13 @@ impl TerminalView {
         let Some((point, side)) = self.grid_point(event.position) else {
             return;
         };
+        if event.modifiers.platform {
+            let url = self.session.with_term(|term| terminal_url_at(term, point));
+            if let Some(url) = url {
+                cx.open_url(&url);
+                return;
+            }
+        }
         // A second click takes the word, a third the line, as everywhere else.
         let kind = match event.click_count {
             2 => SelectionType::Semantic,
@@ -1443,6 +1449,45 @@ impl Render for TerminalView {
         }
         root
     }
+}
+
+fn terminal_url_at(term: &Term<EventProxy>, point: GridPoint) -> Option<String> {
+    let grid = term.grid();
+    if let Some(url) = grid[point].hyperlink().map(|link| link.uri().to_owned()) {
+        if url.starts_with("https://") || url.starts_with("http://") {
+            return Some(url);
+        }
+    }
+    let row = &grid[point.line];
+    let chars: Vec<char> = (0..grid.columns())
+        .map(|column| row[Column(column)].c)
+        .collect();
+    url_in_chars(&chars, point.column.0)
+}
+
+fn url_in_chars(chars: &[char], column: usize) -> Option<String> {
+    if column >= chars.len() || chars[column].is_whitespace() {
+        return None;
+    }
+    let mut start = column;
+    let mut end = column + 1;
+    while start > 0 && !chars[start - 1].is_whitespace() && !"<>\"'".contains(chars[start - 1]) {
+        start -= 1;
+    }
+    while end < chars.len() && !chars[end].is_whitespace() && !"<>\"'".contains(chars[end]) {
+        end += 1;
+    }
+    while start < end && "([{".contains(chars[start]) {
+        start += 1;
+    }
+    while end > start && ".,;:!?)]}".contains(chars[end - 1]) {
+        end -= 1;
+    }
+    if column < start || column >= end {
+        return None;
+    }
+    let url: String = chars[start..end].iter().collect();
+    (url.starts_with("https://") || url.starts_with("http://")).then_some(url)
 }
 
 /// The terminal's side of the platform's text-input protocol — the other half of
@@ -2347,8 +2392,24 @@ mod tests {
 
     use super::{
         ClipboardKey, Palette, clipboard_key, composition_bytes, key_to_bytes, manual_agent,
-        paste_bytes, shell_escape, xterm256,
+        paste_bytes, shell_escape, url_in_chars, xterm256,
     };
+
+    #[test]
+    fn plain_urls_open_only_when_the_clicked_cell_is_inside_the_url() {
+        let text = "(https://pi.dev/changelog).";
+        let chars: Vec<char> = text.chars().collect();
+        assert_eq!(
+            url_in_chars(&chars, 10),
+            Some("https://pi.dev/changelog".into())
+        );
+        assert_eq!(url_in_chars(&chars, 0), None);
+        assert_eq!(url_in_chars(&chars, chars.len() - 1), None);
+        assert_eq!(
+            url_in_chars(&"file:///tmp/a".chars().collect::<Vec<_>>(), 8),
+            None
+        );
+    }
 
     #[test]
     fn manually_started_builtin_agents_are_recognized_from_the_command() {
