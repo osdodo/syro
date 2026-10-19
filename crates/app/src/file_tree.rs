@@ -100,6 +100,7 @@ impl MenuItem {
 struct Menu {
     path: PathBuf,
     is_dir: bool,
+    background: bool,
     /// Where the right-click was, in window coordinates. The menu is drawn in a
     /// layer above the panel (see `menu_overlay`), because the entries scroll
     /// and a menu drawn inside them would be clipped at the panel's edge.
@@ -262,11 +263,33 @@ impl FileTreeView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.menu = Some(Menu { path, is_dir, at });
+        self.menu = Some(Menu {
+            path,
+            is_dir,
+            background: false,
+            at,
+        });
         self.editing = None;
         self.confirming_delete = None;
         // The keyboard goes to the panel, so Escape reaches the handler that
         // closes this — a menu is a thing you can back out of.
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Open the create menu on the worktree root from the blank area.
+    fn open_root_menu(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        self.menu = Some(Menu {
+            path: root,
+            is_dir: true,
+            background: true,
+            at,
+        });
+        self.editing = None;
+        self.confirming_delete = None;
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -648,6 +671,7 @@ impl FileTreeView {
                 ClickEvent::Keyboard(_) => return,
             };
             this.open_menu(path_for_menu.clone(), is_dir, at, window, cx);
+            cx.stop_propagation();
         }))
         // A file row is a drag source. A directory is not: what a drop of a directory would mean is a
         // question nobody has asked, and the drop target would have to answer it.
@@ -879,7 +903,9 @@ impl FileTreeView {
             // to the entries underneath it.
             .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
         for item in MenuItem::ALL {
-            panel = panel.child(self.menu_item(item, colors, cx));
+            if !menu.background || matches!(item, MenuItem::NewFile | MenuItem::NewDir) {
+                panel = panel.child(self.menu_item(item, colors, cx));
+            }
         }
 
         deferred(
@@ -1061,7 +1087,15 @@ impl Render for FileTreeView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| this.cancel_edit(cx)),
-            );
+            )
+            .on_aux_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                let at = match event {
+                    ClickEvent::Mouse(mouse) => mouse.up.position,
+                    ClickEvent::Touch(touch) => touch.position,
+                    ClickEvent::Keyboard(_) => return,
+                };
+                this.open_root_menu(at, window, cx);
+            }));
 
         if self.root.is_none() {
             body = body.child(
@@ -1605,6 +1639,55 @@ mod tests {
         .expect("click at a point");
     }
 
+    /// A right click at a window position, so the blank part of a panel can be
+    /// exercised without needing a row there.
+    fn right_click_at_point(
+        cx: &mut TestAppContext,
+        fixture: &Fixture,
+        at: gpui_kit::Point<gpui_kit::Pixels>,
+    ) {
+        cx.update_window(fixture.window.into(), |_, window, cx| {
+            window.dispatch_event(
+                gpui_kit::MouseMoveEvent {
+                    position: at,
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.render_frame(cx);
+            for event in [true, false] {
+                if event {
+                    window.dispatch_event(
+                        gpui_kit::MouseDownEvent {
+                            button: gpui_kit::MouseButton::Right,
+                            position: at,
+                            modifiers: Default::default(),
+                            click_count: 1,
+                            first_mouse: false,
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
+                } else {
+                    window.dispatch_event(
+                        gpui_kit::MouseUpEvent {
+                            button: gpui_kit::MouseButton::Right,
+                            position: at,
+                            modifiers: Default::default(),
+                            click_count: 1,
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
+                }
+                window.render_frame(cx);
+            }
+        })
+        .expect("right click at a point");
+    }
+
     /// The menu's own padding and the pixels between two items belong to the menu:
     #[gpui_kit::test]
     fn a_click_on_the_menus_own_padding_does_not_reach_the_tree(cx: &mut TestAppContext) {
@@ -1626,6 +1709,31 @@ mod tests {
             found(cx, &fixture, "tree-menu"),
             "a click on the menu's own padding closed it and went to the row under it"
         );
+    }
+
+    #[gpui_kit::test]
+    fn a_right_click_on_blank_space_opens_root_create_menu(cx: &mut TestAppContext) {
+        let fixture = open_tree(cx, "tree-menu-blank");
+        draw(cx, &fixture);
+        let body = cx
+            .update_window(fixture.window.into(), |_, window, _| {
+                window.try_find("tree-body").map(|element| element.bounds())
+            })
+            .expect("read the frame")
+            .expect("tree body is drawn");
+        let at = gpui_kit::point(body.origin.x + px(20.), body.origin.y + px(220.));
+
+        right_click_at_point(cx, &fixture, at);
+        draw(cx, &fixture);
+
+        assert!(found(cx, &fixture, "tree-menu-new-file"));
+        assert!(found(cx, &fixture, "tree-menu-new-folder"));
+        assert!(!found(cx, &fixture, "tree-menu-rename"));
+        assert!(!found(cx, &fixture, "tree-menu-delete"));
+        click(cx, &fixture, "tree-menu-new-folder".to_string());
+        draw(cx, &fixture);
+        name_it(cx, &fixture, "blank-created");
+        assert!(fixture.root.join("blank-created").is_dir());
     }
 
     /// A click anywhere else closes the menu: the scrim is what makes a menu a menu.
