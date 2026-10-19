@@ -10,7 +10,7 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::*;
 use rust_i18n::t;
-use syro_core::git::FileChange;
+use syro_core::git::{ChangeKind, FileChange};
 use syro_core::model::{TabSpec, Worktree, WorktreeId};
 
 use crate::opener;
@@ -37,6 +37,7 @@ pub struct DiffView {
     /// not an index: a refresh reorders the list, and a selection that followed
     /// the index would silently become another file.
     selected: Option<String>,
+    selected_kind: Option<ChangeKind>,
     /// The commit whose file is on screen, when what is shown is one commit's
     /// change rather than the worktree's. Two comparisons come through this one
     /// tab, and this is the field that says which of them is up.
@@ -69,6 +70,7 @@ impl DiffView {
             root: worktree.path.clone(),
             base_ref: worktree.base_ref.clone(),
             selected: None,
+            selected_kind: None,
             commit: None,
             app,
             editor,
@@ -93,7 +95,7 @@ impl DiffView {
             (
                 app.changes(&self.worktree_id)
                     .iter()
-                    .map(|change| change.path.clone())
+                    .map(|change| (change.path.clone(), change.kind))
                     .collect::<Vec<_>>(),
                 app.changes_error(&self.worktree_id).map(str::to_string),
             )
@@ -105,13 +107,18 @@ impl DiffView {
         // that is left is where a reader starts.
         if self
             .selected
-            .as_deref()
-            .is_some_and(|selected| !paths.iter().any(|path| path == selected))
+            .as_ref()
+            .zip(self.selected_kind)
+            .is_some_and(|(selected, kind)| !paths.contains(&(selected.clone(), kind)))
         {
             self.selected = None;
+            self.selected_kind = None;
         }
         if self.selected.is_none() {
-            self.selected = paths.into_iter().next();
+            if let Some((path, kind)) = paths.into_iter().next() {
+                self.selected = Some(path);
+                self.selected_kind = Some(kind);
+            }
         }
         self.load_selected(window, cx);
         cx.notify();
@@ -119,14 +126,22 @@ impl DiffView {
 
     /// Show one file's diff. What the source control panel's rows dispatch, and
     /// the reason this view has no list of its own.
-    pub fn show(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected.as_deref() == Some(path) && self.commit.is_none() {
+    pub fn show(
+        &mut self,
+        path: &str,
+        kind: ChangeKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected.as_deref() == Some(path)
+            && self.selected_kind == Some(kind)
+            && self.commit.is_none()
+        {
             return;
         }
-        // A worktree file, which is what this tab is by default: a commit that
-        // was on screen before is not the comparison being asked for now.
         self.commit = None;
         self.selected = Some(path.to_string());
+        self.selected_kind = Some(kind);
         self.load_selected(window, cx);
         cx.notify();
     }
@@ -145,6 +160,7 @@ impl DiffView {
             return;
         }
         self.commit = Some(commit.to_string());
+        self.selected_kind = None;
         self.selected = Some(path.to_string());
         self.load_selected(window, cx);
         cx.notify();
@@ -158,6 +174,7 @@ impl DiffView {
         }
         self.commit = None;
         self.selected = None;
+        self.selected_kind = None;
         self.reload(window, cx);
     }
 
@@ -169,7 +186,7 @@ impl DiffView {
             .read(cx)
             .changes(&self.worktree_id)
             .iter()
-            .find(|change| change.path == selected)
+            .find(|change| change.path == selected && Some(change.kind) == self.selected_kind)
             .cloned()
     }
 

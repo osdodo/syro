@@ -298,9 +298,16 @@ pub fn ls_files(root: &Path) -> Result<Vec<String>> {
 /// `/dev/null`, where `--no-index` exits 1 and that is the answer rather than a failure.
 pub fn diff_text(root: &Path, base_ref: &str, change: &FileChange) -> Result<String> {
     let path = change.path.as_str();
-    let tracked = run_git(root, &["diff", "--no-color", base_ref, "--", path])?;
+    let args: Vec<&str> = match change.kind {
+        ChangeKind::Committed => {
+            vec!["diff", "--no-color", base_ref, "HEAD", "--", path]
+        }
+        ChangeKind::Staged => vec!["diff", "--no-color", "--cached", "--", path],
+        ChangeKind::Unstaged => vec!["diff", "--no-color", "--", path],
+    };
+    let tracked = run_git(root, &args)?;
     let text = String::from_utf8_lossy(&tracked.stdout).into_owned();
-    if !text.trim().is_empty() || change.status != '?' {
+    if !text.trim().is_empty() || change.kind != ChangeKind::Unstaged || change.status != '?' {
         return Ok(text);
     }
 
@@ -364,8 +371,15 @@ pub struct FileChange {
     pub path: String,
     /// Porcelain status char: M/A/D/R/C/?
     pub status: char,
-    /// True when the change is staged in the index (not just working-tree or committed).
-    pub staged: bool,
+    /// One file's change within a particular comparison.
+    pub kind: ChangeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChangeKind {
+    Committed,
+    Staged,
+    Unstaged,
 }
 
 /// Split a porcelain v1 rename field (`old -> new`) into `(destination, old)`.
@@ -533,8 +547,7 @@ pub fn commit_files(root: &Path, id: &str) -> Result<Vec<FileChange>> {
         .map(|(status, path)| FileChange {
             path,
             status,
-            // Nothing here is staged work: it is in a commit.
-            staged: false,
+            kind: ChangeKind::Committed,
         })
         .collect())
 }
@@ -688,43 +701,93 @@ pub fn worktree_changes(worktree_path: &Path) -> Result<Vec<FileChange>> {
         let x = b[0] as char;
         let y = b[1] as char;
         let (path, _old) = split_rename_path(&line[3..]);
-        let status_char = if y != ' ' { y } else { x };
-        let staged = x != ' ' && x != '?';
-        out.push(FileChange {
-            path,
-            status: status_char,
-            staged,
-        });
+        if x != ' ' && x != '?' {
+            out.push(FileChange {
+                path: path.clone(),
+                status: x,
+                kind: ChangeKind::Staged,
+            });
+        }
+        if y != ' ' || x == '?' {
+            out.push(FileChange {
+                path,
+                status: if x == '?' { '?' } else { y },
+                kind: ChangeKind::Unstaged,
+            });
+        }
     }
     Ok(out)
 }
 
-/// `(added, deleted)` lines per path against `base_ref`. `git diff <ref>` compares with the
-/// working tree, so one call covers committed and uncommitted alike; a binary file counts as
-/// zeros. `changes` is the same list the panel draws: the files git holds in no commit are not
-/// in a diff at all, so their own lines are counted here instead.
+/// Remove an unstaged change without touching the index. Untracked paths are removed directly;
+/// tracked paths are restored from the index, preserving any staged content.
+pub fn discard_unstaged(worktree_path: &Path, change: &FileChange) -> Result<()> {
+    if change.kind != ChangeKind::Unstaged {
+        anyhow::bail!("only unstaged changes can be discarded");
+    }
+    if change.status == '?' {
+        let path = worktree_path.join(&change.path);
+        let metadata =
+            fs::symlink_metadata(&path).with_context(|| format!("reading {}", path.display()))?;
+        if metadata.file_type().is_dir() {
+            fs::remove_dir_all(&path).with_context(|| format!("removing {}", path.display()))?;
+        } else {
+            fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        }
+        return Ok(());
+    }
+    run_git_ok(
+        worktree_path,
+        &["restore", "--worktree", "--", &change.path],
+    )?;
+    Ok(())
+}
+
+/// Move a staged path back to the worktree without changing its contents.
+pub fn unstage(worktree_path: &Path, change: &FileChange) -> Result<()> {
+    if change.kind != ChangeKind::Staged {
+        anyhow::bail!("only staged changes can be unstaged");
+    }
+    run_git_ok(worktree_path, &["restore", "--staged", "--", &change.path])?;
+    Ok(())
+}
+
+/// `(added, deleted)` lines per comparison and path; binary files count as zeros.
+/// Untracked files are counted separately because git diff does not list them.
 pub fn diff_stat(
     worktree_path: &Path,
     base_ref: &str,
     changes: &[FileChange],
-) -> Result<std::collections::BTreeMap<String, (u32, u32)>> {
-    let text = run_git_ok(worktree_path, &["diff", "--numstat", base_ref])?;
+) -> Result<std::collections::BTreeMap<(ChangeKind, String), (u32, u32)>> {
     let mut stats = std::collections::BTreeMap::new();
-    for line in text.lines() {
-        let mut fields = line.split('\t');
-        let (Some(added), Some(deleted), Some(path)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        stats.insert(
-            path.to_string(),
-            (added.parse().unwrap_or(0), deleted.parse().unwrap_or(0)),
-        );
+    for (kind, args) in [
+        (
+            ChangeKind::Committed,
+            vec!["diff", "--numstat", base_ref, "HEAD"],
+        ),
+        (ChangeKind::Staged, vec!["diff", "--numstat", "--cached"]),
+        (ChangeKind::Unstaged, vec!["diff", "--numstat"]),
+    ] {
+        let text = run_git_ok(worktree_path, &args)?;
+        for line in text.lines() {
+            let mut fields = line.split('\t');
+            let (Some(added), Some(deleted), Some(path)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            stats.insert(
+                (kind, path.to_string()),
+                (added.parse().unwrap_or(0), deleted.parse().unwrap_or(0)),
+            );
+        }
     }
-    for change in changes.iter().filter(|change| change.status == '?') {
+    for change in changes
+        .iter()
+        .filter(|change| change.kind == ChangeKind::Unstaged && change.status == '?')
+    {
         if let Some(counts) = untracked_lines(&worktree_path.join(&change.path)) {
-            stats.insert(change.path.clone(), counts);
+            stats.insert((change.kind, change.path.clone()), counts);
         }
     }
     Ok(stats)
@@ -896,29 +959,19 @@ fn said(out: &Output) -> String {
     .join(" · ")
 }
 
-/// Changed files against `base_ref`: uncommitted (`git status`) merged with committed (`git diff`), by path.
+/// Changed files grouped by provenance: branch commits, staged, and unstaged work.
 pub fn changed_files(worktree_path: &Path, base_ref: &str) -> Result<Vec<FileChange>> {
-    let mut out: Vec<FileChange> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-
-    for change in worktree_changes(worktree_path)? {
-        seen.insert(change.path.clone());
-        out.push(change);
-    }
-
-    let diff = run_git_ok(worktree_path, &["diff", "--name-status", base_ref])?;
+    let mut out = worktree_changes(worktree_path)?;
+    let diff = run_git_ok(worktree_path, &["diff", "--name-status", base_ref, "HEAD"])?;
     for line in diff.lines() {
-        if let Some((status_char, path)) = parse_name_status(line)
-            && seen.insert(path.clone())
-        {
+        if let Some((status_char, path)) = parse_name_status(line) {
             out.push(FileChange {
                 path,
                 status: status_char,
-                staged: false,
+                kind: ChangeKind::Committed,
             });
         }
     }
-
     Ok(out)
 }
 
@@ -1537,7 +1590,7 @@ mod tests {
             vec![FileChange {
                 path: "second.txt".into(),
                 status: 'D',
-                staged: false,
+                kind: ChangeKind::Committed,
             }],
             "the removal is the third commit's, and only its"
         );
@@ -1548,12 +1601,12 @@ mod tests {
                 FileChange {
                     path: "README.md".into(),
                     status: 'M',
-                    staged: false,
+                    kind: ChangeKind::Committed,
                 },
                 FileChange {
                     path: "second.txt".into(),
                     status: 'A',
-                    staged: false,
+                    kind: ChangeKind::Committed,
                 },
             ]
         );
@@ -1563,13 +1616,114 @@ mod tests {
             vec![FileChange {
                 path: "README.md".into(),
                 status: 'A',
-                staged: false,
+                kind: ChangeKind::Committed,
             }]
         );
 
         // And a name git cannot resolve is git's own complaint, not an empty list.
         assert!(commit_files(&repo, "no-such-commit").is_err());
 
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn changed_files_separate_committed_staged_and_unstaged_diffs() {
+        let repo = scratch_repo("change-kinds", "main");
+        std::fs::write(repo.join("shared.txt"), "base\n").unwrap();
+        git_in(&repo, &["add", "shared.txt"]);
+        git_in(&repo, &["commit", "-q", "-m", "shared base"]);
+        git_in(&repo, &["checkout", "-q", "-b", "feature"]);
+
+        std::fs::write(repo.join("committed.txt"), "committed\n").unwrap();
+        git_in(&repo, &["add", "committed.txt"]);
+        git_in(&repo, &["commit", "-q", "-m", "branch change"]);
+
+        std::fs::write(repo.join("shared.txt"), "base\nstaged\n").unwrap();
+        git_in(&repo, &["add", "shared.txt"]);
+        std::fs::write(repo.join("shared.txt"), "base\nstaged\nworktree\n").unwrap();
+        std::fs::write(repo.join("loose.txt"), "untracked\n").unwrap();
+
+        let changes = changed_files(&repo, "main").unwrap();
+        let find = |path: &str, kind| {
+            changes
+                .iter()
+                .find(|change| change.path == path && change.kind == kind)
+                .unwrap()
+        };
+        let committed = find("committed.txt", ChangeKind::Committed);
+        let staged = find("shared.txt", ChangeKind::Staged);
+        let unstaged = find("shared.txt", ChangeKind::Unstaged);
+        let untracked = find("loose.txt", ChangeKind::Unstaged);
+
+        assert!(
+            diff_text(&repo, "main", committed)
+                .unwrap()
+                .contains("+committed")
+        );
+        assert!(
+            diff_text(&repo, "main", staged)
+                .unwrap()
+                .contains("+staged")
+        );
+        assert!(
+            diff_text(&repo, "main", unstaged)
+                .unwrap()
+                .contains("+worktree")
+        );
+        assert_eq!(untracked.status, '?');
+        assert!(
+            diff_text(&repo, "main", untracked)
+                .unwrap()
+                .contains("+untracked")
+        );
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn discard_and_unstage_only_touch_the_requested_git_layer() {
+        let repo = scratch_repo("undo-git-layer", "main");
+        let file = repo.join("tracked.txt");
+        std::fs::write(&file, "base\n").unwrap();
+        git_in(&repo, &["add", "tracked.txt"]);
+        git_in(&repo, &["commit", "-q", "-m", "tracked file"]);
+        std::fs::write(&file, "base\nstaged\n").unwrap();
+        git_in(&repo, &["add", "tracked.txt"]);
+        std::fs::write(&file, "base\nstaged\nunstaged\n").unwrap();
+
+        let changes = worktree_changes(&repo).unwrap();
+        let staged = changes
+            .iter()
+            .find(|change| change.kind == ChangeKind::Staged)
+            .unwrap();
+        let unstaged = changes
+            .iter()
+            .find(|change| change.kind == ChangeKind::Unstaged)
+            .unwrap();
+        discard_unstaged(&repo, unstaged).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "base\nstaged\n");
+        assert!(
+            run_git_ok(&repo, &["diff", "--cached"])
+                .unwrap()
+                .contains("+staged")
+        );
+
+        unstage(&repo, staged).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "base\nstaged\n");
+        assert!(run_git_ok(&repo, &["diff", "--cached"]).unwrap().is_empty());
+        assert!(run_git_ok(&repo, &["diff"]).unwrap().contains("+staged"));
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn discard_untracked_file_removes_only_that_file() {
+        let repo = scratch_repo("discard-untracked", "main");
+        let file = repo.join("loose.txt");
+        std::fs::write(&file, "untracked\n").unwrap();
+        let change = worktree_changes(&repo).unwrap().remove(0);
+        discard_unstaged(&repo, &change).unwrap();
+        assert!(!file.exists());
         let _ = std::fs::remove_dir_all(&repo);
     }
 
@@ -1581,16 +1735,28 @@ mod tests {
         git_in(&repo, &["add", "new.txt"]);
 
         let stats = diff_stat(&repo, "main", &worktree_changes(&repo).unwrap()).unwrap();
-        // Uncommitted work is in there too, which is the point of `diff <ref>`.
-        assert_eq!(stats.get("README.md"), Some(&(1, 0)));
-        assert_eq!(stats.get("new.txt"), Some(&(2, 0)));
-        assert_eq!(stats.get("src/main.rs"), None);
+        // Staged and unstaged counts are independent.
+        assert_eq!(
+            stats.get(&(ChangeKind::Unstaged, "README.md".into())),
+            Some(&(1, 0))
+        );
+        assert_eq!(
+            stats.get(&(ChangeKind::Staged, "new.txt".into())),
+            Some(&(2, 0))
+        );
+        assert_eq!(
+            stats.get(&(ChangeKind::Committed, "src/main.rs".into())),
+            None
+        );
 
         // An untracked file is in no commit for `diff` to compare against, so the
         // whole file is what a commit would add and its own lines are the count.
         std::fs::write(repo.join("loose.txt"), "x\ny\n").unwrap();
         let stats = diff_stat(&repo, "main", &worktree_changes(&repo).unwrap()).unwrap();
-        assert_eq!(stats.get("loose.txt"), Some(&(2, 0)));
+        assert_eq!(
+            stats.get(&(ChangeKind::Unstaged, "loose.txt".into())),
+            Some(&(2, 0))
+        );
 
         let _ = std::fs::remove_dir_all(&repo);
     }

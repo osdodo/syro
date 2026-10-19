@@ -1836,11 +1836,17 @@ impl Workspace {
     }
 
     /// `diff::OpenFile`: show one changed file, in the diff tab that is already there.
-    fn show_change(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_change(
+        &mut self,
+        path: &str,
+        kind: syro_core::git::ChangeKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(view) = self.diff_tab(window, cx) else {
             return;
         };
-        view.update(cx, |view, cx| view.show(path, window, cx));
+        view.update(cx, |view, cx| view.show(path, kind, window, cx));
     }
 
     /// The active worktree's diff tab, shown. Created on the first ask, and the
@@ -1902,8 +1908,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let path = action.path.clone();
-        self.show_change(&path, window, cx);
+        let (path, kind) = (action.path.clone(), action.kind);
+        self.show_change(&path, kind, window, cx);
     }
 
     /// A row under a commit, in the source control panel or in the graph: the
@@ -4925,7 +4931,19 @@ mod window_tests {
     /// Show one file's diff the way a reader does: open the source control panel and click its row.
     fn show_diff(cx: &mut TestAppContext, fixture: &Fixture, path: &str) {
         show_panel(cx, fixture, "panel-git", Some(Panel::Git));
-        let id = format!("git-file-{path}");
+        let kind = cx.update(|cx| {
+            let state = fixture.workspace.read(cx).state.read(cx);
+            state
+                .changes(state.active_id().unwrap())
+                .iter()
+                .find(|change| change.path == path)
+                .unwrap()
+                .kind
+        });
+        let id = match kind {
+            syro_core::git::ChangeKind::Unstaged => format!("git-file-{path}"),
+            kind => format!("git-file-{kind:?}-{path}"),
+        };
         assert!(
             draw_until(cx, fixture, |cx| found(cx, fixture, &id)),
             "the source control panel does not list {path}"
@@ -5033,8 +5051,9 @@ mod window_tests {
         // by index, because the order is git's to choose.
         for expected in ["M notes.md", "A added.md", "D README.md"] {
             let (_, path) = expected.split_once(' ').expect("a letter and a path");
+            let kind_id = if path == "added.md" { "Staged-" } else { "" };
             assert_eq!(
-                label(cx, &fixture, &format!("git-file-{path}")).as_deref(),
+                label(cx, &fixture, &format!("git-file-{kind_id}{path}")).as_deref(),
                 Some(expected),
                 "the panel's row for {path} does not carry its status"
             );
@@ -5111,6 +5130,145 @@ mod window_tests {
             added.contains("+brand new") && !added.contains("-the tree put this here"),
             "the diff still shows the previous file: {added:?}"
         );
+    }
+
+    #[gpui_kit::test]
+    fn the_git_panel_separates_commit_index_and_worktree_diffs(cx: &mut TestAppContext) {
+        let fixture = open(cx, "git-change-kinds");
+        let file = fixture.root.join("shared.md");
+        std::fs::write(&file, "base\n").unwrap();
+        git(&fixture.root, &["add", "shared.md"]);
+        git(&fixture.root, &["commit", "-q", "-m", "base file"]);
+        git(&fixture.root, &["checkout", "-q", "-b", "feature"]);
+
+        std::fs::write(&file, "base\ncommitted\n").unwrap();
+        git(&fixture.root, &["add", "shared.md"]);
+        git(&fixture.root, &["commit", "-q", "-m", "committed change"]);
+        std::fs::write(&file, "base\ncommitted\nstaged\n").unwrap();
+        git(&fixture.root, &["add", "shared.md"]);
+        std::fs::write(&file, "base\ncommitted\nstaged\nunstaged\n").unwrap();
+        refresh(cx, &fixture);
+        show_panel(cx, &fixture, "panel-git", Some(Panel::Git));
+
+        for id in [
+            "git-file-Committed-shared.md",
+            "git-file-Staged-shared.md",
+            "git-file-shared.md",
+        ] {
+            assert!(
+                draw_until(cx, &fixture, |cx| found(cx, &fixture, id)),
+                "missing {id}"
+            );
+        }
+
+        let workspace = fixture.workspace.clone();
+        assert!(click_until(
+            cx,
+            &fixture,
+            "git-file-Committed-shared.md".into(),
+            |cx| {
+                cx.update(|cx| {
+                    workspace
+                        .read(cx)
+                        .active_diff(cx)
+                        .is_some_and(|view| view.read(cx).text(cx).contains("+committed"))
+                })
+            }
+        ));
+        let workspace = fixture.workspace.clone();
+        assert!(click_until(
+            cx,
+            &fixture,
+            "git-file-Staged-shared.md".into(),
+            |cx| {
+                cx.update(|cx| {
+                    workspace
+                        .read(cx)
+                        .active_diff(cx)
+                        .is_some_and(|view| view.read(cx).text(cx).contains("+staged"))
+                })
+            }
+        ));
+        let workspace = fixture.workspace.clone();
+        assert!(click_until(
+            cx,
+            &fixture,
+            "git-file-shared.md".into(),
+            |cx| {
+                cx.update(|cx| {
+                    workspace
+                        .read(cx)
+                        .active_diff(cx)
+                        .is_some_and(|view| view.read(cx).text(cx).contains("+unstaged"))
+                })
+            }
+        ));
+    }
+
+    #[gpui_kit::test]
+    fn the_git_panel_can_unstage_and_discard_with_confirmation(cx: &mut TestAppContext) {
+        let fixture = open(cx, "git-undo-change");
+        let staged_path = fixture.root.join("staged.txt");
+        std::fs::write(&staged_path, "keep this file\n").unwrap();
+        git(&fixture.root, &["add", "staged.txt"]);
+        let discard_path = fixture.root.join("discard.txt");
+        std::fs::write(&discard_path, "remove this file\n").unwrap();
+        refresh(cx, &fixture);
+        show_panel(cx, &fixture, "panel-git", Some(Panel::Git));
+
+        let panel = cx.update(|cx| fixture.workspace.read(cx).git.clone());
+        assert!(click_until(
+            cx,
+            &fixture,
+            "git-unstage-staged.txt".into(),
+            |cx| {
+                cx.update(|cx| {
+                    panel.read(cx).changes().iter().any(|change| {
+                        change.path == "staged.txt"
+                            && change.kind == syro_core::git::ChangeKind::Unstaged
+                    })
+                })
+            }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&staged_path).unwrap(),
+            "keep this file\n"
+        );
+
+        assert!(click_until(
+            cx,
+            &fixture,
+            "git-discard-discard.txt".into(),
+            |cx| { found(cx, &fixture, "git-discard-confirm") }
+        ));
+        assert!(
+            discard_path.exists(),
+            "untracked file was deleted before confirmation"
+        );
+        click(cx, &fixture, "git-discard-cancel".into());
+        assert!(draw_until(cx, &fixture, |cx| !found(
+            cx,
+            &fixture,
+            "git-discard-confirm"
+        )));
+        assert!(
+            discard_path.exists(),
+            "cancelling the confirmation deleted the file"
+        );
+
+        assert!(click_until(
+            cx,
+            &fixture,
+            "git-discard-discard.txt".into(),
+            |cx| { found(cx, &fixture, "git-discard-confirm") }
+        ));
+        assert!(click_until(
+            cx,
+            &fixture,
+            "git-discard-confirm-button".into(),
+            |_cx| { !discard_path.exists() }
+        ));
+        assert!(!discard_path.exists());
     }
 
     #[gpui_kit::test]

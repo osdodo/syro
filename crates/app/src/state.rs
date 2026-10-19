@@ -179,6 +179,7 @@ pub mod tab {
 /// `diff::*` — the active worktree's changes, as a tab.
 pub mod diff {
     use super::*;
+    use syro_core::git::ChangeKind;
 
     #[derive(Clone, PartialEq, Debug, Default, Action)]
     #[action(namespace = diff, no_json)]
@@ -192,6 +193,8 @@ pub mod diff {
     pub struct OpenFile {
         /// The path git reported, relative to the worktree.
         pub path: String,
+        /// Which of the branch, index, or worktree comparisons to show.
+        pub kind: ChangeKind,
     }
 
     /// Show one file as the commit named changed it. Dispatched by the rows

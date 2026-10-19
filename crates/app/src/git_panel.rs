@@ -7,13 +7,14 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::base::{ColorTokens, StyledExt as _, TestSupportExt as _, Theme};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::commit_message;
 use syro_core::event::CoreEvent;
-use syro_core::git::{self, Branch, BranchStatus, Commit, FileChange};
+use syro_core::git::{self, Branch, BranchStatus, ChangeKind, Commit, FileChange};
 use syro_core::model::{AgentStatus, WorktreeId};
 use syro_core::session;
 
@@ -202,7 +203,7 @@ pub struct GitPanel {
     /// The changes on the branch, and how much each one moved: the section's
     /// rows are the first and the `+N -M` are the second.
     changes: Vec<FileChange>,
-    stats: BTreeMap<String, (u32, u32)>,
+    stats: BTreeMap<(ChangeKind, String), (u32, u32)>,
     /// Whether there is uncommitted work. This is what decides between Commit
     /// and Push, and it is a different question from "what is on the branch":
     /// `changes` counts both, and a commit needs only the first.
@@ -244,6 +245,7 @@ pub struct GitPanel {
     /// A commit or a push is in flight. The button is disabled meanwhile:
     /// two of them at once is two commits, or a push racing its own commit.
     busy: bool,
+    confirming_discard: Option<(PathBuf, FileChange)>,
     /// The AI command is writing a message. The field is left alone meanwhile,
     /// and Commit waits for it: half a message is not one to commit under.
     generating: bool,
@@ -329,6 +331,7 @@ impl GitPanel {
             notice_worktree: None,
             clear_message: false,
             busy: false,
+            confirming_discard: None,
             generating: false,
             generated: None,
             error: None,
@@ -598,6 +601,59 @@ impl GitPanel {
         cx.notify();
     }
 
+    fn change_action(&mut self, change: FileChange, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        if change.kind == ChangeKind::Unstaged {
+            let Some(worktree) = self.state.read(cx).active().cloned() else {
+                return;
+            };
+            self.confirming_discard = Some((worktree.path, change));
+            cx.notify();
+            return;
+        }
+        let Some(worktree) = self.state.read(cx).active().cloned() else {
+            return;
+        };
+        let root = worktree.path;
+        let path = change.path.clone();
+        let notice = t!("git.unstaging", file = path).to_string();
+        let done = t!("git.unstaged_done", file = path).to_string();
+        self.run_operation(notice, false, cx, move || {
+            git::unstage(&root, &change).map(|()| done)
+        });
+    }
+
+    fn confirm_discard(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some((root, change)) = self.confirming_discard.take() else {
+            return;
+        };
+        if self
+            .state
+            .read(cx)
+            .active()
+            .is_none_or(|worktree| worktree.path != root)
+        {
+            cx.notify();
+            return;
+        }
+        let path = change.path.clone();
+        let notice = t!("git.discarding", file = path).to_string();
+        let done = t!("git.discarded", file = path).to_string();
+        self.run_operation(notice, false, cx, move || {
+            git::discard_unstaged(&root, &change).map(|()| done)
+        });
+    }
+
+    fn cancel_discard(&mut self, cx: &mut Context<Self>) {
+        self.confirming_discard = None;
+        cx.notify();
+    }
+
     fn close_menu(&mut self, cx: &mut Context<Self>) {
         self.menu = None;
         cx.notify();
@@ -611,7 +667,10 @@ impl GitPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.menu.is_some() && event.keystroke.key == "escape" {
+        if event.keystroke.key == "escape" && self.confirming_discard.take().is_some() {
+            cx.stop_propagation();
+            cx.notify();
+        } else if self.menu.is_some() && event.keystroke.key == "escape" {
             self.menu = None;
             cx.stop_propagation();
             cx.notify();
@@ -1332,20 +1391,42 @@ impl GitPanel {
             .min_h_0()
             .w_full()
             .overflow_y_scroll();
-        for change in self.changes.iter().take(FILES) {
-            rows = rows.child(self.file_row(change, colors, accents, cx));
-        }
-        if self.changes.len() > FILES {
+        for (kind, label) in [
+            (ChangeKind::Committed, t!("git.committed")),
+            (ChangeKind::Staged, t!("git.staged")),
+            (ChangeKind::Unstaged, t!("git.unstaged")),
+        ] {
+            let changes: Vec<_> = self
+                .changes
+                .iter()
+                .filter(|change| change.kind == kind)
+                .collect();
+            if changes.is_empty() {
+                continue;
+            }
             rows = rows.child(
                 div()
                     .px_2()
                     .py_1()
                     .text_xs()
                     .text_color(colors.muted_foreground)
-                    .child(SharedString::from(
-                        t!("git.more_view_all", count = self.changes.len() - FILES).to_string(),
-                    )),
+                    .child(SharedString::from(format!("{} {}", label, changes.len()))),
             );
+            for change in changes.iter().take(FILES) {
+                rows = rows.child(self.file_row(change, colors, accents, cx));
+            }
+            if changes.len() > FILES {
+                rows = rows.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(SharedString::from(
+                            t!("git.more_view_all", count = changes.len() - FILES).to_string(),
+                        )),
+                );
+            }
         }
         block.child(rows).into_any_element()
     }
@@ -1753,6 +1834,115 @@ fn primary_action(dirty: bool, status: Option<&BranchStatus>) -> Action {
 /// The letter is the one the diff tab and the file tree already colour files by
 /// (`status_color` in `main.rs`), so a file reads the same in all three places.
 impl GitPanel {
+    fn discard_confirmation(
+        &self,
+        change: &FileChange,
+        colors: &ColorTokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let question = t!("git.discard_question", file = change.path).to_string();
+        div()
+            .id("git-discard-confirm")
+            .test_support()
+            .aria_label(SharedString::from(question.clone()))
+            .absolute()
+            .top(px(HEADER_HEIGHT + 8.))
+            .left(px(8.))
+            .right(px(8.))
+            .v_flex()
+            .gap_2()
+            .p_2()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border)
+            .bg(crate::settings_view::popup_surface(colors.surface))
+            .shadow_lg()
+            .text_xs()
+            .text_color(colors.foreground)
+            .child(SharedString::from(question))
+            .child(
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("git-discard-confirm-button")
+                            .test_support()
+                            .aria_label(t!("git.discard"))
+                            .px_2()
+                            .py_0p5()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(colors.border)
+                            .cursor_pointer()
+                            .text_color(colors.destructive)
+                            .hover(|el| el.bg(colors.muted))
+                            .child(t!("git.discard"))
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.confirm_discard(cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("git-discard-cancel")
+                            .test_support()
+                            .aria_label(t!("common.cancel"))
+                            .px_2()
+                            .py_0p5()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(colors.border)
+                            .cursor_pointer()
+                            .text_color(colors.foreground)
+                            .hover(|el| el.bg(colors.muted))
+                            .child(t!("common.cancel"))
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.cancel_discard(cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn change_button(
+        &self,
+        change: &FileChange,
+        colors: &ColorTokens,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let (label, id) = match change.kind {
+            ChangeKind::Committed => return None,
+            ChangeKind::Staged => (t!("git.unstage"), "unstage"),
+            ChangeKind::Unstaged => (t!("git.discard"), "discard"),
+        };
+        let label = label.to_string();
+        let change = change.clone();
+        Some(
+            div()
+                .id(SharedString::from(format!("git-{id}-{}", change.path)))
+                .test_support()
+                .aria_label(SharedString::from(label.clone()))
+                .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+                .h_flex()
+                .items_center()
+                .justify_center()
+                .size(px(20.))
+                .flex_shrink_0()
+                .rounded_sm()
+                .text_color(colors.muted_foreground)
+                .when(!self.busy, |el| {
+                    el.cursor_pointer()
+                        .hover(|el| el.bg(colors.muted).text_color(colors.foreground))
+                })
+                .child(Icon::new(IconName::Undo2).size(px(13.)))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    cx.stop_propagation();
+                    this.change_action(change.clone(), cx);
+                }))
+                .into_any_element(),
+        )
+    }
+
     /// One changed file: what it is called, where it lives, how much it moved, and git's letter for
     /// it.
     fn file_row(
@@ -1762,7 +1952,7 @@ impl GitPanel {
         accents: Accents,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let stat = self.stats.get(&change.path);
+        let stat = self.stats.get(&(change.kind, change.path.clone()));
         let path = std::path::Path::new(&change.path);
         let name = path
             .file_name()
@@ -1773,10 +1963,14 @@ impl GitPanel {
             .map(|dir| dir.to_string_lossy().into_owned())
             .unwrap_or_default();
         let file = change.path.clone();
+        let kind = change.kind;
         let absolute = self.root.join(&change.path);
         let open_label = t!("git.open_in_editor", file = file).to_string();
         div()
-            .id(SharedString::from(format!("git-file-{}", change.path)))
+            .id(SharedString::from(match change.kind {
+                ChangeKind::Unstaged => format!("git-file-{}", change.path),
+                kind => format!("git-file-{:?}-{}", kind, change.path),
+            }))
             .test_support()
             // The status letter is part of the name: a screen reader cannot see
             // the colour it is drawn in, and neither can a test.
@@ -1826,6 +2020,9 @@ impl GitPanel {
             // The one thing the row cannot do by being clicked: the other half of
             // "show me this change", which is going to the file itself. The diff
             // tab's own rows carried this before its list moved here.
+            .when_some(self.change_button(change, colors, cx), |el, button| {
+                el.child(button)
+            })
             .child(
                 div()
                     .id(SharedString::from(format!("git-open-{}", change.path)))
@@ -1851,10 +2048,10 @@ impl GitPanel {
             )
             .child(
                 div()
-                    .id(SharedString::from(format!(
-                        "git-file-status-{}",
-                        change.path
-                    )))
+                    .id(SharedString::from(match change.kind {
+                        ChangeKind::Unstaged => format!("git-file-status-{}", change.path),
+                        kind => format!("git-file-status-{:?}-{}", kind, change.path),
+                    }))
                     .test_support()
                     .flex_shrink_0()
                     .text_color(colors.muted_foreground)
@@ -1864,7 +2061,13 @@ impl GitPanel {
                 // Focused first: `diff::OpenFile` needs a window, and an action only
                 // reaches the workspace's element listener from inside its subtree.
                 window.focus(&this.focus, cx);
-                window.dispatch_action(Box::new(diff::OpenFile { path: file.clone() }), cx);
+                window.dispatch_action(
+                    Box::new(diff::OpenFile {
+                        path: file.clone(),
+                        kind,
+                    }),
+                    cx,
+                );
             }))
             .into_any_element()
     }
@@ -2002,6 +2205,7 @@ impl Render for GitPanel {
         let panel = div()
             .id("git-panel")
             .test_support()
+            .relative()
             .track_focus(&self.focus)
             // The menu is the only thing this panel listens for a key about.
             .on_key_down(cx.listener(Self::handle_key_down))
@@ -2011,6 +2215,11 @@ impl Render for GitPanel {
             .min_h_0()
             .child(header)
             .child(body);
+        if let Some((_, change)) = self.confirming_discard.as_ref() {
+            return panel
+                .child(self.discard_confirmation(change, &colors, cx))
+                .into_any_element();
+        }
         if self.menu.is_some() {
             return panel
                 .child(self.menu_overlay(window.viewport_size(), &colors, cx))
