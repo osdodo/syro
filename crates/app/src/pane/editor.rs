@@ -1,11 +1,13 @@
 //! The editor tab: a file from the tree, open for editing.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
-use gpui_kit::base::{StyledExt as _, Theme};
+use gpui_kit::base::{
+    StyledExt as _, TextView as BaseTextView, TextViewStyle as BaseTextViewStyle, Theme,
+};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
-use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::model::TabSpec;
@@ -260,6 +262,37 @@ impl PaneItem for EditorView {
     }
 }
 
+fn markdown_image_source(uri: &SharedUri, base: Option<&Path>) -> ImageSource {
+    let source = uri.as_ref();
+    if source.starts_with("data:") {
+        let Ok(data_url) = data_url::DataUrl::process(source) else {
+            return ImageSource::Resource(Resource::Uri(uri.clone()));
+        };
+        let mime = data_url.mime_type();
+        let Some(format) = ImageFormat::from_mime_type(&format!("{}/{}", mime.type_, mime.subtype))
+        else {
+            return ImageSource::Resource(Resource::Uri(uri.clone()));
+        };
+        let Ok((bytes, _)) = data_url.decode_to_vec() else {
+            return ImageSource::Resource(Resource::Uri(uri.clone()));
+        };
+        return ImageSource::Image(Arc::new(Image::from_bytes(format, bytes)));
+    }
+    if source.contains("://") {
+        return ImageSource::Resource(Resource::Uri(uri.clone()));
+    }
+
+    let path = Path::new(source);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(base) = base {
+        base.join(path)
+    } else {
+        return ImageSource::Resource(Resource::Uri(uri.clone()));
+    };
+    ImageSource::Resource(Resource::Path(path.into()))
+}
+
 impl Render for EditorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = Theme::global(cx).tokens.colors.clone();
@@ -331,17 +364,17 @@ impl Render for EditorView {
                     // A document reads better with a margin around it than
                     // against the pane's own edges.
                     .p_4()
-                    // One step under the 16 px the rest of the app reads at:
-                    // a page of prose is scanned, not studied line by line.
-                    .text_sm()
+                    // Keep Markdown typography at the document's default body size.
                     .child(
-                        TextView::markdown("editor-preview-text", text)
-                            .style(TextViewStyle {
-                                // Paragraphs closer than a full rem, which at body
-                                // size left a gap wider than the text it broke.
-                                paragraph_gap: rems(0.75),
-                                ..Default::default()
+                        BaseTextView::markdown("editor-preview-text", text)
+                            .image_source({
+                                let base = self.path.parent().map(Path::to_path_buf);
+                                move |uri| markdown_image_source(uri, base.as_deref())
                             })
+                            .style(
+                                BaseTextViewStyle::from_theme(&Theme::global(cx))
+                                    .with_paragraph_gap(rems(0.75)),
+                            )
                             .scrollable(true),
                     ),
             )
@@ -373,8 +406,8 @@ pub(crate) mod tests {
     use gpui_kit::base::Root;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
-        App, AppContext as _, Bounds, Entity, Focusable as _, Point, Render, TestAppContext,
-        Window, WindowBounds, WindowHandle, WindowOptions, px, size,
+        App, AppContext as _, Bounds, Entity, Focusable as _, ImageSource, Point, Render, Resource,
+        SharedUri, TestAppContext, Window, WindowBounds, WindowHandle, WindowOptions, px, size,
     };
 
     use super::{EditorView, editor_state};
@@ -472,6 +505,20 @@ pub(crate) mod tests {
             window.input(text, cx);
         })
         .expect("type into the editor");
+    }
+
+    #[test]
+    fn markdown_relative_image_resolves_from_document_directory() {
+        let root = std::env::temp_dir().join(format!("syro-markdown-image-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let uri: SharedUri = "images/logo.png".into();
+        let source = super::markdown_image_source(&uri, Some(&root));
+        assert!(matches!(
+            source,
+            ImageSource::Resource(Resource::Path(path))
+                if path.as_ref() == root.join("images/logo.png").as_path()
+        ));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[gpui_kit::test]

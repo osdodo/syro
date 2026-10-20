@@ -6781,6 +6781,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
+ "data-url",
  "gpui-kit",
  "objc",
  "raw-window-handle",
