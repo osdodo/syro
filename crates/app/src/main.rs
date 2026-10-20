@@ -2007,7 +2007,7 @@ impl Workspace {
     ) {
         if self.graph_visible {
             self.graph_visible = false;
-            // The keyboard goes back to the pane the graph covered.
+            self.graph = None;
             self.ensure_pane_focus(window, cx);
             cx.notify();
         }
@@ -6591,23 +6591,24 @@ mod window_tests {
             "the graph's own close button did not close it"
         );
         assert!(!found(cx, &fixture, "git-graph-overlay"));
+        assert!(!found(cx, &fixture, "git-graph-tab"));
         assert!(found(cx, &fixture, "git-panel"), "the panel went with it");
 
-        // And Escape is the other way out, which is the same road every other
-        // overlay in this window takes.
+        // Escape hides an open graph without destroying its tab.
         assert!(
             click_until(cx, &fixture, "git-graph-open".to_string(), |cx| found(
                 cx,
                 &fixture,
                 "git-graph-rows"
             )),
-            "the graph did not open a second time"
+            "the graph did not open again from the Git panel"
         );
         press(cx, &fixture, "escape");
         assert!(
             draw_until(cx, &fixture, |cx| !found(cx, &fixture, "git-graph-rows")),
-            "escape did not close the graph"
+            "escape did not hide the graph"
         );
+        assert!(found(cx, &fixture, "git-graph-tab"));
     }
 
     #[gpui_kit::test]
