@@ -1578,6 +1578,7 @@ impl Workspace {
                         exit_ok: view.exit_status().map(|status| status.success()),
                         status: view.status(cx),
                         stalled: view.stalled(),
+                        agent: view.agent_name().is_some(),
                     });
                 }
             }

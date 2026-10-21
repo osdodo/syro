@@ -109,6 +109,10 @@ pub struct LiveTerminal {
     pub status: Option<AgentStatus>,
     /// Said it was working and has gone quiet (`syro_core::agent::stalled`).
     pub stalled: bool,
+    /// An agent's terminal — started from a preset or recognized in a shell.
+    /// The job in its tty's foreground is the agent itself, not work in front
+    /// of it, so `busy` says nothing about whether it is working.
+    pub agent: bool,
 }
 
 /// One terminal under a worktree, as a row shows it.
@@ -122,8 +126,11 @@ pub struct Row {
     pub exit: Option<bool>,
     /// Something is running in front of this terminal's own child, in its tty: a
     /// shell with a job in it. What the row says `Running` for when nothing else
-    /// knows what the job is.
+    /// knows what the job is — and no agent owns the terminal.
     pub busy: bool,
+    /// An agent's terminal, whose own foreground job is the agent: `busy` is
+    /// what keeps it open, not what it is doing.
+    pub agent: bool,
     /// How long it has been working, or worked; `None` before it has.
     pub uptime: Option<std::time::Duration>,
     pub cpu_pct: f32,
@@ -322,6 +329,7 @@ impl ResourceBar {
                 stalled: terminal.stalled,
                 exit: terminal.exit_ok,
                 busy: entry.is_some_and(|entry| entry.busy),
+                agent: terminal.agent,
                 uptime: terminal.span.map(|(start, end)| {
                     end.unwrap_or_else(Instant::now)
                         .saturating_duration_since(start)
@@ -1108,6 +1116,7 @@ mod tests {
                 exit_ok: None,
                 status: Some(AgentStatus::Working),
                 stalled: false,
+                agent: true,
             },
             LiveTerminal {
                 worktree: "repo:/w/main".to_string(),
@@ -1117,6 +1126,7 @@ mod tests {
                 exit_ok: None,
                 status: None,
                 stalled: false,
+                agent: true,
             },
             LiveTerminal {
                 worktree: "repo:/w/feature".to_string(),
@@ -1126,6 +1136,7 @@ mod tests {
                 exit_ok: None,
                 status: None,
                 stalled: false,
+                agent: false,
             },
         ]
     }
@@ -1354,6 +1365,7 @@ mod tests {
             exit_ok: Some(false),
             status: None,
             stalled: false,
+            agent: true,
         });
         bar.snapshot = Some(ResourceSnapshot::of(
             &table(),

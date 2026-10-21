@@ -877,6 +877,7 @@ fn terminal_line(
                     row.stalled,
                     row.exit,
                     row.busy,
+                    row.agent,
                     colors,
                 )),
         )
@@ -943,6 +944,7 @@ fn word_of(
     status: Option<AgentStatus>,
     stalled: bool,
     busy: bool,
+    agent: bool,
 ) -> Option<Word> {
     match (exit, status, stalled) {
         (Some(true), ..) => Some(Word::Done),
@@ -952,9 +954,11 @@ fn word_of(
         (None, Some(AgentStatus::Working), false) => Some(Word::Working),
         (None, Some(AgentStatus::Idle), _) => Some(Word::Idle),
         // Nothing reported, and the tty belongs to something else: a shell
-        // running an agent, a build, an editor — something this app was not told
-        // about, which is all the row can say about it.
-        (None, None, _) if busy => Some(Word::Running),
+        // running a build, an editor — something this app was not told about,
+        // which is all the row can say about it. An agent's own terminal is not
+        // that: the job in front of it is the agent itself, which is not
+        // working until it says so.
+        (None, None, _) if busy && !agent => Some(Word::Running),
         (None, None, _) => None,
     }
 }
@@ -970,9 +974,10 @@ fn status_word(
     stalled: bool,
     exit: Option<bool>,
     busy: bool,
+    agent: bool,
     colors: &ColorTokens,
 ) -> Option<AnyElement> {
-    let said = word_of(exit, status, stalled, busy)?;
+    let said = word_of(exit, status, stalled, busy, agent)?;
     let (colour, label, short) = match said {
         Word::Done => {
             let said = t!("status.done_short");
@@ -1002,10 +1007,11 @@ fn status_word(
             t!("status.idle"),
             t!("status.idle_short"),
         ),
-        // Not the agent's colour and no dot: an agent at work is what those are
-        // for, and this is only something running.
+        // Green like the agent's own `Working`: both read as 运行中, so the same
+        // word should not change colour by who set the title. Still no dot — an
+        // agent at work is what that is for, and this is only something running.
         Word::Running => (
-            colors.muted_foreground,
+            running_green(),
             t!("status.running"),
             t!("status.running_short"),
         ),
@@ -1825,28 +1831,37 @@ mod window_tests {
         use syro_core::model::AgentStatus::{Idle, Permission, Working};
 
         assert_eq!(
-            word_of(Some(true), Some(Working), false, true),
+            word_of(Some(true), Some(Working), false, true, true),
             Some(Word::Done)
         );
-        assert_eq!(word_of(Some(false), None, false, false), Some(Word::Failed));
         assert_eq!(
-            word_of(None, Some(Working), true, false),
+            word_of(Some(false), None, false, false, false),
+            Some(Word::Failed)
+        );
+        assert_eq!(
+            word_of(None, Some(Working), true, false, true),
             Some(Word::Stalled)
         );
         assert_eq!(
-            word_of(None, Some(Permission), false, false),
+            word_of(None, Some(Permission), false, false, true),
             Some(Word::Waiting)
         );
         assert_eq!(
-            word_of(None, Some(Working), false, false),
+            word_of(None, Some(Working), false, false, true),
             Some(Word::Working)
         );
         // An agent's own report says more than the tty does, so it wins.
-        assert_eq!(word_of(None, Some(Idle), false, true), Some(Word::Idle));
+        assert_eq!(
+            word_of(None, Some(Idle), false, true, true),
+            Some(Word::Idle)
+        );
         // A shell at its prompt says nothing; one with a job in front of it says
         // that much, which is what a shell running `bp` reads as.
-        assert_eq!(word_of(None, None, false, false), None);
-        assert_eq!(word_of(None, None, false, true), Some(Word::Running));
+        assert_eq!(word_of(None, None, false, false, false), None);
+        assert_eq!(word_of(None, None, false, true, false), Some(Word::Running));
+        // An agent's terminal has the agent itself in front of it, which is not
+        // work — a fresh qodercli at its prompt says nothing, not `Running`.
+        assert_eq!(word_of(None, None, false, true, true), None);
     }
 
     /// A length is read in the largest unit that still says something: seconds
@@ -3167,6 +3182,7 @@ mod window_tests {
                     stalled: false,
                     exit: None,
                     busy: false,
+                    agent: status.is_some(),
                     uptime: seconds.map(std::time::Duration::from_secs),
                     cpu_pct,
                     rss_bytes: mb * 1024 * 1024,
@@ -3202,6 +3218,7 @@ mod window_tests {
                     stalled: false,
                     exit: None,
                     busy: false,
+                    agent: false,
                     uptime: None,
                     cpu_pct: 140.,
                     rss_bytes: 999 * 1024 * 1024,
