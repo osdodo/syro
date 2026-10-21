@@ -768,16 +768,24 @@ impl AppState {
 
     // --- actions -----------------------------------------------------------
 
-    /// `repo::Add`. `path` is validated and reduced to the repo root, so adding
-    /// a subdirectory of a checkout adds the checkout.
+    /// `repo::Add`. Existing checkouts are reduced to their repo root; a plain
+    /// directory becomes its own repository, even when it sits inside another
+    /// checkout.
     pub fn add_repo(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        // A folder git does not know yet is made into a repository rather than
-        // refused: an empty directory becomes an empty repository, ready for a
-        // first commit, and a folder with files keeps them as untracked.
-        let root = match git::repo_root(&path).or_else(|error| match path.is_dir() {
-            true => git::init(&path).and_then(|()| git::repo_root(&path)),
-            false => Err(error),
-        }) {
+        // `git rev-parse` also succeeds for a plain directory nested inside
+        // another checkout. That is not the project the folder picker selected.
+        let selected = path.canonicalize().unwrap_or_else(|_| path.clone());
+        let root_result = match git::repo_root(&path) {
+            Ok(root) if root.canonicalize().unwrap_or_else(|_| root.clone()) == selected => {
+                Ok(root)
+            }
+            Ok(_) | Err(_) if path.is_dir() => {
+                git::init(&path).and_then(|()| git::repo_root(&path))
+            }
+            Ok(root) => Ok(root),
+            Err(error) => Err(error),
+        };
+        let root = match root_result {
             Ok(root) => root,
             Err(error) => {
                 // Even `git init` could not make it one: there is no repo to
@@ -2072,7 +2080,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn adding_a_subdirectory_adds_the_repository(cx: &mut TestAppContext) {
+    fn adding_a_plain_directory_inside_a_repo_makes_it_its_own_repository(cx: &mut TestAppContext) {
         let (dir, repo, _) = scratch_repo("state-add");
         let (state_path, store_dir) = temp_store("state-add");
         let nested = repo.path.join("nested");
@@ -2081,12 +2089,13 @@ mod tests {
         let state = cx.update(|cx| {
             cx.new(|cx| AppState::open(Store::new(state_path), dir.join("workspaces"), cx))
         });
-        cx.update(|cx| state.update(cx, |state, cx| state.add_repo(nested, cx)));
+        cx.update(|cx| state.update(cx, |state, cx| state.add_repo(nested.clone(), cx)));
 
         cx.update(|cx| {
             let state = state.read(cx);
             assert_eq!(state.repos().len(), 1);
-            assert_eq!(state.repos()[0].path, repo.path);
+            assert_eq!(state.repos()[0].path, nested.canonicalize().unwrap());
+            assert!(nested.join(".git").is_dir());
             assert!(state.active().is_some(), "adding activates something");
         });
 
