@@ -1680,6 +1680,50 @@ impl Workspace {
         self.open_file(action, window, cx);
     }
 
+    fn handle_open_search_result(
+        &mut self,
+        action: &editor::OpenSearchResult,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_search_result(action, window, cx);
+    }
+
+    /// Open one search hit and mark its matching text in the editor buffer.
+    fn open_search_result(
+        &mut self,
+        action: &editor::OpenSearchResult,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_file(
+            &editor::Open {
+                path: action.path.clone(),
+            },
+            window,
+            cx,
+        );
+        let Some(worktree_id) = self.state.read(cx).active_id().cloned() else {
+            return;
+        };
+        let view = self
+            .panes
+            .get(&worktree_id)
+            .into_iter()
+            .flat_map(|panes| panes.values())
+            .find_map(|pane| match pane {
+                PaneView::Editor { view } if view.read(cx).path() == action.path => {
+                    Some(view.clone())
+                }
+                _ => None,
+            });
+        if let Some(view) = view {
+            view.update(cx, |view, cx| {
+                view.show_search_match(action.line, action.column, &action.query, window, cx)
+            });
+        }
+    }
+
     /// `editor::Open`: the file tree's click, or any other way in.
     fn open_file(&mut self, action: &editor::Open, window: &mut Window, cx: &mut Context<Self>) {
         let Some(worktree_id) = self.state.read(cx).active_id().cloned() else {
@@ -3338,6 +3382,7 @@ impl Render for Workspace {
             .on_key_down(cx.listener(Self::handle_workspace_key))
             .on_action(cx.listener(Self::handle_add_project))
             .on_action(cx.listener(Self::handle_open_file))
+            .on_action(cx.listener(Self::handle_open_search_result))
             .on_action(cx.listener(Self::handle_open_diff))
             .on_action(cx.listener(Self::handle_open_change))
             .on_action(cx.listener(Self::handle_open_commit_change))
@@ -4533,6 +4578,54 @@ mod window_tests {
             ),
             "the re-read missed a file added while collapsed"
         );
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_project_search_result_opens_the_absolute_file_path(cx: &mut TestAppContext) {
+        let fixture = open(cx, "tree-search-open");
+        let second_match = fixture.root.join("src").join("second.rs");
+        std::fs::write(
+            &second_match,
+            "tree put this here first\ntree put this here second\n",
+        )
+        .unwrap();
+        assert!(found(cx, &fixture, "tree-search-input"));
+        click(cx, &fixture, "tree-search-input".into());
+        type_text(cx, &fixture, "TREE put this here");
+        assert!(
+            draw_until(cx, &fixture, |cx| found(
+                cx,
+                &fixture,
+                "tree-search-result-0"
+            )),
+            "the search result did not appear"
+        );
+
+        click(cx, &fixture, "tree-search-result-2".into());
+        assert!(
+            draw_until(cx, &fixture, |cx| file_tabs(&active_tabs(cx, &fixture))
+                == vec![second_match.clone()]),
+            "the result did not open its file: {:?}",
+            file_tabs(&active_tabs(cx, &fixture))
+        );
+        assert!(found(cx, &fixture, "editor-pane"));
+        assert!(!found(cx, &fixture, "open-error"));
+        let editor = cx.update(|cx| {
+            fixture
+                .workspace
+                .read(cx)
+                .active_editor(cx)
+                .expect("search result editor")
+        });
+        let count = cx.update(|cx| editor.read(cx).search_label(cx));
+        assert_eq!(
+            count, "2/2",
+            "the clicked match was not selected in the editor search"
+        );
+        cx.update(|cx| editor.update(cx, |editor, cx| editor.move_search_match(false, cx)));
+        assert_eq!(cx.update(|cx| editor.read(cx).search_label(cx)), "1/2");
+        cx.update(|cx| editor.update(cx, |editor, cx| editor.move_search_match(true, cx)));
+        assert_eq!(cx.update(|cx| editor.read(cx).search_label(cx)), "2/2");
     }
 
     #[gpui_kit::test]

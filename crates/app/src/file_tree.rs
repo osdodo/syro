@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::base::{ColorTokens, StyledExt as _, TestSupportExt as _, Theme};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::label::Label;
 use gpui_kit::component::{Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -163,6 +164,14 @@ struct Row {
     status: Option<char>,
 }
 
+#[derive(Clone)]
+struct SearchResult {
+    path: PathBuf,
+    line: u32,
+    column: u32,
+    text: String,
+}
+
 pub struct FileTreeView {
     state: Entity<AppState>,
     root: Option<PathBuf>,
@@ -180,6 +189,13 @@ pub struct FileTreeView {
     editing: Option<Edit>,
     /// The path a delete is waiting to hear about.
     confirming_delete: Option<PathBuf>,
+    search_input: Option<Entity<InputState>>,
+    _search_events: Option<Subscription>,
+    search_query: String,
+    search_results: Vec<SearchResult>,
+    search_generation: u64,
+    searching: bool,
+    _search_task: Option<Task<()>>,
     /// What the last thing this tree did had to say — a refusal, or the note
     /// that a reload happened. A tree that swallows "already exists" looks
     /// broken rather than busy, so it is drawn until something replaces it.
@@ -221,6 +237,13 @@ impl FileTreeView {
             menu: None,
             editing: None,
             confirming_delete: None,
+            search_input: None,
+            _search_events: None,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_generation: 0,
+            searching: false,
+            _search_task: None,
             notice: None,
             _watch: None,
             refresh_generation: 0,
@@ -228,6 +251,70 @@ impl FileTreeView {
         };
         tree.follow_active_worktree(cx);
         tree
+    }
+
+    /// Build the project-content search field once a window is available.
+    fn ensure_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_input.is_some() {
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t!("tree.search_files")));
+        let events = cx.subscribe(&input, |this, input, _event: &InputEvent, cx| {
+            let query = input.read(cx).value().to_string();
+            this.search_query = query.clone();
+            this.search_results.clear();
+            this.search_generation += 1;
+            this.searching = !query.trim().is_empty();
+            let generation = this.search_generation;
+            let Some(root) = this.root.clone().filter(|root| root.is_dir()) else {
+                this.searching = false;
+                this._search_task = None;
+                cx.notify();
+                return;
+            };
+            if query.trim().is_empty() {
+                this.searching = false;
+                this._search_task = None;
+                cx.notify();
+                return;
+            }
+            this._search_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(180))
+                    .await;
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { syro_core::git::search_text(&root, &query) })
+                    .await;
+                this.update(cx, |this, cx| {
+                    if this.search_generation != generation {
+                        return;
+                    }
+                    this.searching = false;
+                    match result {
+                        Ok(matches) => {
+                            this.search_results = matches
+                                .into_iter()
+                                .map(|found| SearchResult {
+                                    path: PathBuf::from(found.path),
+                                    line: found.line,
+                                    column: found.column,
+                                    text: found.text,
+                                })
+                                .collect();
+                            this.notice = None;
+                        }
+                        Err(error) => this.notice = Some(format!("{error:#}")),
+                    }
+                    this._search_task = None;
+                    cx.notify();
+                })
+                .ok();
+            }));
+            cx.notify();
+        });
+        self.search_input = Some(input);
+        self._search_events = Some(events);
     }
 
     /// Re-read every directory that is open.
@@ -690,6 +777,82 @@ impl FileTreeView {
         })
     }
 
+    fn search_result_row(
+        &self,
+        index: usize,
+        result: &SearchResult,
+        colors: &ColorTokens,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let relative = result.path.clone();
+        let path = self
+            .root
+            .as_ref()
+            .map(|root| root.join(&relative))
+            .unwrap_or_else(|| relative.clone());
+        let location = format!("{}:{}", relative.display(), result.line);
+        let line = result.line;
+        let column = result.column;
+        let query = self.search_query.clone();
+        div()
+            .id(SharedString::from(format!("tree-search-result-{index}")))
+            .test_support()
+            .aria_label(SharedString::from(format!("{location}: {}", result.text)))
+            .h_flex()
+            .items_start()
+            .gap_2()
+            .w_full()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .cursor_pointer()
+            .hover(|el| el.bg(colors.muted))
+            .text_xs()
+            .child(
+                Icon::new(IconName::File)
+                    .size(px(12.))
+                    .text_color(colors.muted_foreground)
+                    .mt(px(2.)),
+            )
+            .child(
+                div()
+                    .v_flex()
+                    .min_w_0()
+                    .flex_1()
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(colors.foreground)
+                            .child(SharedString::from(location)),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(colors.muted_foreground)
+                            .child(
+                                Label::new(result.text.clone())
+                                    .highlights(self.search_query.clone()),
+                            ),
+                    ),
+            )
+            .on_click(cx.listener(move |_this, _event, window, cx| {
+                window.dispatch_action(
+                    Box::new(editor::OpenSearchResult {
+                        path: path.clone(),
+                        line,
+                        column,
+                        query: query.clone(),
+                    }),
+                    cx,
+                );
+            }))
+            .into_any_element()
+    }
+
     /// The row a name is being typed in.
     fn edit_row(
         &self,
@@ -1046,6 +1209,8 @@ impl Render for FileTreeView {
         }
 
         let colors = Theme::global(cx).tokens.colors.clone();
+        self.ensure_search_input(window, cx);
+        let search = self.search_input.clone().expect("search input initialized");
         let header = div()
             .id("tree-header")
             .test_support()
@@ -1067,6 +1232,32 @@ impl Render for FileTreeView {
                     .items_center()
                     .gap_1()
                     .child(self.refresh_button(&colors, cx)),
+            );
+
+        let search_bar = div()
+            .id("tree-search")
+            .test_support()
+            .h_flex()
+            .items_center()
+            .gap_1p5()
+            .mx_2()
+            .mb_1()
+            .h(px(26.))
+            .px_2()
+            .rounded_sm()
+            .border_1()
+            .border_color(colors.input)
+            .text_color(colors.muted_foreground)
+            .child(Icon::new(IconName::Search).size(px(13.)).flex_shrink_0())
+            .child(
+                Input::new(&search)
+                    .focus_bordered(false)
+                    .id("tree-search-input")
+                    .appearance(false)
+                    .bordered(false)
+                    .cleanable(true)
+                    .flex_1()
+                    .min_w_0(),
             );
 
         // The header holds still; only the entries scroll.
@@ -1111,6 +1302,34 @@ impl Render for FileTreeView {
                     .text_color(colors.muted_foreground)
                     .child(t!("tree.no_worktree")),
             );
+        } else if !self.search_query.trim().is_empty() {
+            if self.searching {
+                body = body.child(
+                    div()
+                        .id("tree-searching")
+                        .test_support()
+                        .px_2()
+                        .py_1()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(t!("tree.searching")),
+                );
+            } else if self.search_results.is_empty() {
+                body = body.child(
+                    div()
+                        .id("tree-search-empty")
+                        .test_support()
+                        .px_2()
+                        .py_1()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(t!("tree.no_search_results")),
+                );
+            } else {
+                for (index, result) in self.search_results.iter().enumerate() {
+                    body = body.child(self.search_result_row(index, result, &colors, cx));
+                }
+            }
         } else {
             // What is being typed, if anything, and the row it belongs to: the
             // edit is drawn in place, so the loop has to know both.
@@ -1168,7 +1387,8 @@ impl Render for FileTreeView {
             .min_h_0()
             // Escape backs out of whatever is open.
             .on_key_down(cx.listener(Self::handle_edit_key))
-            .child(header);
+            .child(header)
+            .child(search_bar);
         if notice.is_some() {
             root = root.child(self.notice_line(&colors));
         }
@@ -1366,6 +1586,37 @@ mod tests {
         draw(cx, fixture);
         press(cx, fixture, "enter");
         draw(cx, fixture);
+    }
+
+    #[gpui_kit::test]
+    fn project_search_shows_content_matches_with_file_and_line(cx: &mut TestAppContext) {
+        let fixture = open_tree(cx, "tree-search-content");
+        draw(cx, &fixture);
+        assert!(found(cx, &fixture, "tree-search-input"));
+        click(cx, &fixture, "tree-search-input".into());
+        type_text(cx, &fixture, "pub fn x");
+        let mut result_found = false;
+        for _ in 0..100 {
+            cx.background_executor
+                .advance_clock(std::time::Duration::from_millis(20));
+            cx.run_until_parked();
+            draw(cx, &fixture);
+            if found(cx, &fixture, "tree-search-result-0") {
+                result_found = true;
+                break;
+            }
+        }
+        assert!(
+            result_found,
+            "the file tree did not show content search results"
+        );
+        assert!(
+            label(cx, &fixture, "tree-search-result-0")
+                .is_some_and(|label| label.contains("src/lib.rs:1")),
+            "the result did not identify its file and line"
+        );
+        click(cx, &fixture, "tree-search-result-0".into());
+        draw(cx, &fixture);
     }
 
     #[test]

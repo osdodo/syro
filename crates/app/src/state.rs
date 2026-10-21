@@ -151,6 +151,15 @@ pub mod editor {
         pub path: PathBuf,
     }
 
+    #[derive(Clone, PartialEq, Debug, Action)]
+    #[action(namespace = editor, no_json)]
+    pub struct OpenSearchResult {
+        pub path: PathBuf,
+        pub line: u32,
+        pub column: u32,
+        pub query: String,
+    }
+
     #[derive(Clone, PartialEq, Debug, Default, Action)]
     #[action(namespace = editor, no_json)]
     pub struct Save;

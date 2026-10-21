@@ -204,6 +204,15 @@ tree:
   refresh:
     en: Refresh file tree
     zh-CN: 刷新文件树
+  search_files:
+    en: Search in project files…
+    zh-CN: 搜索项目文件内容…
+  searching:
+    en: Searching…
+    zh-CN: 正在搜索…
+  no_search_results:
+    en: No matches.
+    zh-CN: 没有匹配项。
   new_file:
     en: New File
     zh-CN: 新建文件

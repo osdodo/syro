@@ -288,6 +288,93 @@ pub fn branch_delete(repo: &Path, branch: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// One matching line in a project file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextMatch {
+    pub path: String,
+    pub line: u32,
+    pub column: u32,
+    pub text: String,
+}
+
+/// Search readable, non-ignored files under `root` for a literal, case-insensitive query.
+pub fn search_text(root: &Path, query: &str) -> Result<Vec<TextMatch>> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "grep",
+            "--no-index",
+            "--line-number",
+            "--column",
+            "--null",
+            "-I",
+            "-F",
+            "-i",
+            "--exclude-standard",
+            "--max-count=3",
+            "-e",
+            query,
+            "--",
+            ".",
+        ])
+        .output()
+        .with_context(|| format!("searching {}", root.display()))?;
+    if !out.status.success() && out.status.code() != Some(1) {
+        anyhow::bail!(
+            "git grep failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let mut matches = Vec::new();
+    let mut cursor = 0;
+    while cursor < out.stdout.len() {
+        let Some(path_end) = out.stdout[cursor..].iter().position(|byte| *byte == 0) else {
+            break;
+        };
+        let path = &out.stdout[cursor..cursor + path_end];
+        cursor += path_end + 1;
+        let Some(line_end) = out.stdout[cursor..].iter().position(|byte| *byte == 0) else {
+            break;
+        };
+        let line = std::str::from_utf8(&out.stdout[cursor..cursor + line_end])
+            .unwrap_or_default()
+            .parse();
+        cursor += line_end + 1;
+        let Some(column_end) = out.stdout[cursor..].iter().position(|byte| *byte == 0) else {
+            break;
+        };
+        let column = std::str::from_utf8(&out.stdout[cursor..cursor + column_end])
+            .unwrap_or_default()
+            .parse();
+        cursor += column_end + 1;
+        let text_end = out.stdout[cursor..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .unwrap_or(out.stdout.len() - cursor);
+        let text = &out.stdout[cursor..cursor + text_end];
+        cursor += text_end + usize::from(cursor + text_end < out.stdout.len());
+        let (Ok(line), Ok(column)) = (line, column) else {
+            continue;
+        };
+        matches.push(TextMatch {
+            path: String::from_utf8_lossy(path).into_owned(),
+            line,
+            column,
+            text: String::from_utf8_lossy(text)
+                .trim_end_matches('\r')
+                .to_string(),
+        });
+        if matches.len() == 200 {
+            break;
+        }
+    }
+    Ok(matches)
+}
+
 /// Every tracked file in `root`, relative to it — the quick-open list.
 pub fn ls_files(root: &Path) -> Result<Vec<String>> {
     let text = run_git_ok(root, &["ls-files", "--cached"])?;
@@ -2061,6 +2148,35 @@ bare
         let text = diff_text(&dir, "HEAD", fresh).unwrap();
         assert!(text.contains("+hello"), "{text}");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn text_search_finds_literal_lines_and_skips_ignored_files() {
+        let dir = scratch_repo("search-text", "main");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/notes.txt"), "A needle in this line\n").unwrap();
+        std::fs::write(dir.join("src/other.txt"), "another needle here\n").unwrap();
+        std::fs::write(dir.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(dir.join("ignored.txt"), "needle hidden\n").unwrap();
+        let found = search_text(&dir, "NEEDLE").unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].path, "src/notes.txt");
+        assert_eq!(found[0].line, 1);
+        assert_eq!(found[0].column, 3);
+        assert_eq!(found[0].text, "A needle in this line");
+        assert_eq!(found[1].path, "src/other.txt");
+        assert_eq!(found[1].line, 1);
+        assert_eq!(found[1].column, 9);
+        assert_eq!(found[1].text, "another needle here");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_search_term_has_no_results() {
+        let dir = scratch_repo("search-empty", "main");
+        assert!(search_text(&dir, " ").unwrap().is_empty());
+        assert!(search_text(&dir, "no-match").unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

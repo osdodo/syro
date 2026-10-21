@@ -63,6 +63,7 @@ impl EditorView {
         // name rather than a language called "text".
         let language = opener::language_for(&path);
         let state = editor_state(window, cx, language);
+        state.update(cx, |state, cx| state.set_searchable(true, cx));
         // Read before the text lands, so the comparison the first focus makes is
         // against the file as it was read. `ponytail:` a write between the
         // caller's read and this line is missed until the next focus.
@@ -110,6 +111,61 @@ impl EditorView {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn show_search_match(
+        &self,
+        line: u32,
+        column: u32,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self.state.update(cx, |state, cx| {
+            state.open_search(false, cx);
+            state.set_search_query(query, true, cx);
+            let line_start = state
+                .value()
+                .split_inclusive('\n')
+                .take(line.saturating_sub(1) as usize)
+                .map(str::len)
+                .sum::<usize>();
+            let offset = line_start + column.saturating_sub(1) as usize;
+            let ranges = state.search_session().matcher.matched_ranges();
+            ranges
+                .iter()
+                .position(|range| range.start == offset)
+                .unwrap_or_else(|| {
+                    ranges
+                        .iter()
+                        .position(|range| range.start >= offset)
+                        .unwrap_or(0)
+                })
+        });
+        let count = self.state.read(cx).search_session().matcher.len();
+        let steps = if target == 0 { count } else { target };
+        for _ in 0..steps {
+            self.state.update(cx, |state, cx| {
+                let _ = state.next_search_match(cx);
+            });
+        }
+        self.state.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    #[cfg(test)]
+    pub fn search_label(&self, cx: &App) -> String {
+        self.state.read(cx).search_session().matcher.label()
+    }
+
+    #[cfg(test)]
+    pub fn move_search_match(&self, next: bool, cx: &mut Context<Self>) {
+        self.state.update(cx, |state, cx| {
+            if next {
+                let _ = state.next_search_match(cx);
+            } else {
+                let _ = state.previous_search_match(cx);
+            }
+        });
     }
 
     /// The buffer as text. What a test reads to see whether a reload happened;
