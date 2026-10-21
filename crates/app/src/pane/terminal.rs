@@ -1305,12 +1305,9 @@ impl TerminalView {
     /// The same road for a paste the platform hands over rather than a `cmd-v`
     /// we caught: the input handler's `paste`.
     fn paste_item(&mut self, item: ClipboardItem, cx: &mut Context<Self>) {
-        let Some(text) = item.text() else {
+        let Some(text) = clipboard_paste_text(&item) else {
             return;
         };
-        if text.is_empty() {
-            return;
-        }
         let bracketed = self
             .session
             .with_term(|term| term.mode().contains(TermMode::BRACKETED_PASTE));
@@ -2346,6 +2343,32 @@ pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     bytes
 }
 
+/// Clipboard images need a file path before a terminal agent can read them.
+fn clipboard_paste_text(item: &ClipboardItem) -> Option<String> {
+    let text = match item.entries().first() {
+        Some(ClipboardEntry::Image(image)) => {
+            let path = std::env::temp_dir().join(format!(
+                "syro-paste-{}.{}",
+                image.id(),
+                image.format.extension()
+            ));
+            if let Err(error) = std::fs::write(&path, &image.bytes) {
+                tracing::warn!(%error, "saving pasted image failed");
+                return None;
+            }
+            shell_escape(&path)
+        }
+        Some(ClipboardEntry::ExternalPaths(paths)) => paths
+            .0
+            .iter()
+            .map(|path| shell_escape(path))
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => item.text()?,
+    };
+    (!text.is_empty()).then_some(text)
+}
+
 /// A path as a shell will read it back whole.
 pub fn shell_escape(path: &Path) -> String {
     let text = path.to_string_lossy();
@@ -2386,13 +2409,13 @@ mod tests {
     // Not `use super::*`: the module above globs gpui in, and gpui's own `test`
     // attribute comes with it — under `cfg(test)` it shadows the built-in one,
     // and every `#[test]` below then expands into itself.
-    use gpui_kit::{Hsla, Keystroke};
+    use gpui_kit::{ClipboardItem, Hsla, Image, ImageFormat, Keystroke};
 
     use std::path::Path;
 
     use super::{
-        ClipboardKey, Palette, clipboard_key, composition_bytes, key_to_bytes, manual_agent,
-        paste_bytes, shell_escape, url_in_chars, xterm256,
+        ClipboardKey, Palette, clipboard_key, clipboard_paste_text, composition_bytes, key_to_bytes,
+        manual_agent, paste_bytes, shell_escape, url_in_chars, xterm256,
     };
 
     #[test]
@@ -2517,6 +2540,18 @@ mod tests {
         for binding in ["shift", "ctrl", "alt", "cmd", "fn"] {
             assert_eq!(bytes(binding), None, "{binding} should not reach the child");
         }
+    }
+
+    #[test]
+    fn pasted_images_are_saved_and_pasted_as_absolute_paths() {
+        let image = Image::from_bytes(ImageFormat::Png, b"image".to_vec());
+        let item = ClipboardItem::new_image(&image);
+        let pasted = clipboard_paste_text(&item).unwrap();
+        let path = std::env::temp_dir().join(format!("syro-paste-{}.png", image.id()));
+        assert!(path.is_absolute());
+        assert_eq!(pasted, shell_escape(&path));
+        assert_eq!(std::fs::read(&path).unwrap(), b"image");
+        let _ = std::fs::remove_file(path);
     }
 
     /// A shell reads a path back whole only if it is quoted, and the quoting has
