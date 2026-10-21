@@ -598,9 +598,6 @@ resource:
   usage_unknown:
     en: Unknown
     zh-CN: 未知
-  usage_price_note:
-    en: "~ includes OpenAI Standard-rate estimates, not actual charges. + excludes unpriced usage; Unknown means no known price."
-    zh-CN: "~ 含 OpenAI 标准价估算，非实际扣款；+ 表示未包含未知费用；未知表示无可用单价。"
   # The heading over the share legend.
   usage_share:
     en: By model

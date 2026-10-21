@@ -10,7 +10,6 @@ use gpui_kit::base::{ColorTokens, StyledExt as _, TestSupportExt as _, Theme};
 use gpui_kit::component::chart::PieChart;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::model::AgentStatus;
@@ -383,11 +382,7 @@ impl ResourceBar {
                     ),
                 )
                 .to_string();
-                if usage.total.estimated || usage.total.unpriced {
-                    format!("{label}. {}", t!("resource.usage_price_note"))
-                } else {
-                    label
-                }
+                label
             }
             // Measuring, or nothing recorded: the short form already reads as one.
             _ => self.usage_text(),
@@ -759,18 +754,6 @@ fn usage_panel(
                                             &usage.today,
                                         )),
                                 )
-                                .when(usage.total.estimated || usage.total.unpriced, |body| {
-                                    body.child(
-                                        div()
-                                            .id("usage-price-note")
-                                            .test_support()
-                                            .text_xs()
-                                            .text_color(colors.muted_foreground)
-                                            .child(SharedString::from(
-                                                t!("resource.usage_price_note").to_string(),
-                                            )),
-                                    )
-                                })
                                 .child(
                                     div()
                                         .id("usage-days-box")
@@ -1251,7 +1234,6 @@ mod tests {
         usage.total.unpriced = true;
         bar.set_usage(usage);
         assert!(bar.usage_text().contains("~$1824.49+"));
-        assert!(bar.usage_label().contains("OpenAI"));
     }
 
     /// Every model's colour has to be a different one: the palette this replaced was
