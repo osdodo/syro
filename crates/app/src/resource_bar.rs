@@ -40,16 +40,14 @@ const BAR_HEIGHT: f32 = 24.;
 const PANEL_PADDING: f32 = 20.;
 const PANEL_HEADLINE: f32 = 72.;
 const PANEL_GAP: f32 = 16.;
-const PANEL_INSET: f32 = 16.;
 
 /// One legend row, and the heading above the first of them: the only part of the panel
 /// that grows with the data, and so the only part its height is worked out from.
 const LEGEND_ROW: f32 = 28.;
 const LEGEND_HEAD: f32 = 44.;
 
-/// How far the panel's foot stands above the window's own bottom edge: the status strip
-/// plus the clearance the panel keeps over it, so the two do not read as one bar.
-const PANEL_FOOT: f32 = BAR_HEIGHT + 48.;
+/// How far the panel's foot stands above the window's own bottom edge: the status strip.
+const PANEL_FOOT: f32 = BAR_HEIGHT + 30.;
 
 /// The least room the panel leaves above its own top, so a long list is stopped before
 /// it runs off the window rather than after.
@@ -483,9 +481,10 @@ impl ResourceBar {
             + LEGEND_ROW * models as f32)
             + days_height
             + share_height;
+        // Keep the panel compact while leaving the editor area visible beside it.
         let panel = size(
-            (window.width * 0.30)
-                .clamp(px(440.), px(560.))
+            (window.width * 0.34)
+                .clamp(px(360.), px(400.))
                 .min(window.width - px(96.)),
             content
                 .min(window.height - px(PANEL_FOOT + PANEL_HEADROOM))
@@ -535,7 +534,7 @@ impl ResourceBar {
                         .items_end()
                         .justify_end()
                         .pb(px(PANEL_FOOT))
-                        .pr(px(PANEL_INSET))
+                        .pr(px(0.))
                         .child(usage_panel(
                             usage,
                             appear_key,

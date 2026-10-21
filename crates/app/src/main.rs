@@ -10173,21 +10173,20 @@ mod window_tests {
         let window_bounds = bounds_of(cx, &fixture, "usage-scrim");
         let trailing =
             window_bounds.origin.x + window_bounds.size.width - (panel.origin.x + panel.size.width);
-        // Off the trailing edge, but only just: the panel is placed where the
-        // red line was drawn, not against the window's own corner.
+        // The panel follows the window's trailing edge; no gap should separate the borders.
         assert!(
-            trailing > px(8.) && trailing < px(32.),
-            "the panel is not just off the trailing edge: {panel:?}, {window_bounds:?}"
+            trailing.abs() <= px(2.),
+            "the panel does not align with the window's right edge: {panel:?}, {window_bounds:?}"
         );
         assert!(
-            panel.size.width <= px(560.),
-            "the panel is not a narrow strip: {panel:?}"
+            panel.size.width <= px(400.),
+            "the panel is wider than the requested compact layout: {panel:?}"
         );
         // Its foot hangs just over the strip — near it, clear of it.
         let clearance = strip.origin.y - (panel.origin.y + panel.size.height);
         assert!(
-            clearance >= px(40.) && clearance <= px(80.),
-            "the panel's clearance over the strip is {clearance:?}: {panel:?}, {strip:?}"
+            clearance >= px(26.) && clearance <= px(34.),
+            "the panel is not slightly above the status bar: {clearance:?}: {panel:?}, {strip:?}"
         );
         assert!(
             panel.origin.y + panel.size.height <= strip.origin.y,
