@@ -10,6 +10,11 @@ pub type WorktreeId = String;
 pub type TerminalId = String;
 pub type AgentId = String;
 
+/// Reserved `repo_id` for a terminal that belongs to no git project — the
+/// sidebar's Scratch group. Such a worktree is a plain directory, not a git
+/// worktree: git refresh never lists it, and the git panels stay empty for it.
+pub const SCRATCH_REPO: &str = "scratch";
+
 /// A local git repository registered in the sidebar.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Repo {
@@ -31,6 +36,13 @@ pub struct Worktree {
     pub path: PathBuf,
     pub branch: String,
     pub base_ref: String,
+}
+
+impl Worktree {
+    /// A terminal rooted at a plain directory, not a git worktree (see [`SCRATCH_REPO`]).
+    pub fn is_scratch(&self) -> bool {
+        self.repo_id == SCRATCH_REPO
+    }
 }
 
 /// Orders by urgency: `Permission > Working > Idle`.

@@ -11,7 +11,7 @@ use syro_core::model::{AgentStatus, RepoId, Worktree};
 
 use crate::resize::{self, WidthDrag};
 use crate::resource_bar::{ResourceBar, Row, format_bytes};
-use crate::state::{AppState, branch_or_name, worktree};
+use crate::state::{AppState, branch_or_name, scratch, worktree};
 
 /// The width a fresh window opens with, and the range the drag handle keeps it
 /// in. The width a files-app sidebar has.
@@ -552,6 +552,74 @@ impl Sidebar {
     /// One worktree row: the branch, what its agents are doing, and one line per
     /// terminal under it with what that terminal costs. The active one is marked
     /// with an accent background.
+    /// The Scratch group: terminals that belong to no project, with a `+` that
+    /// opens one in any folder. Always drawn, so the `+` is there even before the
+    /// first scratch terminal exists.
+    fn scratch_section(
+        &self,
+        scratch: Vec<Worktree>,
+        active: Option<&str>,
+        columns: ColumnWidths,
+        colors: &ColorTokens,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut group = div()
+            .id("scratch-group")
+            .test_support()
+            .v_flex()
+            .gap_2()
+            .child(
+                div()
+                    .id("scratch-heading")
+                    .test_support()
+                    .h_flex()
+                    .items_center()
+                    .justify_between()
+                    .h(px(24.))
+                    .px_2()
+                    .rounded_sm()
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap_1p5()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Icon::new(IconName::SquareTerminal).size(px(14.)))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(colors.foreground)
+                                    .truncate()
+                                    .child(t!("sidebar.scratch")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("scratch-add")
+                            .test_support()
+                            .aria_label(t!("sidebar.new_scratch"))
+                            .h_flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(20.))
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .text_color(colors.muted_foreground)
+                            .hover(|el| el.bg(colors.muted).text_color(colors.foreground))
+                            .child(Icon::new(IconName::Plus).size(px(14.)))
+                            .on_click(|_event, window, cx| {
+                                window.dispatch_action(Box::new(scratch::New { path: None }), cx);
+                            }),
+                    ),
+            );
+        for worktree in scratch {
+            let is_active = active == Some(worktree.id.as_str());
+            group = group.child(self.row(worktree, is_active, columns, cx));
+        }
+        group
+    }
+
     fn row(
         &self,
         worktree: Worktree,
@@ -1110,7 +1178,8 @@ impl Render for Sidebar {
             list = list.child(self.banner("hook", error, &colors));
         }
 
-        if repos.is_empty() {
+        let scratch: Vec<Worktree> = self.state.read(cx).scratch_worktrees().cloned().collect();
+        if repos.is_empty() && scratch.is_empty() {
             // The affordance overlay for an empty list: centred, an icon, a label, a description — and it *is* the way in.
             list = list.child(
                 div()
@@ -1166,6 +1235,7 @@ impl Render for Sidebar {
             .filter_map(|worktree| self.resources.read(cx).worktree_usage(&worktree.id))
             .flat_map(|usage| usage.terminals);
         let columns = ColumnWidths::for_rows(rows, window);
+        list = list.child(self.scratch_section(scratch, active.as_deref(), columns, &colors, cx));
         for repo in repos {
             if hidden.contains(&repo.id) {
                 continue;

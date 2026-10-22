@@ -266,6 +266,12 @@ sidebar:
   add_repository:
     en: Add repository
     zh-CN: 添加仓库
+  scratch:
+    en: Scratch
+    zh-CN: 临时终端
+  new_scratch:
+    en: New terminal
+    zh-CN: 新建终端
   empty_add:
     en: Add a repository
     zh-CN: 添加一个仓库

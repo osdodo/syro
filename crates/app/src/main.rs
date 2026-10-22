@@ -2301,6 +2301,23 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A scratch terminal has no branch to delete and nothing on disk to lose,
+        // so removing it needs no confirmation: it just closes.
+        if self
+            .state
+            .read(cx)
+            .worktree(&action.worktree_id)
+            .is_some_and(|w| w.is_scratch())
+        {
+            window.dispatch_action(
+                Box::new(worktree::Remove {
+                    worktree_id: action.worktree_id.clone(),
+                    force: false,
+                }),
+                cx,
+            );
+            return;
+        }
         self.open_remove_worktree_form(&action.worktree_id, window, cx);
     }
 

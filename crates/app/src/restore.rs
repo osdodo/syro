@@ -42,7 +42,16 @@ pub fn worktree_of(spec: &TabSpec, worktrees: &[Worktree]) -> Option<WorktreeId>
             .path
             .canonicalize()
             .unwrap_or_else(|_| worktree.path.clone());
-        if !path.starts_with(&root) {
+        // A scratch terminal is rooted at the home directory, and everything
+        // lives under that: a prefix match would let it adopt orphaned tabs from
+        // worktrees that are gone, then drop them with a restore error. It owns
+        // only what sits exactly at its directory: that is where its own shell runs.
+        let claims = if worktree.is_scratch() {
+            path == root
+        } else {
+            path.starts_with(&root)
+        };
+        if !claims {
             continue;
         }
         let depth = root.as_os_str().len();
@@ -238,6 +247,34 @@ mod tests {
         // `/w/demo/main`.
         assert_eq!(
             worktree_of(&file("/w/demo/main-notes/a.md"), &worktrees),
+            None
+        );
+    }
+
+    /// A scratch terminal is rooted at the home directory, so a prefix match
+    /// would make it adopt every home-descendant tab, including orphans from
+    /// worktrees that are gone, which then drop with a confusing restore error.
+    #[test]
+    fn a_scratch_terminal_owns_only_its_own_directory() {
+        let home = "/home-root";
+        let scratch = Worktree {
+            id: home.to_string(),
+            repo_id: syro_core::model::SCRATCH_REPO.to_string(),
+            name: "me".to_string(),
+            path: PathBuf::from(home),
+            branch: String::new(),
+            base_ref: String::new(),
+        };
+        let worktrees = vec![scratch];
+        // Its own shell, saved at the home directory, comes back.
+        assert_eq!(
+            worktree_of(&terminal(home), &worktrees),
+            Some(home.to_string())
+        );
+        // A terminal from a worktree that is gone sits under home, but scratch
+        // must not adopt it: that was the spurious error.
+        assert_eq!(
+            worktree_of(&terminal("/home-root/orca/swap-aggregator/main-2"), &worktrees),
             None
         );
     }

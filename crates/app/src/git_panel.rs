@@ -354,7 +354,15 @@ impl GitPanel {
             self.notice = None;
             self.notice_worktree = None;
         }
-        let Some(worktree) = self.state.read(cx).active().cloned() else {
+        let Some(worktree) = self
+            .state
+            .read(cx)
+            .active()
+            .cloned()
+            // A scratch terminal has no project: the git panel clears for it, the
+            // same as when nothing is on screen at all.
+            .filter(|worktree| !worktree.is_scratch())
+        else {
             self.status = None;
             self.commits.clear();
             self.open = None;

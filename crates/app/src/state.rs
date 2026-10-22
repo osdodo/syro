@@ -12,8 +12,8 @@ use syro_core::event::CoreEvent;
 use syro_core::git::{self, FileChange, GitWorktree};
 use syro_core::hooks;
 use syro_core::model::{
-    AgentId, AgentSpec, AgentStatus, HookSpec, Repo, RepoId, State, TabLayout, TerminalId,
-    Worktree, WorktreeId,
+    AgentId, AgentSpec, AgentStatus, HookSpec, Repo, RepoId, SCRATCH_REPO, State, TabLayout,
+    TerminalId, Worktree, WorktreeId,
 };
 use syro_core::store::Store;
 use syro_core::{WorktreeNameError, worktree_dir, worktree_name};
@@ -95,6 +95,18 @@ pub mod worktree {
     #[action(namespace = worktree, no_json)]
     pub struct Activate {
         pub worktree_id: WorktreeId,
+    }
+}
+
+/// `scratch::New` — open a terminal in a directory that belongs to no project.
+pub mod scratch {
+    use super::*;
+
+    /// Open a scratch terminal. `path` is the directory; `None` asks the picker.
+    #[derive(Clone, PartialEq, Debug, Action)]
+    #[action(namespace = scratch, no_json)]
+    pub struct New {
+        pub path: Option<PathBuf>,
     }
 }
 
@@ -316,7 +328,13 @@ impl AppState {
             store,
             workspaces_root,
             repos: loaded.repos,
-            worktrees: Vec::new(),
+            // Scratch terminals are not git's to report, so they come back from
+            // the file like the tabs do — but only while their directory is still there.
+            worktrees: loaded
+                .worktrees
+                .into_iter()
+                .filter(|w| w.is_scratch() && w.path.is_dir())
+                .collect(),
             tabs: loaded.tabs,
             active: loaded.active_worktree,
             settings: Settings::default(),
@@ -964,6 +982,41 @@ impl AppState {
         );
     }
 
+    /// `scratch::New`: a terminal in `path`, which belongs to no project. Adds a
+    /// scratch worktree (or activates the existing one for that directory) and
+    /// shows it. Nothing on disk is created; the directory must already exist.
+    pub fn create_scratch(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let path = path.canonicalize().unwrap_or(path);
+        if !path.is_dir() {
+            return;
+        }
+        let id = path.display().to_string();
+        if self.worktrees.iter().all(|w| w.id != id) {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| id.clone());
+            let created = Worktree {
+                id: id.clone(),
+                repo_id: SCRATCH_REPO.to_string(),
+                name,
+                path,
+                branch: String::new(),
+                base_ref: String::new(),
+            };
+            self.worktrees.push(created.clone());
+            cx.emit(CoreEvent::WorktreeCreated { worktree: created });
+        }
+        self.activate(&id, cx);
+        self.persist();
+        cx.notify();
+    }
+
+    /// The scratch terminals' worktrees, in creation order.
+    pub fn scratch_worktrees(&self) -> impl Iterator<Item = &Worktree> {
+        self.worktrees.iter().filter(|w| w.is_scratch())
+    }
+
     /// `worktree::Remove`: the directory first, then the branch. A refusal
     /// without `force` lands in `error_for`, which is what the sidebar offers
     /// the forced retry from.
@@ -973,6 +1026,19 @@ impl AppState {
         let Some(target) = self.worktrees.iter().find(|w| w.id == id).cloned() else {
             return;
         };
+        // A scratch terminal is a row, not a git worktree: removing it deletes
+        // nothing on disk, so it just drops out of the list.
+        if target.is_scratch() {
+            self.worktrees.retain(|w| w.id != target.id);
+            if self.active.as_deref() == Some(id.as_str()) {
+                self.ensure_active_exists(cx);
+            }
+            self.forget_statuses(&id);
+            cx.emit(CoreEvent::WorktreeRemoved { worktree: target });
+            self.persist();
+            cx.notify();
+            return;
+        }
         let Some(repo) = self.repos.iter().find(|r| r.id == target.repo_id).cloned() else {
             return;
         };
@@ -1082,6 +1148,10 @@ impl AppState {
         else {
             return;
         };
+        // A scratch terminal has no project to diff, so git is never asked about it.
+        if worktree.is_scratch() {
+            return;
+        }
         match git::changed_files(&worktree.path, &worktree.base_ref) {
             Ok(changes) => {
                 self.changes_error.remove(&worktree.id);
@@ -1121,8 +1191,10 @@ impl AppState {
         let ids: Vec<RepoId> = self.repos.iter().map(|r| r.id.clone()).collect();
         // Only what belongs to a repo that is no longer registered goes; each
         // remaining repo's entries are replaced by `refresh_repo`, which has to
-        // see them to keep the name and the base ref they carry.
-        self.worktrees.retain(|w| ids.contains(&w.repo_id));
+        // see them to keep the name and the base ref they carry. Scratch
+        // terminals belong to no repo and git never lists them, so they stay.
+        self.worktrees
+            .retain(|w| w.is_scratch() || ids.contains(&w.repo_id));
         for id in ids {
             self.refresh_repo(&id, cx);
         }
@@ -1360,6 +1432,11 @@ pub fn register_actions(state: &Entity<AppState>, cx: &mut App) {
     register::<worktree::Activate>(state, cx, |state, action, cx| {
         state.update(cx, |state, cx| state.activate(&action.worktree_id, cx))
     });
+    register::<scratch::New>(state, cx, |state, action, cx| {
+        // No picker: a scratch terminal opens in the user's home directory.
+        let path = action.path.clone().unwrap_or_else(syro_core::home_dir);
+        state.update(cx, |state, cx| state.create_scratch(path, cx))
+    });
     register::<Refresh>(state, cx, |state, _action, cx| {
         state.update(cx, |state, cx| state.refresh(cx))
     });
@@ -1476,7 +1553,7 @@ fn base_ref_for(previous: Option<&Worktree>, repo: &Path, trunk: &mut Option<Str
 /// no branch on it — a checkout on no branch reports `HEAD` (`worktree_from_git`
 /// above), and `HEAD` is not a name.
 pub fn branch_or_name(worktree: &Worktree) -> &str {
-    if worktree.branch == "HEAD" {
+    if worktree.branch == "HEAD" || worktree.branch.is_empty() {
         &worktree.name
     } else {
         &worktree.branch
@@ -2334,6 +2411,60 @@ mod tests {
         assert!(!dir.join("workspaces").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    /// A scratch terminal is a plain directory with no git behind it: it is
+    /// created, shown, survives a restart (git never lists it, so it can only
+    /// come back from the file), and a refresh does not drop it.
+    #[gpui_kit::test]
+    fn a_scratch_terminal_is_made_shown_and_restored(cx: &mut TestAppContext) {
+        let (state_path, store_dir) = temp_store("state-scratch");
+        // A plain directory, not a git repo: this is the "unrelated to any
+        // project" case the Scratch group is for.
+        let folder = store_dir.join("anywhere");
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder = folder.canonicalize().unwrap_or(folder);
+        let id = folder.display().to_string();
+
+        let state = cx.update(|cx| {
+            cx.new(|cx| {
+                AppState::open(Store::new(state_path.clone()), store_dir.join("workspaces"), cx)
+            })
+        });
+        cx.update(|cx| {
+            state.update(cx, |state, cx| state.create_scratch(folder.clone(), cx))
+        });
+        cx.update(|cx| {
+            let state = state.read(cx);
+            assert_eq!(state.scratch_worktrees().count(), 1);
+            assert_eq!(state.active_id().map(String::as_str), Some(id.as_str()));
+            // Making the same folder twice is a no-op, not a second row.
+        });
+        cx.update(|cx| {
+            state.update(cx, |state, cx| state.create_scratch(folder.clone(), cx))
+        });
+        cx.update(|cx| assert_eq!(state.read(cx).scratch_worktrees().count(), 1));
+
+        // A fresh open from the same store: git lists no scratch worktree, so if
+        // it comes back at all it came back from state.json.
+        let reopened = cx.update(|cx| {
+            cx.new(|cx| AppState::open(Store::new(state_path), store_dir.join("workspaces"), cx))
+        });
+        cx.update(|cx| {
+            let state = reopened.read(cx);
+            assert_eq!(state.scratch_worktrees().count(), 1);
+            assert!(state.scratch_worktrees().any(|w| w.id == id));
+        });
+        // A refresh re-reads git and must keep the scratch row, not prune it.
+        cx.update(|cx| reopened.update(cx, |state, cx| state.refresh(cx)));
+        cx.update(|cx| assert_eq!(reopened.read(cx).scratch_worktrees().count(), 1));
+
+        // Removing it drops the row and leaves the directory on disk.
+        cx.update(|cx| reopened.update(cx, |state, cx| state.remove_worktree(&id, false, cx)));
+        cx.update(|cx| assert_eq!(reopened.read(cx).scratch_worktrees().count(), 0));
+        assert!(folder.is_dir());
+
         let _ = std::fs::remove_dir_all(&store_dir);
     }
 }
