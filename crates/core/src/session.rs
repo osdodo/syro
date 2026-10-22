@@ -113,6 +113,10 @@ pub struct SessionRoots {
     /// Codex sorts its rollouts into year/month/day directories under this root rather
     /// than one bucket per project.
     pub codex: PathBuf,
+    /// OpenCode's SQLite database: read for usage only.
+    pub opencode: PathBuf,
+    /// Gemini CLI's `tmp`, one directory per project with a `chats` inside: usage only.
+    pub gemini: PathBuf,
 }
 
 impl SessionRoots {
@@ -121,6 +125,8 @@ impl SessionRoots {
             claude: home.join(".claude").join("projects"),
             pi: home.join(".pi").join("agent").join("sessions"),
             codex: home.join(".codex").join("sessions"),
+            opencode: home.join(".local/share/opencode/opencode.db"),
+            gemini: home.join(".gemini").join("tmp"),
         }
     }
 }
@@ -297,6 +303,20 @@ struct DayFold {
     models: BTreeMap<String, Usage>,
 }
 
+impl DayFold {
+    fn pay(&mut self, spent: Spent) {
+        let usage = Usage {
+            tokens: spent.tokens,
+            cost: spent.cost,
+            estimated: spent.estimated,
+            unpriced: spent.unpriced,
+        };
+        self.usage.add(usage);
+        self.providers.entry(spent.provider).or_default().add(usage);
+        self.models.entry(spent.model).or_default().add(usage);
+    }
+}
+
 /// One transcript file discovery found: what to parse and what to sort by.
 #[derive(Debug, Clone)]
 struct Candidate {
@@ -349,6 +369,23 @@ pub fn scan_at(roots: &SessionRoots, cache: &mut Cache, limit: usize, now: i64) 
     let mut providers: BTreeMap<String, Usage> = BTreeMap::new();
     let mut models: BTreeMap<String, Usage> = BTreeMap::new();
     let mut usage = Usage::default();
+    let mut merge = |fold_days: &BTreeMap<i32, DayFold>| {
+        for (day, fold_day) in fold_days {
+            if *day < oldest || *day > today {
+                continue;
+            }
+            let merged = days.entry(*day).or_default();
+            merged.usage.add(fold_day.usage);
+            usage.add(fold_day.usage);
+            for (label, group) in &fold_day.providers {
+                providers.entry(label.clone()).or_default().add(*group);
+            }
+            for (label, group) in &fold_day.models {
+                models.entry(label.clone()).or_default().add(*group);
+                merged.models.entry(label.clone()).or_default().add(*group);
+            }
+        }
+    };
     let mut sessions: Vec<Session> = Vec::new();
     for candidate in candidates {
         let listed = scan_one(&candidate, cache, &mut seen);
@@ -356,26 +393,24 @@ pub fn scan_at(roots: &SessionRoots, cache: &mut Cache, limit: usize, now: i64) 
         // so a session with no directory still pays into the numbers: the strip is
         // about the machine, not about the repository on screen.
         if let Some(fold) = cache.entries.get(&candidate.path).map(|entry| &entry.fold) {
-            for (day, fold_day) in &fold.days {
-                if *day < oldest || *day > today {
-                    continue;
-                }
-                let merged = days.entry(*day).or_default();
-                merged.usage.add(fold_day.usage);
-                usage.add(fold_day.usage);
-                for (label, group) in &fold_day.providers {
-                    providers.entry(label.clone()).or_default().add(*group);
-                }
-                for (label, group) in &fold_day.models {
-                    models.entry(label.clone()).or_default().add(*group);
-                    merged.models.entry(label.clone()).or_default().add(*group);
-                }
-            }
+            merge(&fold.days);
         }
         if let Some(session) = listed {
             sessions.push(session);
         }
     }
+    // The agents that are counted but not listed: a day of slack, the window cuts exactly.
+    let since = now - (i64::from(USAGE_DAYS) + 1) * 86_400_000;
+    let mut other: BTreeMap<i32, DayFold> = BTreeMap::new();
+    for (ms, spent) in opencode_usage(&roots.opencode, since)
+        .into_iter()
+        .chain(gemini_usage(&roots.gemini, since))
+    {
+        if let Some(day) = local_day(ms) {
+            other.entry(day).or_default().pay(spent);
+        }
+    }
+    merge(&other);
     sessions.sort_by(|left, right| {
         right
             .updated_ms
@@ -924,20 +959,7 @@ fn consume(
             .day()
             .or_else(|| local_day(now_ms()))
             .unwrap_or_default();
-        let fold_day = fold.days.entry(day).or_default();
-        let usage = Usage {
-            tokens: spent.tokens,
-            cost: spent.cost,
-            estimated: spent.estimated,
-            unpriced: spent.unpriced,
-        };
-        fold_day.usage.add(usage);
-        fold_day
-            .providers
-            .entry(spent.provider)
-            .or_default()
-            .add(usage);
-        fold_day.models.entry(spent.model).or_default().add(usage);
+        fold.days.entry(day).or_default().pay(spent);
     }
     // The newest few turns for the preview, and the first user turn for the title.
     tail.push_back(trimmed.to_string());
@@ -1011,6 +1033,186 @@ fn fold_codex(record: &Record<'_>, fold: &mut Fold, seen: &mut HashSet<u64>) {
     fold_day.usage.add(spent);
     fold_day.providers.entry(name).or_default().add(spent);
     fold_day.models.entry(model).or_default().add(spent);
+}
+
+/// OpenCode's assistant turns since `since_ms`, from its SQLite database: when, and what
+/// each cost. OpenCode records its own price, so nothing here is estimated.
+///
+/// shortcut: shells out to macOS's own `sqlite3` and re-reads the window every scan;
+/// link a SQLite crate if this ships off macOS or the window gets slow.
+fn opencode_usage(db: &Path, since_ms: i64) -> Vec<(i64, Spent)> {
+    #[derive(Deserialize)]
+    struct Row {
+        t: i64,
+        data: String,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Turn {
+        model: Model,
+        cost: Option<f64>,
+        tokens: Tokens,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Model {
+        id: Option<String>,
+        #[serde(rename = "providerID")]
+        provider: Option<String>,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Tokens {
+        input: u64,
+        output: u64,
+        reasoning: u64,
+        cache: CacheTokens,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct CacheTokens {
+        read: u64,
+        write: u64,
+    }
+
+    if !db.is_file() {
+        return Vec::new();
+    }
+    let Ok(output) = std::process::Command::new("sqlite3")
+        .args(["-readonly", "-json"])
+        .arg(db)
+        .arg(format!(
+            "select time_created as t, data from session_message \
+             where type = 'assistant' and time_created >= {since_ms}"
+        ))
+        .output()
+    else {
+        return Vec::new();
+    };
+    // No rows prints nothing at all, not `[]`.
+    let rows: Vec<Row> = serde_json::from_slice(&output.stdout).unwrap_or_default();
+    let name = || "OpenCode".to_string();
+    rows.into_iter()
+        .filter_map(|row| {
+            let turn: Turn = serde_json::from_str(&row.data).ok()?;
+            let tokens = &turn.tokens;
+            let total = tokens.input
+                + tokens.output
+                + tokens.reasoning
+                + tokens.cache.read
+                + tokens.cache.write;
+            let cost = turn.cost.filter(|cost| cost.is_finite() && *cost >= 0.);
+            (total > 0).then(|| {
+                (
+                    row.t,
+                    Spent {
+                        tokens: total,
+                        cost: cost.unwrap_or(0.),
+                        estimated: false,
+                        unpriced: cost.is_none(),
+                        provider: turn.model.provider.unwrap_or_else(name),
+                        model: turn.model.id.unwrap_or_else(name),
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
+/// Gemini CLI's model turns in the chats written since `since_ms`:
+/// `<root>/<project>/chats/session-*.jsonl`, sub-agents' one directory further down.
+/// Gemini records no price, so every turn is unpriced.
+///
+/// A message is appended again, whole, every time it changes, so the last copy of an
+/// id is the one counted. shortcut: whole files re-read every scan, and the legacy
+/// single-document `.json` chats are not read.
+fn gemini_usage(root: &Path, since_ms: i64) -> Vec<(i64, Spent)> {
+    #[derive(Deserialize)]
+    struct Message {
+        id: Option<String>,
+        #[serde(rename = "type")]
+        kind: Option<String>,
+        timestamp: Option<String>,
+        model: Option<String>,
+        tokens: Option<Tokens>,
+    }
+    #[derive(Deserialize)]
+    struct Tokens {
+        input: Option<u64>,
+        output: Option<u64>,
+        thoughts: Option<u64>,
+        tool: Option<u64>,
+        total: Option<u64>,
+    }
+
+    let Ok(projects) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = projects
+        .flatten()
+        .map(|project| project.path().join("chats"))
+        .collect();
+    let mut turns = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl")
+                || modified_ms(&metadata) < since_ms
+            {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let mut last: HashMap<String, Message> = HashMap::new();
+            for line in text.lines() {
+                if let Ok(message) = serde_json::from_str::<Message>(line)
+                    && message.kind.as_deref() == Some("gemini")
+                    && let Some(id) = message.id.clone()
+                {
+                    last.insert(id, message);
+                }
+            }
+            turns.extend(last.into_values().filter_map(|message| {
+                let ms = DateTime::parse_from_rfc3339(message.timestamp.as_deref()?)
+                    .ok()?
+                    .timestamp_millis();
+                let tokens = message.tokens?;
+                // Cached tokens are inside `input`, as in the API's own `promptTokenCount`.
+                let total = tokens.total.unwrap_or_else(|| {
+                    tokens.input.unwrap_or(0)
+                        + tokens.output.unwrap_or(0)
+                        + tokens.thoughts.unwrap_or(0)
+                        + tokens.tool.unwrap_or(0)
+                });
+                let name = "Gemini CLI".to_string();
+                (total > 0 && ms >= since_ms).then(|| {
+                    (
+                        ms,
+                        Spent {
+                            tokens: total,
+                            cost: 0.,
+                            estimated: false,
+                            unpriced: true,
+                            model: message.model.unwrap_or_else(|| name.clone()),
+                            provider: name,
+                        },
+                    )
+                })
+            }));
+        }
+    }
+    turns
 }
 
 /// The text of a turn record, the only thing this module decodes a whole record for.
@@ -2321,5 +2523,70 @@ mod tests {
         let cut = one_line(&"x".repeat(500), 10);
         assert_eq!(cut.chars().count(), 10);
         assert!(cut.ends_with('…'));
+    }
+
+    #[test]
+    fn gemini_and_opencode_turns_are_counted() {
+        let home = home("others");
+        let now = now_ms();
+        let at = iso_days_ago(now, 0);
+        let old = iso_days_ago(now, 30);
+        let chats = home.join(".gemini/tmp/proj/chats");
+        fs::create_dir_all(chats.join("parent")).unwrap();
+        fs::write(
+            chats.join("session-a.jsonl"),
+            [
+                r#"{"sessionId":"s","projectHash":"h"}"#.to_string(),
+                format!(r#"{{"id":"u","timestamp":"{at}","type":"user","content":"hi"}}"#),
+                // Appended again once its tokens are in: only the last copy counts.
+                format!(r#"{{"id":"g","timestamp":"{at}","type":"gemini","model":"gemini-3-pro"}}"#),
+                format!(r#"{{"id":"g","timestamp":"{at}","type":"gemini","model":"gemini-3-pro","tokens":{{"input":100,"output":20,"cached":50,"thoughts":5,"tool":0,"total":125}}}}"#),
+                format!(r#"{{"id":"o","timestamp":"{old}","type":"gemini","tokens":{{"total":999}}}}"#),
+                r#"{"$set":{"lastUpdated":"x"}}"#.to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        fs::write(
+            chats.join("parent/sub.jsonl"),
+            format!(r#"{{"id":"s","timestamp":"{at}","type":"gemini","model":"gemini-3-flash","tokens":{{"input":10,"output":5}}}}"#),
+        )
+        .unwrap();
+
+        let db = home.join(".local/share/opencode/opencode.db");
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let data = r#"{"model":{"id":"deepseek","providerID":"opencode"},"cost":0.5,"tokens":{"input":100,"output":10,"reasoning":5,"cache":{"read":80,"write":0}}}"#;
+        let sql = format!(
+            "create table session_message (type text, time_created integer, data text);\
+             insert into session_message values ('assistant', {now}, '{data}'), \
+             ('user', {now}, '{{}}'), ('assistant', {}, '{data}');",
+            now - 30 * 86_400_000
+        );
+        let created = std::process::Command::new("sqlite3")
+            .arg(&db)
+            .arg(sql)
+            .status()
+            .unwrap();
+        assert!(created.success());
+
+        let roots = SessionRoots::from_home(&home);
+        let usage = scan_at(&roots, &mut Cache::default(), DEFAULT_LIMIT, now).usage;
+        let tokens = |label: &str| {
+            usage
+                .providers
+                .iter()
+                .find(|group| group.label == label)
+                .map(|group| (group.tokens, group.cost, group.unpriced))
+        };
+        assert_eq!(tokens("Gemini CLI"), Some((140, 0., true)));
+        assert_eq!(tokens("opencode"), Some((195, 0.5, false)));
+        assert_eq!(usage.total.tokens, 335);
+        assert!(
+            usage
+                .models
+                .iter()
+                .any(|group| group.label == "gemini-3-flash")
+        );
+        let _ = fs::remove_dir_all(&home);
     }
 }
