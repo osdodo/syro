@@ -1,9 +1,11 @@
 //! Past agent sessions: discovery of the transcripts the agents write, and the one-pass summary
 //! the history panel lists.
 //!
-//! Two layouts only — Claude Code (`~/.claude/projects/<encoded-cwd>/<id>.jsonl`) and Pi
-//! (`~/.pi/agent/sessions/--<encoded-cwd>--/*.jsonl`). Records are counted through a shallow
-//! borrowed struct, so a 27 MB transcript costs a byte scan rather than a `Value` per line.
+//! The file layouts are Claude Code (`~/.claude/projects/<encoded-cwd>/<id>.jsonl`), Pi
+//! (`~/.pi/agent/sessions/--<encoded-cwd>--/*.jsonl`) and Codex's dated rollouts. OpenCode keeps
+//! its history in SQLite instead, so it is read through the same database as its usage. Records
+//! are counted through a shallow borrowed struct, so a 27 MB transcript costs a byte scan rather
+//! than a `Value` per line.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::File;
@@ -54,6 +56,10 @@ pub enum SessionAgent {
     Claude,
     Pi,
     Codex,
+    /// OpenCode keeps its history in SQLite rather than one transcript per
+    /// session, so it is discovered and read through its database.
+    #[serde(rename = "opencode")]
+    OpenCode,
 }
 
 impl SessionAgent {
@@ -62,15 +68,17 @@ impl SessionAgent {
             Self::Claude => "claude",
             Self::Pi => "pi",
             Self::Codex => "codex",
+            Self::OpenCode => "opencode",
         }
     }
 
-    /// The transcript layout an agent preset writes, by its id.
+    /// The session layout an agent preset keeps, by its id.
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
             "claude" => Some(Self::Claude),
             "pi" => Some(Self::Pi),
             "codex" => Some(Self::Codex),
+            "opencode" => Some(Self::OpenCode),
             _ => None,
         }
     }
@@ -80,6 +88,7 @@ impl SessionAgent {
             Self::Claude => "Claude Code",
             Self::Pi => "Pi",
             Self::Codex => "Codex",
+            Self::OpenCode => "OpenCode",
         }
     }
 }
@@ -113,7 +122,7 @@ pub struct SessionRoots {
     /// Codex sorts its rollouts into year/month/day directories under this root rather
     /// than one bucket per project.
     pub codex: PathBuf,
-    /// OpenCode's SQLite database: read for usage only.
+    /// OpenCode's SQLite database: its history and its usage.
     pub opencode: PathBuf,
     /// Gemini CLI's `tmp`, one directory per project with a `chats` inside: usage only.
     pub gemini: PathBuf,
@@ -346,7 +355,7 @@ pub fn scan_at(roots: &SessionRoots, cache: &mut Cache, limit: usize, now: i64) 
             .cmp(&left.mtime_ms)
             .then_with(|| left.path.cmp(&right.path))
     });
-    let total = candidates.len();
+    let mut total = candidates.len();
     candidates.truncate(limit);
 
     let live: Vec<&Path> = candidates.iter().map(|c| c.path.as_path()).collect();
@@ -399,7 +408,8 @@ pub fn scan_at(roots: &SessionRoots, cache: &mut Cache, limit: usize, now: i64) 
             sessions.push(session);
         }
     }
-    // The agents that are counted but not listed: a day of slack, the window cuts exactly.
+    // Gemini is counted but not listed: its chats are usage only. OpenCode's
+    // history lives in the same database as its usage, so it is both.
     let since = now - (i64::from(USAGE_DAYS) + 1) * 86_400_000;
     let mut other: BTreeMap<i32, DayFold> = BTreeMap::new();
     for (ms, spent) in opencode_usage(&roots.opencode, since)
@@ -411,12 +421,17 @@ pub fn scan_at(roots: &SessionRoots, cache: &mut Cache, limit: usize, now: i64) 
         }
     }
     merge(&other);
+    let (opencode, opencode_total) = opencode_sessions(&roots.opencode, limit);
+    total += opencode_total;
+    sessions.extend(opencode);
     sessions.sort_by(|left, right| {
         right
             .updated_ms
             .cmp(&left.updated_ms)
             .then_with(|| left.path.cmp(&right.path))
+            .then_with(|| left.id.cmp(&right.id))
     });
+    sessions.truncate(limit);
 
     // Both cuts, biggest first, ties broken by name so two scans agree.
     let ranked = |cuts: BTreeMap<String, Usage>| {
@@ -470,6 +485,30 @@ pub fn scan_at(roots: &SessionRoots, cache: &mut Cache, limit: usize, now: i64) 
     }
 }
 
+/// Remove one session's stored history. For the file layouts that is the
+/// transcript itself; for OpenCode it is the session's row in the database,
+/// whose foreign keys cascade to its messages and queues. Returns whether
+/// something was actually removed.
+pub fn delete(session: &Session) -> bool {
+    if session.agent != SessionAgent::OpenCode {
+        return std::fs::remove_file(&session.path).is_ok();
+    }
+    let Ok(connection) = rusqlite::Connection::open(&session.path) else {
+        return false;
+    };
+    let _ = connection.busy_timeout(std::time::Duration::from_secs(2));
+    // Off by default in SQLite, and the cascade is what takes the messages with
+    // the session.
+    let _ = connection.execute_batch("PRAGMA foreign_keys = ON;");
+    connection
+        .execute(
+            "delete from session_v2 where id = ?1",
+            [session.id.as_str()],
+        )
+        .map(|removed| removed > 0)
+        .unwrap_or(false)
+}
+
 /// The transcript of the session `id` that an agent started in `cwd`, once the agent has
 /// written it: how a terminal that picked the id finds its own conversation.
 pub fn transcript_of(
@@ -516,18 +555,33 @@ pub fn transcript_of(
             .flatten()
             .map(|bucket| bucket.path().join(format!("{id}.jsonl")))
             .find(|path| path.is_file()),
+        // There is no file per session: the transcript is the database, and the
+        // id says which row in it to read.
+        SessionAgent::OpenCode => {
+            let connection = open_opencode(&roots.opencode)?;
+            connection
+                .query_row("select 1 from session_v2 where id = ?1", [id], |_| Ok(()))
+                .ok()
+                .map(|()| roots.opencode.clone())
+        }
     }
 }
 
-/// The first thing the user asked in a transcript, cut to the panel's title length. Reads the head zone only, so a long transcript costs no more
-/// than a short one.
-pub fn first_prompt(agent: SessionAgent, path: &Path) -> Option<String> {
-    first_prompt_cut(agent, path, PREVIEW_CHARS)
+/// The first thing the user asked in a session, cut to the panel's title length.
+/// Reads the head zone only, so a long transcript costs no more than a short one;
+/// OpenCode's is one indexed row in its database.
+pub fn first_prompt(agent: SessionAgent, id: &str, path: &Path) -> Option<String> {
+    first_prompt_cut(agent, id, path, PREVIEW_CHARS)
 }
 
 /// The same read, cut to `limit`: the panel wants a title, a handoff wants the
 /// whole request.
-fn first_prompt_cut(agent: SessionAgent, path: &Path, limit: usize) -> Option<String> {
+fn first_prompt_cut(agent: SessionAgent, id: &str, path: &Path, limit: usize) -> Option<String> {
+    if agent == SessionAgent::OpenCode {
+        return open_opencode(path)
+            .and_then(|connection| first_user_text(&connection, id))
+            .map(|text| one_line(&text, limit));
+    }
     use std::io::Read as _;
     let mut reader = BufReader::new(File::open(path).ok()?.take(HEAD_BYTES));
     let (mut fold, mut tail) = (Fold::default(), VecDeque::new());
@@ -559,9 +613,9 @@ fn first_prompt_cut(agent: SessionAgent, path: &Path, limit: usize) -> Option<St
 /// new session" cost no model call and need no credentials. shortcut: selection
 /// only, so a very long recent turn is cut; call an agent to summarise if a real
 /// compression is wanted.
-pub fn handoff(agent: SessionAgent, path: &Path) -> Option<String> {
-    let first = first_prompt_cut(agent, path, 2 * PREVIEW_CHARS);
-    let turns = recent_turns(agent, path, HANDOFF_CHARS);
+pub fn handoff(agent: SessionAgent, id: &str, path: &Path) -> Option<String> {
+    let first = first_prompt_cut(agent, id, path, 2 * PREVIEW_CHARS);
+    let turns = recent_turns(agent, id, path, HANDOFF_CHARS);
     if first.is_none() && turns.is_empty() {
         return None;
     }
@@ -589,7 +643,15 @@ pub fn handoff(agent: SessionAgent, path: &Path) -> Option<String> {
 
 /// The newest readable turns in a transcript's tail, oldest first, each cut to one
 /// line and all of them kept under `budget` characters.
-fn recent_turns(agent: SessionAgent, path: &Path, budget: usize) -> Vec<(String, String)> {
+fn recent_turns(
+    agent: SessionAgent,
+    id: &str,
+    path: &Path,
+    budget: usize,
+) -> Vec<(String, String)> {
+    if agent == SessionAgent::OpenCode {
+        return opencode_recent_turns(path, id, budget);
+    }
     let Ok(mut file) = File::open(path) else {
         return Vec::new();
     };
@@ -659,6 +721,8 @@ fn turn_of(agent: SessionAgent, line: &str) -> Option<(String, String)> {
                 payload.get("content")?,
             )
         }
+        // OpenCode's turns are rows in SQLite, never lines in a transcript.
+        SessionAgent::OpenCode => return None,
     };
     if role != "user" && role != "assistant" {
         return None;
@@ -937,6 +1001,8 @@ fn consume(
                 fold.model = Some(model.to_string());
             }
         }
+        // OpenCode never comes through here: its history is read from SQLite.
+        SessionAgent::OpenCode => return,
     }
 
     // Codex reports usage on records of its own, which are not turns: they are paid in
@@ -1035,17 +1101,202 @@ fn fold_codex(record: &Record<'_>, fold: &mut Fold, seen: &mut HashSet<u64>) {
     fold_day.models.entry(model).or_default().add(spent);
 }
 
+/// A read-only connection to OpenCode's database. `None` when the agent has never
+/// run here, or when the database is locked in a way SQLite's read-only mode
+/// cannot recover from; both mean the same thing to a scan: nothing to read.
+fn open_opencode(db: &Path) -> Option<rusqlite::Connection> {
+    if !db.is_file() {
+        return None;
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    // OpenCode writes while it runs; a short wait reads the committed rows
+    // instead of reporting no usage for that sweep.
+    let _ = connection.busy_timeout(std::time::Duration::from_secs(2));
+    Some(connection)
+}
+
+/// The newest OpenCode sessions, as the history panel lists them, and how many
+/// there are before the cap. OpenCode keeps one row per session in `session_v2`
+/// and the turns in `session_message`, so both the row and its message count come
+/// from the same database.
+///
+/// Only layouts that have `session_v2` are listed; an older OpenCode still pays
+/// into the usage numbers through [`opencode_usage`], which reads messages.
+fn opencode_sessions(db: &Path, limit: usize) -> (Vec<Session>, usize) {
+    #[derive(Deserialize, Default)]
+    struct Model {
+        id: Option<String>,
+        #[serde(rename = "providerID")]
+        provider: Option<String>,
+    }
+    let Some(connection) = open_opencode(db) else {
+        return (Vec::new(), 0);
+    };
+    let total: usize = connection
+        .query_row(
+            "select count(*) from session_v2 \
+             where directory is not null and directory <> ''",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        .max(0) as usize;
+    if limit == 0 || total == 0 {
+        return (Vec::new(), total);
+    }
+    let Ok(mut statement) = connection.prepare(
+        "select id, directory, title, time_updated, model, \
+                (select count(*) from session_message m \
+                  where m.session_id = s.id and m.type in ('user', 'assistant')) \
+         from session_v2 s \
+         where directory is not null and directory <> '' \
+         order by time_updated desc \
+         limit ?1",
+    ) else {
+        return (Vec::new(), total);
+    };
+    let Ok(rows) = statement.query_map([limit as i64], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    }) else {
+        return (Vec::new(), total);
+    };
+    let sessions = rows
+        .flatten()
+        .filter_map(|(id, directory, title, updated, model, messages)| {
+            let cwd = PathBuf::from(directory);
+            if cwd.as_os_str().is_empty() {
+                return None;
+            }
+            let workspace = cwd
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| cwd.display().to_string());
+            // A session whose title OpenCode has not generated yet is named by
+            // the first thing that was asked, as the file layouts are.
+            let title = title
+                .filter(|title| !title.trim().is_empty())
+                .map(|title| one_line(&title, PREVIEW_CHARS))
+                .or_else(|| {
+                    first_user_text(&connection, &id).map(|text| one_line(&text, PREVIEW_CHARS))
+                })
+                .unwrap_or_else(|| "(no prompt recorded)".to_string());
+            let model: Model = model
+                .and_then(|model| serde_json::from_str(&model).ok())
+                .unwrap_or_default();
+            Some(Session {
+                agent: SessionAgent::OpenCode,
+                id,
+                path: db.to_path_buf(),
+                cwd,
+                workspace,
+                title,
+                // The database has no per-row preview; the title and the meta
+                // line are what the row draws.
+                preview: String::new(),
+                model: model.id,
+                provider: model.provider,
+                messages: messages.max(0) as u64,
+                updated_ms: updated,
+            })
+        })
+        .collect();
+    (sessions, total)
+}
+
+/// The first thing the user asked in an OpenCode session, from its first user
+/// message.
+fn first_user_text(connection: &rusqlite::Connection, id: &str) -> Option<String> {
+    let data: String = connection
+        .query_row(
+            "select data from session_message \
+             where session_id = ?1 and type = 'user' \
+             order by time_created limit 1",
+            [id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let value: Value = serde_json::from_str(&data).ok()?;
+    let text = value.get("text")?.as_str()?.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// One readable OpenCode message: the user's text, or the assistant's text
+/// blocks. Reasoning and tool traffic are not turns.
+fn opencode_message_text(kind: &str, data: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(data).ok()?;
+    let text = match kind {
+        "user" => value.get("text")?.as_str()?.to_string(),
+        // Reasoning and tool parts carry text too; only the answer is a turn.
+        "assistant" => value
+            .get("content")?
+            .as_array()?
+            .iter()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => return None,
+    };
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// OpenCode's newest readable turns, oldest first, for a handoff. Reads the
+/// session's tail through the database rather than re-reading the whole file the
+/// way the transcript layouts do.
+fn opencode_recent_turns(db: &Path, id: &str, budget: usize) -> Vec<(String, String)> {
+    let Some(connection) = open_opencode(db) else {
+        return Vec::new();
+    };
+    let Ok(mut statement) = connection.prepare(
+        "select type, data from session_message \
+         where session_id = ?1 and type in ('user', 'assistant') \
+         order by time_created desc limit 40",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map([id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return Vec::new();
+    };
+    let mut messages: Vec<(String, String)> = rows
+        .flatten()
+        .filter_map(|(kind, data)| opencode_message_text(&kind, &data).map(|text| (kind, text)))
+        .collect();
+    messages.reverse();
+    let mut turns: VecDeque<(String, String)> = VecDeque::new();
+    let mut total = 0usize;
+    for (role, text) in messages {
+        let cut = one_line(&text, HANDOFF_TURN_CHARS);
+        total += cut.chars().count() + role.chars().count() + 2;
+        turns.push_back((role, cut));
+        while total > budget && turns.len() > 1 {
+            let (role, text) = turns.pop_front().expect("more than one turn");
+            total -= text.chars().count() + role.chars().count() + 2;
+        }
+    }
+    turns.into_iter().collect()
+}
+
 /// OpenCode's assistant turns since `since_ms`, from its SQLite database: when, and what
 /// each cost. OpenCode records its own price, so nothing here is estimated.
 ///
-/// shortcut: shells out to macOS's own `sqlite3` and re-reads the window every scan;
-/// link a SQLite crate if this ships off macOS or the window gets slow.
+/// The database is linked rather than read through a `sqlite3` binary: macOS ships
+/// one, Linux does not, and a missing binary used to turn every OpenCode number
+/// into no data at all. The connection is read-only, so OpenCode can keep writing.
 fn opencode_usage(db: &Path, since_ms: i64) -> Vec<(i64, Spent)> {
-    #[derive(Deserialize)]
-    struct Row {
-        t: i64,
-        data: String,
-    }
     #[derive(Deserialize, Default)]
     #[serde(default)]
     struct Turn {
@@ -1075,26 +1326,24 @@ fn opencode_usage(db: &Path, since_ms: i64) -> Vec<(i64, Spent)> {
         write: u64,
     }
 
-    if !db.is_file() {
-        return Vec::new();
-    }
-    let Ok(output) = std::process::Command::new("sqlite3")
-        .args(["-readonly", "-json"])
-        .arg(db)
-        .arg(format!(
-            "select time_created as t, data from session_message \
-             where type = 'assistant' and time_created >= {since_ms}"
-        ))
-        .output()
-    else {
+    let Some(connection) = open_opencode(db) else {
         return Vec::new();
     };
-    // No rows prints nothing at all, not `[]`.
-    let rows: Vec<Row> = serde_json::from_slice(&output.stdout).unwrap_or_default();
+    let Ok(mut statement) = connection.prepare(
+        "select time_created, data from session_message \
+         where type = 'assistant' and time_created >= ?1",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map([since_ms], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return Vec::new();
+    };
     let name = || "OpenCode".to_string();
-    rows.into_iter()
-        .filter_map(|row| {
-            let turn: Turn = serde_json::from_str(&row.data).ok()?;
+    rows.flatten()
+        .filter_map(|(time_created, data)| {
+            let turn: Turn = serde_json::from_str(&data).ok()?;
             let tokens = &turn.tokens;
             let total = tokens.input
                 + tokens.output
@@ -1104,7 +1353,7 @@ fn opencode_usage(db: &Path, since_ms: i64) -> Vec<(i64, Spent)> {
             let cost = turn.cost.filter(|cost| cost.is_finite() && *cost >= 0.);
             (total > 0).then(|| {
                 (
-                    row.t,
+                    time_created,
                     Spent {
                         tokens: total,
                         cost: cost.unwrap_or(0.),
@@ -1224,6 +1473,7 @@ fn text_of(agent: SessionAgent, line: &str) -> Option<String> {
     let content = match agent {
         SessionAgent::Pi | SessionAgent::Claude => value.get("message")?.get("content")?,
         SessionAgent::Codex => value.get("payload")?.get("content")?,
+        SessionAgent::OpenCode => return None,
     };
     texts(content)
 }
@@ -1378,8 +1628,8 @@ impl Record<'_> {
             SessionAgent::Pi => self.kind == Some("message"),
             SessionAgent::Claude => self.kind == Some("assistant"),
             // Codex reports usage on its own record, not on the turn: see
-            // [`Record::tokens`].
-            SessionAgent::Codex => return None,
+            // [`Record::tokens`]. OpenCode's usage is read from SQLite.
+            SessionAgent::Codex | SessionAgent::OpenCode => return None,
         };
         let message = self.message.as_ref()?;
         if !assistant || message.role != Some("assistant") {
@@ -1387,8 +1637,9 @@ impl Record<'_> {
         }
         let usage = message.usage.as_ref()?;
         let (tokens, cost) = match agent {
-            // Handled above: Codex reports usage on records of its own.
-            SessionAgent::Codex => return None,
+            // Handled above: Codex reports usage on records of its own, and
+            // OpenCode never reaches here.
+            SessionAgent::Codex | SessionAgent::OpenCode => return None,
             SessionAgent::Pi => (
                 usage.input.unwrap_or(0)
                     + usage.output.unwrap_or(0)
@@ -2094,7 +2345,7 @@ mod tests {
             Some(rollout.clone())
         );
         assert_eq!(
-            first_prompt(SessionAgent::Codex, &rollout).as_deref(),
+            first_prompt(SessionAgent::Codex, "01a2b3c4", &rollout).as_deref(),
             Some("fix the build")
         );
         let _ = fs::remove_dir_all(&home);
@@ -2117,7 +2368,7 @@ mod tests {
                 &pi_assistant("Looking again."),
             ],
         );
-        let text = handoff(SessionAgent::Pi, &path).expect("a handoff");
+        let text = handoff(SessionAgent::Pi, "hoff", &path).expect("a handoff");
         assert!(
             text.contains("Original request: fix the flaky test"),
             "{text}"
@@ -2147,7 +2398,7 @@ mod tests {
                 "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"noise\"}]}}",
             ],
         );
-        let text = handoff(SessionAgent::Claude, &claude).expect("a Claude handoff");
+        let text = handoff(SessionAgent::Claude, "8f2c", &claude).expect("a Claude handoff");
         assert!(text.contains("Original request: ship it"), "{text}");
         assert!(text.contains("assistant: Doing it."), "{text}");
         assert!(!text.contains("noise"), "{text}");
@@ -2161,7 +2412,7 @@ mod tests {
                 &codex_message("2026-10-15T01:00:03.000Z", "assistant", "On it."),
             ],
         );
-        let text = handoff(SessionAgent::Codex, &codex).expect("a Codex handoff");
+        let text = handoff(SessionAgent::Codex, "01a2b3c4", &codex).expect("a Codex handoff");
         assert!(text.contains("Original request: fix the build"), "{text}");
         assert!(text.contains("assistant: On it."), "{text}");
         let _ = fs::remove_dir_all(&home);
@@ -2297,7 +2548,7 @@ mod tests {
             Some(pi.clone())
         );
         assert_eq!(
-            first_prompt(SessionAgent::Pi, &pi).as_deref(),
+            first_prompt(SessionAgent::Pi, "0a1b", &pi).as_deref(),
             Some("fix the build")
         );
         let claude = write_claude(
@@ -2316,7 +2567,7 @@ mod tests {
             Some(claude.clone())
         );
         assert_eq!(
-            first_prompt(SessionAgent::Claude, &claude).as_deref(),
+            first_prompt(SessionAgent::Claude, "8f2c", &claude).as_deref(),
             Some("why is it red")
         );
         // Not written yet: nothing to find.
@@ -2556,18 +2807,25 @@ mod tests {
         let db = home.join(".local/share/opencode/opencode.db");
         fs::create_dir_all(db.parent().unwrap()).unwrap();
         let data = r#"{"model":{"id":"deepseek","providerID":"opencode"},"cost":0.5,"tokens":{"input":100,"output":10,"reasoning":5,"cache":{"read":80,"write":0}}}"#;
-        let sql = format!(
-            "create table session_message (type text, time_created integer, data text);\
-             insert into session_message values ('assistant', {now}, '{data}'), \
-             ('user', {now}, '{{}}'), ('assistant', {}, '{data}');",
-            now - 30 * 86_400_000
-        );
-        let created = std::process::Command::new("sqlite3")
-            .arg(&db)
-            .arg(sql)
-            .status()
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "create table session_message (type text, time_created integer, data text);",
+            )
             .unwrap();
-        assert!(created.success());
+        for (kind, time) in [
+            ("assistant", now),
+            ("user", now),
+            ("assistant", now - 30 * 86_400_000),
+        ] {
+            connection
+                .execute(
+                    "insert into session_message values (?1, ?2, ?3)",
+                    rusqlite::params![kind, time, data],
+                )
+                .unwrap();
+        }
+        drop(connection);
 
         let roots = SessionRoots::from_home(&home);
         let usage = scan_at(&roots, &mut Cache::default(), DEFAULT_LIMIT, now).usage;
@@ -2586,6 +2844,216 @@ mod tests {
                 .models
                 .iter()
                 .any(|group| group.label == "gemini-3-flash")
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// OpenCode's history is listed from `session_v2`, with the first user
+    /// message standing in for a title OpenCode has not generated yet. It is
+    /// also found by id, which is how a restored tab re-reads its prompt.
+    #[test]
+    fn opencode_sessions_are_listed_from_the_database() {
+        let home = home("opencode-sessions");
+        let db = home.join(".local/share/opencode/opencode.db");
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let now = now_ms();
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "create table session_v2 (
+                    id text primary key,
+                    directory text,
+                    title text,
+                    time_updated integer,
+                    model text
+                );
+                create table session_message (
+                    id text primary key,
+                    session_id text,
+                    type text,
+                    time_created integer,
+                    data text,
+                    foreign key (session_id) references session_v2(id) on delete cascade
+                );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "insert into session_v2 values (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    "ses_one",
+                    "/Users/ada/code/syro",
+                    "fix the build",
+                    now,
+                    r#"{"id":"gpt-5","providerID":"openai"}"#
+                ],
+            )
+            .unwrap();
+        for (id, kind, at, data) in [
+            (
+                "m1",
+                "user",
+                now - 2_000,
+                r#"{"text":"fix the build"}"#.to_string(),
+            ),
+            (
+                "m2",
+                "assistant",
+                now - 1_000,
+                r#"{"content":[{"type":"text","text":"On it."}]}"#.to_string(),
+            ),
+        ] {
+            connection
+                .execute(
+                    "insert into session_message values (?1, 'ses_one', ?2, ?3, ?4)",
+                    rusqlite::params![id, kind, at, data],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "insert into session_v2 values ('ses_two', '/Users/ada/code/syro', null, ?1, null)",
+                [now - 5_000],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "insert into session_message values ('m3', 'ses_two', 'user', ?1, ?2)",
+                rusqlite::params![now - 5_000, r#"{"text":"why is it red"}"#],
+            )
+            .unwrap();
+        drop(connection);
+
+        let roots = SessionRoots::from_home(&home);
+        let scan = scan_at(&roots, &mut Cache::default(), DEFAULT_LIMIT, now);
+        assert_eq!(scan.total, 2);
+        assert_eq!(scan.sessions.len(), 2);
+        let session = scan
+            .sessions
+            .iter()
+            .find(|session| session.id == "ses_one")
+            .expect("the titled session");
+        assert_eq!(session.agent, SessionAgent::OpenCode);
+        assert_eq!(session.title, "fix the build");
+        assert_eq!(session.cwd, Path::new("/Users/ada/code/syro"));
+        assert_eq!(session.workspace, "syro");
+        assert_eq!(session.messages, 2);
+        assert_eq!(session.model.as_deref(), Some("gpt-5"));
+        assert_eq!(session.provider.as_deref(), Some("openai"));
+        assert_eq!(session.path, db);
+        assert_eq!(
+            scan.sessions
+                .iter()
+                .find(|session| session.id == "ses_two")
+                .expect("the untitled session")
+                .title,
+            "why is it red"
+        );
+        assert_eq!(
+            transcript_of(&roots, SessionAgent::OpenCode, Path::new(""), "ses_one"),
+            Some(db.clone())
+        );
+        assert_eq!(
+            first_prompt(SessionAgent::OpenCode, "ses_two", &db).as_deref(),
+            Some("why is it red")
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// A handoff reads OpenCode's own turns, and deleting an OpenCode session
+    /// removes its row and — through the same foreign key OpenCode declares — its
+    /// messages, rather than unlinking a file that is the whole database.
+    #[test]
+    fn an_opencode_handoff_and_delete_read_the_database() {
+        let home = home("opencode-handoff-delete");
+        let db = home.join(".local/share/opencode/opencode.db");
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let now = now_ms();
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "pragma foreign_keys = on;
+                 create table session_v2 (
+                    id text primary key,
+                    directory text,
+                    title text,
+                    time_updated integer,
+                    model text
+                 );
+                 create table session_message (
+                    id text primary key,
+                    session_id text,
+                    type text,
+                    time_created integer,
+                    data text,
+                    foreign key (session_id) references session_v2(id) on delete cascade
+                 );
+                 insert into session_v2 values ('ses_one', '/Users/ada/code/syro', 'ship it', 1, null);",
+            )
+            .unwrap();
+        for (id, kind, at, data) in [
+            (
+                "m1",
+                "user",
+                now - 4_000,
+                r#"{"text":"ship it"}"#.to_string(),
+            ),
+            (
+                "m2",
+                "assistant",
+                now - 3_000,
+                r#"{"content":[{"type":"reasoning","text":"thinking"},{"type":"text","text":"Doing it."}]}"#
+                    .to_string(),
+            ),
+            (
+                "m3",
+                "user",
+                now - 2_000,
+                r#"{"text":"and the tests"}"#.to_string(),
+            ),
+        ] {
+            connection
+                .execute(
+                    "insert into session_message values (?1, 'ses_one', ?2, ?3, ?4)",
+                    rusqlite::params![id, kind, at, data],
+                )
+                .unwrap();
+        }
+        drop(connection);
+
+        let text = handoff(SessionAgent::OpenCode, "ses_one", &db).expect("an OpenCode handoff");
+        assert!(text.contains("Original request: ship it"), "{text}");
+        assert!(text.contains("user: and the tests"), "{text}");
+        assert!(text.contains("assistant: Doing it."), "{text}");
+        assert!(!text.contains("thinking"), "{text}");
+
+        let scan = scan_at(
+            &SessionRoots::from_home(&home),
+            &mut Cache::default(),
+            DEFAULT_LIMIT,
+            now,
+        );
+        let session = scan.sessions.first().expect("the listed session");
+        assert!(delete(session), "the session was not deleted");
+        assert!(
+            scan_at(
+                &SessionRoots::from_home(&home),
+                &mut Cache::default(),
+                DEFAULT_LIMIT,
+                now,
+            )
+            .sessions
+            .is_empty()
+        );
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        assert_eq!(
+            connection
+                .query_row("select count(*) from session_message", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0,
+            "the messages went with the session"
         );
         let _ = fs::remove_dir_all(&home);
     }

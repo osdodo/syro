@@ -37,6 +37,9 @@ gpui-kit = { git = "https://github.com/longbridge/gpui-kit", tag = "v0.7.1", fea
 
 # --- syro-core deps ---
 anyhow = "1"
+# OpenCode keeps its usage in SQLite. Linked rather than shelled out to a
+# `sqlite3` binary, which macOS ships and Linux does not.
+rusqlite = { version = "0.40", features = ["bundled"] }
 # The usage strip buckets tokens by the day a turn happened, and a reader's day
 # is the one on their wall: only a tz database knows where that is. Already in
 # the tree through gpui, so this downloads and builds nothing new.

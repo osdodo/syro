@@ -460,7 +460,7 @@ impl TerminalView {
             cwd,
             prompt: resume.as_ref().and_then(|resume| {
                 let agent = session::SessionAgent::from_id(agent.as_ref()?.id.as_str())?;
-                session::first_prompt(agent, &resume.path)
+                session::first_prompt(agent, &resume.id, &resume.path)
             }),
             agent,
             resume,
@@ -612,7 +612,7 @@ impl TerminalView {
         // shortcut: the default session roots only; a custom `--session-dir` / PI_CODING_AGENT_SESSION_DIR is not followed.
         let roots = session::SessionRoots::from_home(Path::new(&home));
         self.prompt = session::transcript_of(&roots, kind, &self.cwd, id)
-            .and_then(|path| session::first_prompt(kind, &path));
+            .and_then(|path| session::first_prompt(kind, id, &path));
         self.prompt.is_some()
     }
 

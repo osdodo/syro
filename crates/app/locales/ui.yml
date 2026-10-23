@@ -556,8 +556,8 @@ sessions:
     en: Delete session
     zh-CN: 删除会话
   delete_question:
-    en: "Delete %{title}? The transcript is removed from disk and cannot be undone."
-    zh-CN: "删除“%{title}”？会话记录会从磁盘删除，无法恢复。"
+    en: "Delete %{title}? Its history is removed and cannot be undone."
+    zh-CN: "删除“%{title}”？会话记录会被删除，无法恢复。"
   select:
     en: Select
     zh-CN: 选择
@@ -574,8 +574,8 @@ sessions:
     en: Delete sessions
     zh-CN: 删除会话
   delete_question_many:
-    en: "Delete %{count} sessions? Their transcripts are removed from disk and cannot be undone."
-    zh-CN: "删除 %{count} 个会话？会话记录会从磁盘删除，无法恢复。"
+    en: "Delete %{count} sessions? Their history is removed and cannot be undone."
+    zh-CN: "删除 %{count} 个会话？会话记录会被删除，无法恢复。"
 
 resource:
   unavailable:

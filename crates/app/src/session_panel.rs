@@ -396,7 +396,8 @@ impl SessionPanel {
                                 };
                                 // A compact handoff from the transcript, so the
                                 // fresh context window starts on the work already done.
-                                let seed = session::handoff(for_new.agent, &for_new.path);
+                                let seed =
+                                    session::handoff(for_new.agent, &for_new.id, &for_new.path);
                                 let model = for_new
                                     .provider
                                     .as_ref()
@@ -424,11 +425,10 @@ impl SessionPanel {
                         .on_click(cx.listener(
                             move |_this, _event, window, cx| {
                                 let session = for_delete.clone();
-                                let path = session.path.clone();
                                 let title = session.title.clone();
                                 let panel = cx.weak_entity();
                                 window.open_alert_dialog(cx, move |alert, _, _| {
-                                    let path = path.clone();
+                                    let session = session.clone();
                                     let panel = panel.clone();
                                     alert
                                         .title(t!("sessions.delete_title").to_string())
@@ -440,7 +440,7 @@ impl SessionPanel {
                                         .ok_text(t!("sessions.delete"))
                                         .ok_variant(ButtonVariant::Danger)
                                         .on_ok(move |_, _, cx| {
-                                            let _ = std::fs::remove_file(&path);
+                                            let _ = session::delete(&session);
                                             let _ = panel.update(cx, |panel, cx| panel.refresh(cx));
                                             true
                                         })
@@ -582,19 +582,19 @@ impl Render for SessionPanel {
             &colors,
         )
         .on_click(cx.listener(move |this, _event, window, cx| {
-            let paths: Vec<std::path::PathBuf> = this
+            let chosen: Vec<Session> = this
                 .sessions
                 .iter()
                 .filter(|session| this.chosen.contains(&session.id))
-                .map(|session| session.path.clone())
+                .cloned()
                 .collect();
-            if paths.is_empty() {
+            if chosen.is_empty() {
                 return;
             }
-            let count = paths.len();
+            let count = chosen.len();
             let panel = cx.weak_entity();
             window.open_alert_dialog(cx, move |alert, _, _| {
-                let paths = paths.clone();
+                let chosen = chosen.clone();
                 let panel = panel.clone();
                 alert
                     .title(t!("sessions.delete_title_many").to_string())
@@ -603,8 +603,8 @@ impl Render for SessionPanel {
                     .ok_text(t!("sessions.delete"))
                     .ok_variant(ButtonVariant::Danger)
                     .on_ok(move |_, _, cx| {
-                        for path in &paths {
-                            let _ = std::fs::remove_file(path);
+                        for session in &chosen {
+                            let _ = session::delete(session);
                         }
                         let _ = panel.update(cx, |panel, cx| {
                             panel.chosen.clear();
