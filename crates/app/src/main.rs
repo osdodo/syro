@@ -3764,15 +3764,18 @@ pub fn app_keymap(cx: &mut App) {
 #[action(namespace = app, no_json)]
 pub struct Quit;
 
-/// What the close button does: hide the app instead of closing the window, so the
-/// terminals and their agents keep running and the Dock icon brings them back.
-/// Closing the only window would leave a process with nothing to show and no way
-/// to show it.
+/// What the close button does. On macOS it hides the app instead of closing the
+/// window, so the terminals and their agents keep running and the Dock icon
+/// brings them back. Linux and Windows have no Dock icon for a hidden window:
+/// hiding there would leave a process with no window and no way to end it, so
+/// the window closes and — being the last one — quits the app.
 fn hide_on_close(window: &mut Window, cx: &mut App) {
-    window.on_window_should_close(cx, |_, cx| {
-        cx.hide();
-        false
-    });
+    if cfg!(target_os = "macos") {
+        window.on_window_should_close(cx, |_, cx| {
+            cx.hide();
+            false
+        });
+    }
 }
 
 /// The Dock icon (or a second launch) while the window is not on screen: bring it back.
