@@ -28,38 +28,69 @@ const MENU_WIDTH: f32 = 204.;
 const MENU_PADDING: f32 = 6.;
 /// The air between two rows.
 const MENU_GAP: f32 = 2.;
-/// The status column and numeric column floors. Numeric widths are measured
-/// once for the sidebar, so wider values take space from every title equally.
+/// The most room a status word may take, so a long word cannot push the title
+/// out of the row. The column is otherwise measured like the numbers are.
 const STATUS_MAX_WIDTH: f32 = 64.;
-const CPU_WIDTH: f32 = 30.;
-const MEM_WIDTH: f32 = 46.;
-/// Enough room for `1h05m` before longer durations widen the shared column.
-const UPTIME_WIDTH: f32 = 38.;
+/// The floor under a terminal's title. The numbers and the length are measured
+/// from what they have to hold, and a column that would still squeeze the name
+/// below this goes rather than leaving the row unnamed.
+const NAME_MIN_WIDTH: f32 = 40.;
+/// The sidebar's chrome around a terminal line, on both sides: the list's
+/// gutter (`px_1`), the card's inset (`px_1p5`), the card's own padding
+/// (`px_2`), and its 1px border.
+const ROW_CHROME: f32 = 38.;
 
 #[derive(Clone, Copy)]
 struct ColumnWidths {
+    status: f32,
+    /// The length column, or 0 when keeping it would leave the title less than
+    /// [`NAME_MIN_WIDTH`].
     uptime: f32,
     cpu: f32,
     mem: f32,
 }
 
 impl ColumnWidths {
-    fn for_rows(rows: impl IntoIterator<Item = Row>, window: &mut Window) -> Self {
+    /// Measure every column once for the sidebar: the widest word, value, and
+    /// label decide each, so the columns align from one row to the next — and so
+    /// they take only the room their own text needs, leaving the rest to the
+    /// title. The label is the floor: a column never shrinks below its heading.
+    fn for_rows(rows: impl IntoIterator<Item = Row>, available: f32, window: &mut Window) -> Self {
         let font_size = window.rem_size() * 0.75;
         let mut measure = |text: String| {
             gpui_kit::base::plot::label::measure_text_width(&text.into(), font_size, window).ceil()
         };
         let mut widths = Self {
-            uptime: UPTIME_WIDTH.max(measure(t!("resource.column_uptime").to_string())),
-            cpu: CPU_WIDTH.max(measure(t!("resource.column_cpu").to_string())),
-            mem: MEM_WIDTH.max(measure(t!("resource.column_rss").to_string())),
+            status: measure(t!("resource.column_status").to_string()).min(STATUS_MAX_WIDTH),
+            uptime: measure(t!("resource.column_uptime").to_string()),
+            cpu: measure(t!("resource.column_cpu").to_string()),
+            mem: measure(t!("resource.column_rss").to_string()),
         };
         for row in rows {
-            widths.uptime = widths
-                .uptime
-                .max(measure(row.uptime.map(format_uptime).unwrap_or_default()));
+            if let Some(said) = word_of(row.exit, row.status, row.stalled, row.busy, row.agent) {
+                // The dot `Working` draws before its word is room the column has
+                // to keep, or the word would hang over the title.
+                let dot = if said == Word::Working {
+                    dot_width()
+                } else {
+                    0.
+                };
+                widths.status = widths
+                    .status
+                    .max((measure(short_word(said)) + dot).min(STATUS_MAX_WIDTH));
+            }
+            if let Some(uptime) = row.uptime {
+                widths.uptime = widths.uptime.max(measure(format_uptime(uptime)));
+            }
             widths.cpu = widths.cpu.max(measure(format!("{:.0}%", row.cpu_pct)));
             widths.mem = widths.mem.max(measure(format_bytes(row.rss_bytes)));
+        }
+        // The gaps are the line's own (`gap_1p5`): one between the name and the
+        // first column, one between every pair after, and one between the two
+        // numbers.
+        let fixed = widths.status + widths.uptime + widths.cpu + widths.mem + 6. * 3. + 6.;
+        if available - fixed < NAME_MIN_WIDTH {
+            widths.uptime = 0.;
         }
         widths
     }
@@ -769,17 +800,6 @@ impl Sidebar {
 /// width its column is drawn at below, so a name sits over the column it names
 /// rather than beside it.
 fn column_labels(worktree_id: &str, columns: ColumnWidths, colors: &ColorTokens) -> AnyElement {
-    // The word a row draws first, before the length and the numbers, in the
-    // column the row keeps even when it has no word: the name beside it stops at
-    // this column's left edge either way.
-    let word = div()
-        .id(SharedString::from(format!(
-            "terminal-columns-status-{worktree_id}"
-        )))
-        .test_support()
-        .min_w(px(STATUS_MAX_WIDTH))
-        .text_right()
-        .child(t!("resource.column_status").to_string());
     let number = |column: &str, width: f32, name: String| {
         div()
             .id(SharedString::from(format!(
@@ -791,18 +811,20 @@ fn column_labels(worktree_id: &str, columns: ColumnWidths, colors: &ColorTokens)
             .text_right()
             .child(name)
     };
-    div()
+    // The length is the one column a narrow row may drop, so it is not named
+    // when it is not there; the rest always are.
+    let mut labels = vec![t!("resource.column_status").to_string()];
+    if columns.uptime > 0. {
+        labels.push(t!("resource.column_uptime").to_string());
+    }
+    labels.push(t!("resource.column_cpu").to_string());
+    labels.push(t!("resource.column_rss").to_string());
+    let mut line = div()
         .id(SharedString::from(format!(
             "terminal-columns-{worktree_id}"
         )))
         .test_support()
-        .aria_label(SharedString::from(format!(
-            "{} {} {} {}",
-            t!("resource.column_status"),
-            t!("resource.column_uptime"),
-            t!("resource.column_cpu"),
-            t!("resource.column_rss")
-        )))
+        .aria_label(SharedString::from(labels.join(" ")))
         .h_flex()
         .items_center()
         .gap_1p5()
@@ -811,25 +833,38 @@ fn column_labels(worktree_id: &str, columns: ColumnWidths, colors: &ColorTokens)
         // of the small print under them.
         .text_xs()
         .text_color(colors.muted_foreground)
-        .child(word)
-        // The length sits beside the word it belongs with; the two numbers
-        // follow. This order is the order the rows below draw in.
-        .child(number(
+        // The word a row draws first, before the length and the numbers.
+        .child(
+            div()
+                .id(SharedString::from(format!(
+                    "terminal-columns-status-{worktree_id}"
+                )))
+                .test_support()
+                .w(px(columns.status))
+                .flex_shrink_0()
+                .text_right()
+                .child(t!("resource.column_status").to_string()),
+        );
+    // The length sits beside the word it belongs with; the two numbers follow.
+    // This order is the order the rows below draw in.
+    if columns.uptime > 0. {
+        line = line.child(number(
             "uptime",
             columns.uptime,
             t!("resource.column_uptime").to_string(),
-        ))
-        .child(number(
-            "cpu",
-            columns.cpu,
-            t!("resource.column_cpu").to_string(),
-        ))
-        .child(number(
-            "mem",
-            columns.mem,
-            t!("resource.column_rss").to_string(),
-        ))
-        .into_any_element()
+        ));
+    }
+    line.child(number(
+        "cpu",
+        columns.cpu,
+        t!("resource.column_cpu").to_string(),
+    ))
+    .child(number(
+        "mem",
+        columns.mem,
+        t!("resource.column_rss").to_string(),
+    ))
+    .into_any_element()
 }
 
 /// The two numbers a row ends in, in the columns every row keeps. Labelled for
@@ -935,7 +970,7 @@ fn terminal_line(
         // a shell's title stops at the column rather than running through it.
         .child(
             div()
-                .min_w(px(STATUS_MAX_WIDTH))
+                .w(px(columns.status))
                 .flex_shrink_0()
                 .h_flex()
                 .justify_end()
@@ -951,21 +986,23 @@ fn terminal_line(
         )
         // The length sits beside the word, ahead of the numbers, matching the
         // header above it.
-        .child(
-            div()
-                .id(SharedString::from(format!(
-                    "terminal-uptime-{worktree_id}-{}",
-                    name.aria
-                )))
-                .test_support()
-                .aria_label(SharedString::from(uptime.clone()))
-                .w(px(columns.uptime))
-                .flex_shrink_0()
-                .text_xs()
-                .text_right()
-                .text_color(colors.muted_foreground)
-                .child(SharedString::from(uptime)),
-        )
+        .when(columns.uptime > 0., |el| {
+            el.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "terminal-uptime-{worktree_id}-{}",
+                        name.aria
+                    )))
+                    .test_support()
+                    .aria_label(SharedString::from(uptime.clone()))
+                    .w(px(columns.uptime))
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_right()
+                    .text_color(colors.muted_foreground)
+                    .child(SharedString::from(uptime)),
+            )
+        })
         .child(row_metrics(
             SharedString::from(format!("terminal-metrics-{worktree_id}-{}", name.aria)),
             row.cpu_pct,
@@ -1031,6 +1068,39 @@ fn word_of(
     }
 }
 
+/// The sentence a word is, for the screen reader and the colour's meaning.
+fn full_word(word: Word) -> String {
+    match word {
+        Word::Done => t!("status.done_short").to_string(),
+        Word::Failed => t!("status.failed_short").to_string(),
+        Word::Stalled => t!("status.stalled").to_string(),
+        Word::Waiting => t!("status.waiting").to_string(),
+        Word::Working => t!("status.working").to_string(),
+        Word::Idle => t!("status.idle").to_string(),
+        Word::Running => t!("status.running").to_string(),
+    }
+}
+
+/// The shorthand a word is drawn as: the column is narrow, so the sentence stays
+/// on the screen reader and the row draws this.
+fn short_word(word: Word) -> String {
+    match word {
+        Word::Done => t!("status.done_short").to_string(),
+        Word::Failed => t!("status.failed_short").to_string(),
+        Word::Stalled => t!("status.stalled_short").to_string(),
+        Word::Waiting => t!("status.waiting_short").to_string(),
+        Word::Working => t!("status.working_short").to_string(),
+        Word::Idle => t!("status.idle_short").to_string(),
+        Word::Running => t!("status.running_short").to_string(),
+    }
+}
+
+/// How much of the word column the breathing dot takes: the dot itself plus the
+/// gap before the word.
+fn dot_width() -> f32 {
+    10.
+}
+
 /// The status a row shows, in one colour and one word: what its agent is doing,
 /// plus the two only a terminal can have — `Done` and `Failed`, which are its
 /// child's exit. The label stays the sentence the status is; the drawn word is
@@ -1046,43 +1116,13 @@ fn status_word(
     colors: &ColorTokens,
 ) -> Option<AnyElement> {
     let said = word_of(exit, status, stalled, busy, agent)?;
-    let (colour, label, short) = match said {
-        Word::Done => {
-            let said = t!("status.done_short");
-            (colors.muted_foreground, said.clone(), said)
-        }
-        Word::Failed => {
-            let said = t!("status.failed_short");
-            (colors.destructive, said.clone(), said)
-        }
-        Word::Stalled => (
-            colors.muted_foreground,
-            t!("status.stalled"),
-            t!("status.stalled_short"),
-        ),
-        Word::Waiting => (
-            colors.destructive,
-            t!("status.waiting"),
-            t!("status.waiting_short"),
-        ),
-        Word::Working => (
-            running_green(),
-            t!("status.working"),
-            t!("status.working_short"),
-        ),
-        Word::Idle => (
-            colors.muted_foreground,
-            t!("status.idle"),
-            t!("status.idle_short"),
-        ),
+    let colour = match said {
+        Word::Failed | Word::Waiting => colors.destructive,
         // Green like the agent's own `Working`: both read as 运行中, so the same
         // word should not change colour by who set the title. Still no dot — an
         // agent at work is what that is for, and this is only something running.
-        Word::Running => (
-            running_green(),
-            t!("status.running"),
-            t!("status.running_short"),
-        ),
+        Word::Working | Word::Running => running_green(),
+        Word::Done | Word::Stalled | Word::Idle => colors.muted_foreground,
     };
     // Only `Working` breathes: it is the one word that means an agent is on a task
     // this moment.
@@ -1091,7 +1131,7 @@ fn status_word(
         .id(id)
         .test_support()
         .role(Role::Status)
-        .aria_label(label)
+        .aria_label(full_word(said))
         .max_w(px(STATUS_MAX_WIDTH))
         .flex_shrink_0()
         .h_flex()
@@ -1099,7 +1139,7 @@ fn status_word(
         .text_xs()
         .text_color(colour)
         .when(running, |row| row.child(breathing_dot(colour)))
-        .child(div().min_w_0().truncate().child(short))
+        .child(div().min_w_0().truncate().child(short_word(said)))
         .into_any_element()
         .into()
 }
@@ -1234,7 +1274,7 @@ impl Render for Sidebar {
             })
             .filter_map(|worktree| self.resources.read(cx).worktree_usage(&worktree.id))
             .flat_map(|usage| usage.terminals);
-        let columns = ColumnWidths::for_rows(rows, window);
+        let columns = ColumnWidths::for_rows(rows, self.width.width() - ROW_CHROME, window);
         list = list.child(self.scratch_section(scratch, active.as_deref(), columns, &colors, cx));
         for repo in repos {
             if hidden.contains(&repo.id) {
@@ -3258,7 +3298,7 @@ mod window_tests {
                     rss_bytes: mb * 1024 * 1024,
                 },
             );
-            let columns = super::ColumnWidths::for_rows(rows.clone(), window);
+            let columns = super::ColumnWidths::for_rows(rows.clone(), 312., window);
             div()
                 .v_flex()
                 .w(px(312.))
@@ -3293,6 +3333,7 @@ mod window_tests {
                     cpu_pct: 140.,
                     rss_bytes: 999 * 1024 * 1024,
                 }],
+                232.,
                 window,
             );
             div()
@@ -3313,5 +3354,128 @@ mod window_tests {
                     &colors,
                 ))
         }
+    }
+
+    /// The row content at the sidebar's default 240 px: the panel's gutter, the
+    /// card's inset and padding, and its border take the other 38.
+    fn narrow_window(cx: &mut TestAppContext, working: bool) -> WindowHandle<Root> {
+        let window = cx.update(|cx| {
+            gpui_kit::init(cx);
+            let (window, _) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        Point::default(),
+                        size(px(220.), px(80.)),
+                    ))),
+                    ..Default::default()
+                },
+                cx,
+                move |_, cx| cx.new(move |_| NarrowColumns { working }),
+            )
+            .expect("open a blank window");
+            window.downcast::<Root>().expect("Base Root")
+        });
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+        })
+        .expect("draw a frame");
+        window
+    }
+
+    fn element(
+        cx: &mut TestAppContext,
+        window: WindowHandle<Root>,
+        id: &str,
+    ) -> Option<Bounds<Pixels>> {
+        cx.update_window(window.into(), |_, window, _| {
+            window.try_find(id.to_string()).map(|el| el.bounds())
+        })
+        .expect("read the frame")
+    }
+
+    struct NarrowColumns {
+        /// An agent working with a length, or a plain shell with neither.
+        working: bool,
+    }
+
+    impl Render for NarrowColumns {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let colors = Theme::global(cx).tokens.colors;
+            let (title, status, uptime) = if self.working {
+                (
+                    "Pi - fix the build",
+                    Some(AgentStatus::Working),
+                    Some(std::time::Duration::from_secs(90)),
+                )
+            } else {
+                ("osdodo@fedora: ~", None, None)
+            };
+            let row = crate::resource_bar::Row {
+                name: crate::resource_bar::TerminalName::plain(title.into()),
+                status,
+                stalled: false,
+                exit: None,
+                busy: false,
+                agent: self.working,
+                uptime,
+                cpu_pct: 0.,
+                rss_bytes: 7 * 1024 * 1024,
+            };
+            let columns = super::ColumnWidths::for_rows([row.clone()], 202., window);
+            div()
+                .v_flex()
+                .w(px(202.))
+                .child(
+                    div()
+                        .h_flex()
+                        .justify_end()
+                        .child(super::column_labels("narrow", columns, &colors)),
+                )
+                .child(super::terminal_line("narrow", &row, columns, &colors))
+        }
+    }
+
+    /// At the default 240 px sidebar the columns are measured from their own
+    /// labels and values, so the title keeps the room they do not need. The
+    /// reservation used to be wide enough that a shell's title was squeezed to
+    /// nothing, leaving only its glyph.
+    #[gpui_kit::test]
+    fn a_shell_with_no_status_keeps_its_title(cx: &mut TestAppContext) {
+        let window = narrow_window(cx, false);
+        let name = element(cx, window, "terminal-name-narrow-osdodo@fedora: ~")
+            .expect("the shell's title is on screen");
+        assert!(
+            name.size.width.as_f32() > 48.,
+            "the title was squeezed to {} px",
+            name.size.width.as_f32()
+        );
+        let status = element(cx, window, "terminal-columns-status-narrow")
+            .expect("the status column is still named");
+        assert!(
+            name.right() <= status.origin.x,
+            "the title runs under the status column: {name:?} against {status:?}"
+        );
+    }
+
+    /// When there is a word and a length but not room for both, the length goes:
+    /// the title keeps its floor and the status stays readable.
+    #[gpui_kit::test]
+    fn a_working_row_drops_the_length_before_the_title(cx: &mut TestAppContext) {
+        let window = narrow_window(cx, true);
+        let name = element(cx, window, "terminal-name-narrow-Pi - fix the build")
+            .expect("the agent's title is on screen");
+        assert!(
+            name.size.width.as_f32() >= 40.,
+            "the title was squeezed to {} px",
+            name.size.width.as_f32()
+        );
+        assert!(
+            element(cx, window, "terminal-columns-status-narrow").is_some(),
+            "the status column went with the length"
+        );
+        assert!(
+            element(cx, window, "terminal-columns-uptime-narrow").is_none(),
+            "the length still took the title's room"
+        );
     }
 }
