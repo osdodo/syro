@@ -296,6 +296,7 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_spec_under_a_symlink_still_places_in_its_worktree() {
         // Two spellings of one directory: a spec holding either one belongs to

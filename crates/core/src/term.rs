@@ -71,8 +71,11 @@ pub struct TermSpec {
 }
 
 impl TermSpec {
-    /// A login shell in `cwd`: `$SHELL` or `/bin/zsh` on macOS.
+    /// A login shell in `cwd`: `$SHELL` (or `/bin/zsh`) on Unix, `%COMSPEC%` on Windows.
     pub fn shell(cwd: impl Into<std::path::PathBuf>, size: TermSize) -> Self {
+        #[cfg(windows)]
+        let command = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+        #[cfg(not(windows))]
         let command = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         Self {
             command,
@@ -223,7 +226,8 @@ impl TermSession {
 
         let mut command = CommandBuilder::new(&spec.command);
         command.args(&spec.args);
-        command.cwd(&spec.cwd);
+        // cmd.exe reads a `\\?\` path as UNC and starts in C:\Windows instead.
+        command.cwd(dunce::simplified(&spec.cwd));
         command.env("TERM", "xterm-256color");
         if let Some((name, value)) = fallback_locale(|name| std::env::var_os(name)) {
             command.env(name, value);
@@ -739,6 +743,49 @@ mod tests {
             ..TermSpec::shell(std::env::temp_dir(), size())
         };
         TermSession::spawn(spec).expect("spawn")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_default_shell_is_cmd() {
+        let spec = TermSpec::shell(std::env::temp_dir(), size());
+        assert!(
+            spec.command.to_lowercase().ends_with("cmd.exe"),
+            "{}",
+            spec.command
+        );
+        let session = TermSession::spawn(spec).expect("spawn cmd");
+        session.write(b"echo syro-ok\r\n").expect("write");
+        assert!(
+            wait_for(|| session.snapshot().text().contains("syro-ok"), &session),
+            "cmd never answered: {:?}",
+            session.snapshot()
+        );
+    }
+
+    /// A verbatim (`\\?\`) cwd is what the app's canonical paths are on Windows,
+    /// and cmd.exe treats it as UNC: it must be simplified before the spawn.
+    #[cfg(windows)]
+    #[test]
+    fn a_verbatim_cwd_starts_the_shell_in_that_directory() {
+        let dir = std::env::temp_dir().canonicalize().expect("temp dir");
+        let spec = TermSpec {
+            cwd: dir.clone(),
+            ..TermSpec::shell(&dir, size())
+        };
+        let session = TermSession::spawn(spec).expect("spawn cmd");
+        session.write(b"echo %CD%\r\n").expect("write");
+        let expected = dunce::simplified(&dir)
+            .to_string_lossy()
+            .to_lowercase();
+        assert!(
+            wait_for(
+                || session.snapshot().text().to_lowercase().contains(&expected),
+                &session
+            ),
+            "cmd did not start in {expected}: {:?}",
+            session.snapshot()
+        );
     }
 
     #[test]

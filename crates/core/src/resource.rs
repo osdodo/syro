@@ -1,13 +1,20 @@
-//! What the app and its terminals cost, from one host-wide `ps -eo pid=,ppid=,pcpu=,rss=` sweep.
+//! What the app and its terminals cost: one host-wide process sweep.
+//!
+//! Unix reads `ps -eo pid=,ppid=,pcpu=,rss=,tpgid=`; Windows walks the Toolhelp
+//! snapshot and asks each process for its times and working set.
 //!
 //! A terminal costs its whole process subtree: an agent spawns children, and their cost is the
 //! terminal's. A pid already claimed by an earlier terminal is skipped, so two panes sharing a
 //! supervisor do not count it twice.
 
-use std::collections::{HashMap, HashSet};
+#[cfg(unix)]
 use std::process::Command;
 
-use anyhow::{Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::Result;
+
+use std::collections::{HashMap, HashSet};
 
 /// One row of the host's process table.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -21,6 +28,7 @@ pub struct ProcessRow {
     /// The process group the process's tty is giving the foreground to, `0` when
     /// it has no tty. `ps`'s `tpgid`: a shell at its prompt is its own
     /// foreground group, and a shell running a job is not.
+    /// ponytail: always `0` on Windows, so rows never read `Running` there.
     pub tpgid: u32,
 }
 
@@ -35,23 +43,42 @@ pub struct ProcessTable {
 impl ProcessTable {
     /// Read the host's process table. One call, and the only I/O in this module.
     pub fn sample() -> Result<Self> {
-        let output = Command::new("ps")
-            .args(["-eo", "pid=,ppid=,pcpu=,rss=,tpgid="])
-            .output()
-            .context("running ps for the resource readout")?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "ps failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
+        #[cfg(unix)]
+        {
+            let output = Command::new("ps")
+                .args(["-eo", "pid=,ppid=,pcpu=,rss=,tpgid="])
+                .output()
+                .context("running ps for the resource readout")?;
+            if !output.status.success() {
+                anyhow::bail!(
+                    "ps failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            Ok(Self::parse(&String::from_utf8_lossy(&output.stdout)))
         }
-        Ok(Self::parse(&String::from_utf8_lossy(&output.stdout)))
+
+        #[cfg(windows)]
+        {
+            windows_sample()
+        }
+    }
+
+    fn from_rows(rows: Vec<ProcessRow>) -> Self {
+        let mut table = Self::default();
+        for row in rows {
+            let index = table.rows.len();
+            table.by_pid.insert(row.pid, index);
+            table.children_of.entry(row.ppid).or_default().push(row.pid);
+            table.rows.push(row);
+        }
+        table
     }
 
     /// Parse `ps` output. A line that is not four numbers is skipped, not a failed sweep: a process
     /// can exit between the table being written and `ps` printing it.
     pub fn parse(text: &str) -> Self {
-        let mut table = Self::default();
+        let mut rows = Vec::new();
         for line in text.lines() {
             let mut fields = line.split_whitespace();
             let (Some(pid), Some(ppid), Some(cpu), Some(rss)) =
@@ -72,10 +99,7 @@ impl ProcessTable {
                 .and_then(|tpgid| tpgid.parse::<u32>().ok())
                 .unwrap_or(0);
 
-            let index = table.rows.len();
-            table.by_pid.insert(pid, index);
-            table.children_of.entry(ppid).or_default().push(pid);
-            table.rows.push(ProcessRow {
+            rows.push(ProcessRow {
                 pid,
                 ppid,
                 tpgid,
@@ -87,7 +111,7 @@ impl ProcessTable {
                 rss_bytes,
             });
         }
-        table
+        Self::from_rows(rows)
     }
 
     pub fn rows(&self) -> &[ProcessRow] {
@@ -138,6 +162,94 @@ impl ProcessTable {
         }
         usage
     }
+}
+
+/// One sweep from the Toolhelp process snapshot, with each process's lifetime CPU
+/// average and working set. A process that cannot be opened (a protected one) is
+/// still in the table — its pid and parent matter to the tree — just at zero cost.
+#[cfg(windows)]
+fn windows_sample() -> Result<ProcessTable> {
+    use std::mem::{size_of, zeroed};
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    let mut rows = Vec::new();
+    let mut entry: PROCESSENTRY32W = unsafe { zeroed() };
+    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while more {
+        rows.push(windows_row(entry.th32ProcessID, entry.th32ParentProcessID));
+        more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
+
+    Ok(ProcessTable::from_rows(rows))
+}
+
+#[cfg(windows)]
+fn windows_row(pid: u32, ppid: u32) -> ProcessRow {
+    use std::mem::size_of;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let mut row = ProcessRow {
+        pid,
+        ppid,
+        cpu_pct: 0.0,
+        rss_bytes: 0,
+        tpgid: 0,
+    };
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return row;
+    }
+
+    let mut counters = PROCESS_MEMORY_COUNTERS::default();
+    counters.cb = size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    if unsafe { K32GetProcessMemoryInfo(process, &mut counters, counters.cb) } != 0 {
+        row.rss_bytes = counters.WorkingSetSize as u64;
+    }
+
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    if unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) } != 0 {
+        // Lifetime average, which is what `ps` reports: CPU time over wall time.
+        const FILETIME_UNIX_EPOCH_SECS: u64 = 11_644_473_600;
+        let created_secs = filetime_ticks(created) / 10_000_000;
+        let started = created_secs.saturating_sub(FILETIME_UNIX_EPOCH_SECS);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(started);
+        let wall = now.saturating_sub(started);
+        let cpu = (filetime_ticks(kernel) + filetime_ticks(user)) as f64 / 10_000_000.0;
+        if wall > 0 {
+            row.cpu_pct = (cpu / wall as f64 * 100.0) as f32;
+        }
+    }
+    unsafe { CloseHandle(process) };
+    row
+}
+
+#[cfg(windows)]
+fn filetime_ticks(time: windows_sys::Win32::Foundation::FILETIME) -> u64 {
+    ((time.dwHighDateTime as u64) << 32) | time.dwLowDateTime as u64
 }
 
 /// What one thing costs: a terminal and everything it started, or the app.

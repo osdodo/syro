@@ -3831,7 +3831,7 @@ fn unrunnable(spec: &TermSpec) -> Option<String> {
         return Some(t!("workspace.gone", path = spec.cwd.display()).to_string());
     }
     let program = &spec.command;
-    let found = if program.contains('/') {
+    let found = if program.contains('/') || program.contains('\\') {
         std::path::Path::new(program).is_file()
     } else {
         std::env::var_os("PATH").is_some_and(|path| on_path(&path.to_string_lossy(), program))

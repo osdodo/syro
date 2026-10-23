@@ -264,8 +264,23 @@ fn share_one(source: &Path, dest: &Path) -> Result<()> {
     // A clone that failed part way can leave a partial copy; it was not there
     // before (see the caller), so it is ours to clear.
     let _ = fs::remove_dir_all(dest).or_else(|_| fs::remove_file(dest));
-    std::os::unix::fs::symlink(source, dest)
+    link(source, dest)
         .with_context(|| t!("git.share_failed", path = dest.display()).to_string())
+}
+
+#[cfg(unix)]
+fn link(source: &Path, dest: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, dest)
+}
+
+/// Windows file symlinks need elevation; a hard link shares the file without it.
+#[cfg(windows)]
+fn link(source: &Path, dest: &Path) -> std::io::Result<()> {
+    if source.is_dir() {
+        std::os::windows::fs::symlink_dir(source, dest)
+    } else {
+        fs::hard_link(source, dest)
+    }
 }
 
 /// Remove the worktree at `path`, and forget the bookkeeping a worktree deleted
