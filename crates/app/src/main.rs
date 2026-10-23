@@ -266,6 +266,8 @@ pub struct Workspace {
     last_panel: Panel,
     /// The sidebar's width, dragged by its leading edge.
     right_width: WidthDrag,
+    /// Whether the left sidebar (repos and worktrees) is on screen.
+    left_open: bool,
     /// The resource readout across the bottom. A view of its own because it owns
     /// the sweep timer and the breakdown's open state, neither of which the tab
     /// list has anything to say about.
@@ -341,6 +343,7 @@ impl Workspace {
                 right_sidebar::MIN_WIDTH,
                 right_sidebar::MAX_WIDTH,
             ),
+            left_open: true,
             resource_bar,
             panes: BTreeMap::new(),
             restored: BTreeSet::new(),
@@ -1498,6 +1501,13 @@ impl Workspace {
             Some(_) => None,
             None => Some(self.last_panel),
         };
+        cx.notify();
+    }
+
+    /// `sidebar::Toggle`: the left sidebar's on/off.
+    fn toggle_left_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.close_menus();
+        self.left_open = !self.left_open;
         cx.notify();
     }
 
@@ -3284,6 +3294,18 @@ impl Workspace {
             );
         }
 
+        // While the left sidebar is down its toggle opens the bar.
+        if !self.left_open {
+            bar = bar.child(
+                div()
+                    .id("sidebar-toggle-slot")
+                    .h_flex()
+                    .items_center()
+                    .flex_shrink_0()
+                    .pl_2()
+                    .child(sidebar::toggle_button(colors)),
+            );
+        }
         // The strip fills the bar (`flex_1`), which pushes the `+` after it to
         // the far right, outside the scroll.
         bar = bar.child(strip).child(add);
@@ -3429,6 +3451,22 @@ impl Render for Workspace {
             );
         }
 
+        // Likewise for the left sidebar's toggle, at the top-left.
+        if !self.left_open && self.state.read(cx).active_id().is_none() {
+            column = column.child(
+                div()
+                    .id("sidebar-toggle-slot")
+                    .absolute()
+                    .top(px(0.))
+                    .left(px(0.))
+                    .h(px(TAB_BAR_HEIGHT))
+                    .h_flex()
+                    .items_center()
+                    .pl_2()
+                    .child(sidebar::toggle_button(&colors)),
+            );
+        }
+
         // The row is what the sidebar, the panes and the tree share; the status bar is under all of it,
         // across the whole window.
         let mut row = div()
@@ -3436,7 +3474,7 @@ impl Render for Workspace {
             .h_flex()
             .flex_1()
             .min_h_0()
-            .child(self.sidebar.clone())
+            .when(self.left_open, |row| row.child(self.sidebar.clone()))
             .child(column);
         // The right sidebar: the activity strip, the panel it selects, and the handle on its leading
         // edge.
@@ -3715,6 +3753,7 @@ pub fn app_keymap(cx: &mut App) {
         ),
         // The "Terminal Panes" group: `Mod+D` splits right, `Mod+Shift+D` splits down,
         // `Mod+W` closes the active pane.
+        KeyBinding::new("cmd-b", sidebar::Toggle, None),
         KeyBinding::new("cmd-d", split::Right, None),
         KeyBinding::new("cmd-shift-d", split::Down, None),
         KeyBinding::new("cmd-w", split::ClosePane, None),
@@ -3835,6 +3874,11 @@ pub fn register_workspace_actions(workspace: &Entity<Workspace>, cx: &mut App) {
     let handle = workspace.clone();
     cx.on_action(move |_action: &right_sidebar::Toggle, cx: &mut App| {
         handle.update(cx, |workspace, cx| workspace.toggle_sidebar(cx));
+    });
+
+    let handle = workspace.clone();
+    cx.on_action(move |_action: &sidebar::Toggle, cx: &mut App| {
+        handle.update(cx, |workspace, cx| workspace.toggle_left_sidebar(cx));
     });
 
     // The split: app-level, like `terminal::New` — none of it needs a window,
@@ -5832,6 +5876,22 @@ mod window_tests {
             "clicking {id} never left the sidebar showing {want:?} (it shows {:?})",
             selected(cx)
         );
+    }
+
+    /// The left sidebar's header button hides it, and the one at the tab bar's start brings it back.
+    #[gpui_kit::test]
+    fn the_left_sidebar_collapses_and_comes_back(cx: &mut TestAppContext) {
+        let fixture = open(cx, "left-sidebar-toggle");
+        let open = |cx: &mut TestAppContext| cx.update(|cx| fixture.workspace.read(cx).left_open);
+        draw(cx, &fixture);
+        click_visible(cx, &fixture, "sidebar-toggle");
+        draw(cx, &fixture);
+        assert!(!open(cx));
+        assert!(!found(cx, &fixture, "sidebar"));
+        click_visible(cx, &fixture, "sidebar-toggle");
+        draw(cx, &fixture);
+        assert!(open(cx));
+        assert!(found(cx, &fixture, "sidebar"));
     }
 
     /// The right sidebar is the window's trailing panel: an activity strip with one icon per panel,
@@ -9485,6 +9545,7 @@ mod window_tests {
             ("Close", IconName::Close),
             ("Restart", IconName::RotateCw),
             ("Toggle right sidebar", IconName::PanelRight),
+            ("Toggle left sidebar", IconName::PanelLeft),
             ("New tab", IconName::Plus),
             ("Files panel", IconName::Folder),
             ("Session history panel", IconName::LayoutDashboard),
@@ -9510,6 +9571,7 @@ mod window_tests {
         for (id, expected) in [
             ("repo-add", "Add repository"),
             ("panel-toggle", "Toggle right sidebar"),
+            ("sidebar-toggle", "Toggle left sidebar"),
             ("add-tab", "New tab"),
             ("panel-files", "Show Files"),
             ("panel-sessions", "Show Sessions"),

@@ -1478,6 +1478,32 @@ impl Render for Sidebar {
     }
 }
 
+/// Show or hide the left sidebar. The workspace owns whether it is on screen.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = sidebar, no_json)]
+pub struct Toggle;
+
+/// The button that hides the sidebar from its header, and brings it back from
+/// the tab bar while it is down. Only one is drawn at a time, so they share an id.
+pub fn toggle_button(colors: &ColorTokens) -> AnyElement {
+    div()
+        .id("sidebar-toggle")
+        .test_support()
+        .aria_label(t!("sidebar.toggle"))
+        .h_flex()
+        .items_center()
+        .justify_center()
+        .size(px(20.))
+        .flex_shrink_0()
+        .rounded_sm()
+        .cursor_pointer()
+        .text_color(colors.muted_foreground)
+        .hover(|el| el.bg(colors.muted))
+        .child(Icon::new(IconName::PanelLeft).size(px(14.)))
+        .on_click(|_event, window, cx| window.dispatch_action(Box::new(Toggle), cx))
+        .into_any_element()
+}
+
 impl Sidebar {
     /// The header row: the global search on the left, drawn as the field it opens,
     /// and the two actions that belong to the panel as a whole on the right.
@@ -1494,6 +1520,7 @@ impl Sidebar {
             // with the search box rather than the search box reaching past them.
             .px_3()
             .h(px(HEADER_HEIGHT))
+            .child(toggle_button(colors))
             .child(self.search_input(colors))
             .child(self.header_button(
                 "repo-add",

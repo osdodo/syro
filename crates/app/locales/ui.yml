@@ -284,6 +284,9 @@ sidebar:
   menu:
     en: Sidebar menu
     zh-CN: 侧边栏菜单
+  toggle:
+    en: Toggle left sidebar
+    zh-CN: 显示/隐藏左侧边栏
   show_hidden:
     en: Show all hidden projects
     zh-CN: 显示所有隐藏项目
