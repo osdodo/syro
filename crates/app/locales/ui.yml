@@ -115,6 +115,9 @@ workspace:
   empty_pane:
     en: This pane has nothing in it.
     zh-CN: 这个窗格里没有内容。
+  no_recent_agents:
+    en: No agents used yet. Open one to see it here.
+    zh-CN: 还没有使用过 agent，打开一个后会显示在这里。
   gone:
     en: "%{path} is gone"
     zh-CN: "%{path} 已不存在"
@@ -146,6 +149,9 @@ workspace:
     new_tab:
       en: New tab
       zh-CN: 新建标签页
+    agent_grid:
+      en: Recent agents grid
+      zh-CN: 最近 agent 网格
     in_split:
       en: In a split
       zh-CN: 在拆分窗格中

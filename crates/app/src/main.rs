@@ -65,6 +65,8 @@ use crate::state::{AppState, branch_or_name, diff, editor, tab, terminal, worktr
 
 /// The identifier the app gives the platform, and the name beside it.
 const TAB_BAR_HEIGHT: f32 = 36.;
+/// How many agents the recent agents grid shows: three a row, two rows.
+const GRID_AGENTS: usize = 6;
 
 const BUNDLE_ID: &str = "com.syro.app";
 const APP_NAME: &str = "syro";
@@ -306,6 +308,12 @@ pub struct Workspace {
     open_error: Option<String>,
     /// The view's own focus handle.
     focus: FocusHandle,
+    /// Whether the pane area shows the recent agents grid instead of the tab on screen.
+    grid: bool,
+    /// Agent panes the keyboard has been in, most recent first, across worktrees.
+    recent: Vec<(WorktreeId, split::Pane)>,
+    /// The sidebars as they were when the grid button folded them: `(left_open, panel)`.
+    before_grid: Option<(bool, Option<Panel>)>,
     _events: Subscription,
 }
 
@@ -357,6 +365,9 @@ impl Workspace {
             graph_visible: false,
             open_error: None,
             focus: cx.focus_handle(),
+            grid: false,
+            recent: Vec::new(),
+            before_grid: None,
             _events: events,
         };
         // Nothing is built here: saved tabs and the terminal come back on the
@@ -852,6 +863,8 @@ impl Workspace {
     /// A new tab in `worktree_id` holding `view`, at the end of the bar and on
     /// screen. Answers the pane it made.
     fn add_tab(&mut self, worktree_id: &WorktreeId, view: PaneView) -> split::Pane {
+        // A new tab is something to look at: the grid would hide it.
+        self.grid = false;
         let pane = self.new_pane(worktree_id, view);
         self.layout
             .entry(worktree_id.clone())
@@ -1822,6 +1835,9 @@ impl Workspace {
     /// `tab::Activate`: make a tab the visible one, handing the keyboard to the pane that had it
     /// there.
     fn activate_tab(&mut self, action: &tab::Activate, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.grid) {
+            cx.notify();
+        }
         if self.set_active_index(&action.worktree_id, action.index) {
             cx.notify();
         }
@@ -1842,8 +1858,9 @@ impl Workspace {
         // — or on a file in the tree beside it — would be a click that did
         // nothing. The pane takes the front, which is the road VSCode's diff tab
         // takes from its git graph, and the graph's own button is the way back.
-        if self.graph_visible {
+        if self.graph_visible || self.grid {
             self.graph_visible = false;
+            self.grid = false;
             cx.notify();
         }
         if let Some(layout) = self.layout_mut(worktree_id) {
@@ -2468,8 +2485,195 @@ impl Workspace {
         }
     }
 
+    /// Remember the active worktree's focused pane as the most recent agent, if it runs one.
+    fn note_recent(&mut self, cx: &App) {
+        let Some(worktree_id) = self.state.read(cx).active_id().cloned() else {
+            return;
+        };
+        let Some(pane) = self.layout(&worktree_id).and_then(|l| l.focused_pane()) else {
+            return;
+        };
+        if self
+            .pane(&worktree_id, pane)
+            .and_then(|v| v.agent_name(cx))
+            .is_none()
+        {
+            return;
+        }
+        let entry = (worktree_id, pane);
+        if self.recent.first() == Some(&entry) {
+            return;
+        }
+        self.recent.retain(|e| *e != entry);
+        self.recent.insert(0, entry);
+        self.recent.truncate(32);
+    }
+
+    /// The (up to) six most recently used agent panes that are still open, in creation order so a
+    /// click in the grid does not reshuffle it.
+    fn recent_agents(&self, cx: &App) -> Vec<(WorktreeId, split::Pane)> {
+        let mut agents: Vec<_> = self
+            .recent
+            .iter()
+            .filter(|(w, p)| self.pane(w, *p).is_some_and(|v| v.agent_name(cx).is_some()))
+            .take(GRID_AGENTS)
+            .cloned()
+            .collect();
+        agents.sort_by_key(|(_, pane)| *pane);
+        agents
+    }
+
+    /// A click in a grid tile: its worktree becomes the active one and the tile takes the keyboard.
+    fn focus_tile(
+        &mut self,
+        worktree_id: &WorktreeId,
+        pane: split::Pane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.state
+            .update(cx, |state, cx| state.activate(worktree_id, cx));
+        self.focus_pane(worktree_id, pane, window, cx);
+    }
+
+    /// `agent_grid::Toggle`, from the status bar's button.
+    fn toggle_grid(
+        &mut self,
+        _: &crate::resource_bar::ToggleGrid,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.grid = !self.grid;
+        // The grid wants the whole window: both sidebars fold away, and come back with the
+        // button.
+        if self.grid {
+            self.before_grid = Some((self.left_open, self.panel));
+            self.left_open = false;
+            self.panel = None;
+        } else if let Some((left, panel)) = self.before_grid.take() {
+            self.left_open = left;
+            self.panel = panel;
+        }
+        self.focus_pending = true;
+        cx.notify();
+    }
+
+    /// The recent agents, up to three a row and two rows.
+    fn agent_grid(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = Theme::global(cx).tokens.colors.clone();
+        let agents = self.recent_agents(cx);
+        if agents.is_empty() {
+            return message(t!("workspace.no_recent_agents").to_string(), &colors);
+        }
+        let active = self.state.read(cx).active_id().cloned();
+        let focused = active
+            .as_ref()
+            .and_then(|id| self.layout(id))
+            .and_then(|layout| layout.focused_pane());
+        let columns = if agents.len() <= 3 {
+            agents.len()
+        } else {
+            agents.len().div_ceil(2)
+        };
+        let mut names = BTreeMap::new();
+        let mut grid = div()
+            .id("agent-grid")
+            .test_support()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .p(px(4.));
+        for row in agents.chunks(columns) {
+            let mut line = div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .gap(px(4.));
+            for (worktree_id, pane) in row {
+                let names = names
+                    .entry(worktree_id.clone())
+                    .or_insert_with(|| self.agent_names(worktree_id, cx));
+                let name = names.get(pane);
+                let place = self
+                    .state
+                    .read(cx)
+                    .worktree(worktree_id)
+                    .map(|w| branch_or_name(w).to_string())
+                    .unwrap_or_else(|| worktree_id.clone());
+                let is_focused = active.as_ref() == Some(worktree_id) && focused == Some(*pane);
+                let content = self
+                    .pane(worktree_id, *pane)
+                    .map(|view| view.element())
+                    .unwrap_or_else(|| div().into_any_element());
+                let header = div()
+                    .h_flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .h(px(22.))
+                    .border_b_1()
+                    .border_color(colors.border)
+                    .text_xs()
+                    .overflow_hidden()
+                    .when_some(name.and_then(|n| n.logo), |el, logo| {
+                        el.child(crate::agent_logo::logo_icon(logo, colors.foreground))
+                    })
+                    .child(name.map(|n| n.text.clone()).unwrap_or_default())
+                    .child(div().text_color(colors.muted_foreground).child(place));
+                let for_click = (worktree_id.clone(), *pane);
+                line = line.child(
+                    div()
+                        .id(SharedString::from(format!("agent-grid-{pane}")))
+                        .test_support()
+                        .relative()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(if is_focused {
+                            // A hint, not a frame: the sidebar's own selection is as faint.
+                            colors.foreground.alpha(0.25)
+                        } else {
+                            colors.border
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _event, window, cx| {
+                                this.focus_tile(&for_click.0, for_click.1, window, cx)
+                            }),
+                        )
+                        .child(header)
+                        .child(
+                            div()
+                                .relative()
+                                .flex_1()
+                                .min_h_0()
+                                .flex()
+                                .flex_col()
+                                .child(content),
+                        ),
+                );
+            }
+            grid = grid.child(line);
+        }
+        grid.into_any_element()
+    }
+
     /// The pane area: the tab on screen and the panes it is made of (see [`crate::split`]).
     fn body(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.grid {
+            return self.agent_grid(cx);
+        }
         let colors = Theme::global(cx).tokens.colors.clone();
         let Some(worktree_id) = self.state.read(cx).active_id().cloned() else {
             // Nothing on screen. Which nothing it is decides what to say: no
@@ -3308,7 +3512,13 @@ impl Workspace {
         }
         // The strip fills the bar (`flex_1`), which pushes the `+` after it to
         // the far right, outside the scroll.
-        bar = bar.child(strip).child(add);
+        // The grid is not one worktree's tabs, so their names would only mislead: the bar keeps its
+        // toggles and drops the rest.
+        if self.grid {
+            bar = bar.child(div().flex_1());
+        } else {
+            bar = bar.child(strip).child(add);
+        }
         // While the sidebar is down its toggle lives at the bar's end, after the
         // `+`, so the two take turns in the row instead of painting over each other.
         if self.panel.is_none() {
@@ -3336,6 +3546,7 @@ impl Render for Workspace {
         self.restore_and_ensure(cx);
         self.load_visible_panes(window, cx);
         self.ensure_pane_focus(window, cx);
+        self.note_recent(cx);
         let colors = Theme::global(cx).tokens.colors.clone();
         let mut column = div()
             .id("workspace-body")
@@ -3431,7 +3642,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_worktree_new))
             .on_action(cx.listener(Self::handle_edit_shared_paths))
             .on_action(cx.listener(Self::handle_worktree_ask_remove))
-            .on_action(cx.listener(Self::handle_settings_open));
+            .on_action(cx.listener(Self::handle_settings_open))
+            .on_action(cx.listener(Self::toggle_grid));
 
         // With no worktree there is no tab bar to hold the toggle (see `tab_bar`),
         // so it floats at the top-right of the pane area instead.
@@ -3526,8 +3738,11 @@ impl Render for Workspace {
         // it re-measures when the list changes, and an unchanged list is not a
         // repaint.
         let live = self.live_terminals(cx);
-        self.resource_bar
-            .update(cx, |bar, cx| bar.set_terminals(live, cx));
+        let grid = self.grid;
+        self.resource_bar.update(cx, |bar, cx| {
+            bar.set_terminals(live, cx);
+            bar.set_grid(grid, cx);
+        });
 
         root.child(row).child(self.resource_bar.clone())
     }
@@ -7796,6 +8011,57 @@ mod window_tests {
             "no row named like the tab: {:?}",
             readout_rows(cx, &fixture, &worktree_id)
         );
+    }
+
+    /// The grid button swaps the tab on screen for the recently used agents, and back.
+    #[gpui_kit::test]
+    fn the_grid_button_shows_the_recent_agents(cx: &mut TestAppContext) {
+        let agent = |id: &str| AgentSpec {
+            id: id.into(),
+            name: id.into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            resume_args: Vec::new(),
+            new_args: Vec::new(),
+            env: Default::default(),
+            status: Vec::new(),
+        };
+        let settings = Settings {
+            agents: vec![agent("a"), agent("b")],
+            ..Settings::default()
+        };
+        let fixture = open_with_settings(cx, "agent-grid", settings);
+        for id in ["a", "b"] {
+            let before = terminal_tabs(cx, &fixture);
+            click_visible(cx, &fixture, "add-tab");
+            assert!(draw_until(cx, &fixture, |cx| found(
+                cx, &fixture, "add-menu"
+            )));
+            click_visible(cx, &fixture, &format!("add-menu-agent-{id}"));
+            assert!(draw_until(cx, &fixture, |cx| terminal_tabs(cx, &fixture) == before + 1));
+        }
+        // The shell tab is not an agent, so it stays out of the grid.
+        click_visible(cx, &fixture, "agent-grid-toggle");
+        draw(cx, &fixture);
+        assert!(!found(cx, &fixture, "tab-strip"), "the grid hides the tabs");
+        let folded = cx.update(|cx| {
+            let workspace = fixture.workspace.read(cx);
+            (workspace.left_open, workspace.panel)
+        });
+        assert_eq!(folded, (false, None), "the grid folds both sidebars");
+        let agents = cx.update(|cx| fixture.workspace.read(cx).recent_agents(cx));
+        assert_eq!(agents.len(), 2, "both agents were used");
+        for (_, pane) in &agents {
+            assert!(found(cx, &fixture, &format!("agent-grid-{pane}")));
+        }
+        click_visible(cx, &fixture, "agent-grid-toggle");
+        draw(cx, &fixture);
+        assert!(!found(cx, &fixture, "agent-grid"));
+        let back = cx.update(|cx| {
+            let workspace = fixture.workspace.read(cx);
+            (workspace.left_open, workspace.panel.is_some())
+        });
+        assert_eq!(back, (true, true), "leaving the grid brings the sidebars back");
     }
 
     /// A terminal whose child is gone keeps its row and says how it went: the

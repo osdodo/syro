@@ -170,6 +170,8 @@ pub struct ResourceBar {
     sessions: Vec<Session>,
     /// Whether the usage panel is open.
     chart_open: bool,
+    /// Whether the workspace is showing the recent agents grid: the toggle's highlight.
+    grid_on: bool,
     /// How many times it has been opened: the charts' appear key, so a panel that
     /// is opened again draws its data in again rather than sitting there finished.
     charts_opened: u64,
@@ -219,6 +221,7 @@ impl ResourceBar {
             usage: None,
             sessions: Vec::new(),
             chart_open: false,
+            grid_on: false,
             charts_opened: 0,
             swept_at: None,
             _poll: poll,
@@ -266,6 +269,13 @@ impl ResourceBar {
     /// The live terminals, as the workspace sees them. Called where the set
     /// changes rather than every frame: an unchanged list is not a repaint, and
     /// a sweep belongs in an event.
+    pub fn set_grid(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.grid_on != on {
+            self.grid_on = on;
+            cx.notify();
+        }
+    }
+
     pub fn set_terminals(&mut self, terminals: Vec<LiveTerminal>, cx: &mut Context<Self>) {
         if self.terminals == terminals {
             return;
@@ -940,6 +950,11 @@ fn legend(shares: &[Share], max_height: Pixels, colors: &ColorTokens) -> AnyElem
         .into_any_element()
 }
 
+/// `agent_grid::Toggle` — the recent agents grid, on or off. Handled by the workspace.
+#[derive(Clone, PartialEq, Debug, Action)]
+#[action(namespace = agent_grid, name = "Toggle", no_json)]
+pub struct ToggleGrid;
+
 impl Render for ResourceBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = Theme::global(cx).tokens.colors.clone();
@@ -990,22 +1005,48 @@ impl Render for ResourceBar {
                     })),
             )
             .child(
-                // The readout: an icon and the app's own cost. A label rather
-                // than a button — there is nothing behind it to open any more.
+                // The recent agents grid, beside settings. Dispatched for the same reason.
                 div()
-                    .id("resource-summary")
+                    .id("agent-grid-toggle")
                     .test_support()
-                    .aria_label(summary)
+                    .aria_label(t!("workspace.aria.agent_grid"))
+                    .aria_selected(self.grid_on)
                     .h_flex()
                     .items_center()
-                    .gap_1()
-                    .px_1()
-                    .child(Icon::new(IconName::MemoryStick).size(px(12.)))
-                    .child(SharedString::from(match app {
-                        Some(app) => format_bytes(app.rss_bytes),
-                        None => "—".to_string(),
+                    .justify_center()
+                    .size(px(20.))
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_color(if self.grid_on {
+                        colors.primary
+                    } else {
+                        colors.muted_foreground
+                    })
+                    .hover(|el| el.bg(colors.muted))
+                    .child(
+                        Icon::default()
+                            .data(include_bytes!("../assets/icons/grid-3x2.svg"))
+                            .size(px(13.)),
+                    )
+                    .on_click(cx.listener(|_this, _event, window, cx| {
+                        window.dispatch_action(Box::new(ToggleGrid), cx);
                     })),
             );
+        // The readout: an icon and the app's own cost. A label rather than a button — there is
+        // nothing behind it to open any more. It sits at the trailing end, beside the usage chip.
+        let readout = div()
+            .id("resource-summary")
+            .test_support()
+            .aria_label(summary)
+            .h_flex()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .child(Icon::new(IconName::MemoryStick).size(px(12.)))
+            .child(SharedString::from(match app {
+                Some(app) => format_bytes(app.rss_bytes),
+                None => "—".to_string(),
+            }));
 
         if let Some(error) = &self.error {
             strip = strip.child(SharedString::from(
@@ -1013,10 +1054,10 @@ impl Render for ResourceBar {
             ));
         }
 
-        // The chip waits at the bar's trailing end, and the spacer is what puts it
-        // there: the readout — and any error beside it — keep the leading side.
+        // The readout and the chip wait at the bar's trailing end, and the spacer is what puts
+        // them there: the buttons — and any error beside them — keep the leading side.
         strip = strip.child(div().flex_1());
-        strip = strip.child(self.usage_chip(&colors, cx));
+        strip = strip.child(readout).child(self.usage_chip(&colors, cx));
 
         if self.chart_open {
             strip = strip.child(self.chart_overlay(window.bounds().size, cx));
@@ -1151,6 +1192,7 @@ mod tests {
             usage: None,
             sessions: Vec::new(),
             chart_open: false,
+            grid_on: false,
             charts_opened: 0,
             swept_at: None,
             _poll: Task::ready(()),
