@@ -303,6 +303,10 @@ pub struct AppState {
     state_error: Option<String>,
     /// The last `[[hook]]` that failed and what it said.
     hook_error: Option<String>,
+    /// The web panel's address, token and all, once it is up (`app::web`). Held
+    /// here rather than on the view that starts it, because the settings form is
+    /// where a user looks for it and the form only knows the state.
+    web_url: Option<String>,
     /// How wide the side panels were as last dragged (the layout restore — the widths are
     /// layout, and `state.json` is where layout lives).
     sidebar_width: Option<f32>,
@@ -346,6 +350,7 @@ impl AppState {
             pending: BTreeMap::new(),
             state_error,
             hook_error: None,
+            web_url: None,
             sidebar_width: loaded.sidebar_width,
             right_width: loaded.right_width,
             hidden_repos: loaded.hidden_repos,
@@ -499,6 +504,21 @@ impl AppState {
     /// The last `[[hook]]` failure, as one line for whoever shows it.
     pub fn hook_error(&self) -> Option<&str> {
         self.hook_error.as_deref()
+    }
+
+    /// The web panel's address, token and all. `None` while it is off or was not
+    /// started, which is what the settings form says instead of showing a URL.
+    pub fn web_url(&self) -> Option<&str> {
+        self.web_url.as_deref()
+    }
+
+    /// Recorded by whoever starts the panel. Not persisted: it holds a token, and
+    /// a port that may be free this run and taken the next.
+    pub fn set_web_url(&mut self, url: Option<String>, cx: &mut Context<Self>) {
+        if self.web_url != url {
+            self.web_url = url;
+            cx.notify();
+        }
     }
 
     /// How wide the sidebar was left, or `None` for the default width.

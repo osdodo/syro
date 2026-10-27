@@ -1,0 +1,977 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="color-scheme" content="dark light">
+<title>syro · Workspace</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%235363db'/%3E%3Cpath d='m7 8 4 4-4 4M13 16h4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="/icon.png">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f6f8; --panel: #fff; --surface: #f8f9fb; --line: #e5e8ee;
+    --text: #202735; --dim: #637086; --idle: #788395; --working: #147a55;
+    --permission: #94600f; --accent: #4f60d9; --danger: #c0444a;
+    --accent-soft: #eef0ff; --working-soft: #eaf7f1; --permission-soft: #fff5df;
+    --shadow: 0 3px 16px #20273504;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #11151c; --panel: #191e28; --surface: #151a23; --line: #2b3341;
+      --text: #e8ecf4; --dim: #9ba6b9; --idle: #909caf; --working: #65cba1;
+      --permission: #e5b664; --accent: #a2adff; --danger: #f28d92;
+      --accent-soft: #292e4b; --working-soft: #1b352d; --permission-soft: #3c3120;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  button, input, select { font: inherit; }
+  button, summary, input, select { -webkit-tap-highlight-color: transparent; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .topbar { background: var(--panel); border-bottom: 1px solid var(--line); }
+  .topbar-inner {
+    max-width: 1440px; margin: auto; min-height: 48px;
+    padding: max(8px, env(safe-area-inset-top)) 20px 8px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; }
+  .brand-mark {
+    width: 26px; height: 26px; padding: 6px; color: #fff; background: #5363db;
+    border-radius: 7px; flex: none;
+  }
+  .brand-name { font-size: 19px; font-weight: 750; letter-spacing: -.6px; line-height: 1.1; }
+  .connection { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
+  .connection::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--idle); flex: none; }
+  .connection[data-state="live"]::before { background: var(--working); box-shadow: 0 0 0 4px var(--working-soft); }
+  .connection[data-state="offline"]::before { background: var(--permission); }
+  .workspace { max-width: 1440px; margin: auto; padding: 18px 20px calc(20px + env(safe-area-inset-bottom)); }
+  h1 { font-size: 20px; line-height: 1.3; letter-spacing: -.4px; margin: 0 0 12px; }
+  .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .stat { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; }
+  button.stat { color: inherit; background: none; border: 0; border-radius: 0; min-height: 0; font: inherit; text-align: left; }
+  button.stat:disabled { opacity: 1; cursor: default; }
+  button.stat:not(:disabled):hover { background: var(--permission-soft); }
+  .stat + .stat { border-left: 1px solid var(--line); }
+  .stat-top { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11px; }
+  .stat-value { font-size: 18px; font-weight: 650; line-height: 1.2; font-variant-numeric: tabular-nums; }
+  .stat.attention .stat-value { color: var(--permission); }
+  .content { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 20px; align-items: start; }
+  .section-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-height: 24px; }
+  h2 { font-size: 12px; font-weight: 650; margin: 0; }
+  .section-caption { color: var(--dim); font-size: 11px; margin-left: auto; }
+  .count { color: var(--dim); background: var(--panel); border: 1px solid var(--line); padding: 0 7px; border-radius: 5px; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+  .worktree-card { margin-bottom: 10px; overflow: hidden; }
+  .worktree-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 10px 12px; }
+  .worktree-info { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 8px; min-width: 0; }
+  .repo { color: var(--dim); font-size: 10px; overflow-wrap: anywhere; }
+  .name { font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
+  .branch { color: var(--dim); font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+  .branch::before { content: "⑂ "; }
+  .branch:empty { display: none; }
+  .status { display: inline-flex; align-items: center; gap: 5px; justify-self: end; white-space: nowrap; min-width: 0; font-size: 10px; font-weight: 550; color: var(--dim); background: var(--surface); padding: 3px 6px; border-radius: 4px; }
+  .status.working { color: var(--working); background: var(--working-soft); }
+  .status.permission, .status.stalled { color: var(--permission); background: var(--permission-soft); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--idle); flex: none; }
+  .dot.working { background: var(--working); }
+  .dot.permission, .dot.stalled { background: var(--permission); }
+  .terminal-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--line); cursor: pointer; }
+  .terminal-row:hover { background: var(--surface); }
+  .agent-info { min-width: 0; }
+  .agent-name { display: flex; align-items: baseline; gap: 6px; font-size: 12px; font-weight: 600; min-width: 0; }
+  .agent-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-number { color: var(--dim); font: 10px ui-monospace, monospace; flex: none; }
+  .task { color: var(--dim); font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .task:empty { display: none; }
+  .actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; min-width: 88px; }
+  /* Room between "+" and the bin, so a thumb aiming for one does not hit the other. */
+  .worktree-head .actions { gap: 16px; min-width: 98px; }
+  button {
+    color: var(--text); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; min-height: 32px; font-size: 11px;
+    font-weight: 550; cursor: pointer; transition: background .15s, border-color .15s;
+  }
+  button:hover { background: var(--surface); border-color: var(--dim); }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+  button.primary:hover { filter: brightness(1.1); }
+  button.danger { color: var(--dim); border-color: transparent; background: transparent; }
+  button.danger:hover { color: var(--danger); border-color: var(--danger); }
+  button.open { color: var(--accent); background: var(--accent-soft); border-color: transparent; min-width: 50px; }
+  button.open:hover { border-color: var(--accent); }
+  .icon-button { display: grid; place-items: center; width: 32px; padding: 0; flex: none; }
+  .worktree-head .danger { width: 50px; }
+  .icon-button svg { width: 14px; height: 14px; }
+  button[data-copied="true"] { color: var(--working); }
+  button:disabled { opacity: .5; cursor: wait; }
+  button.key { min-width: 36px; min-height: 34px; padding: 6px 9px; font: 11px ui-monospace, monospace; flex: none; }
+  input, select {
+    color: var(--text); background: var(--surface); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 9px; min-height: 36px; width: 100%; min-width: 0;
+  }
+  input::placeholder { color: var(--dim); opacity: .8; }
+  .tools details { margin-bottom: 8px; overflow: hidden; }
+  summary { cursor: pointer; font-size: 12px; font-weight: 600; padding: 10px 12px; display: flex; align-items: center; gap: 8px; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "+"; color: var(--accent); font-size: 17px; font-weight: 400; flex: none; }
+  summary::after { content: "⌄"; color: var(--dim); margin-left: auto; }
+  details[open] summary::after { transform: rotate(180deg); }
+  details form { border-top: 1px solid var(--line); padding: 12px; display: grid; gap: 10px; }
+  .label { display: block; color: var(--dim); font-size: 11px; margin-bottom: 4px; }
+  body.session-open { overflow: hidden; }
+  .terminal-panel {
+    position: fixed; inset: 0; margin: 0; width: 100%; max-width: none;
+    height: 100vh; height: 100dvh; max-height: none; border: 0; padding: 0;
+    color: var(--text); background: #10151e; overscroll-behavior: contain;
+  }
+  .terminal-panel[open] { display: flex; flex-direction: column; }
+  .terminal-panel::backdrop { background: var(--bg); }
+  .terminal-toolbar { display: flex; align-items: center; gap: 10px; padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left)); background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
+  .terminal-title { flex: 1; min-width: 0; }
+  .terminal-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .terminal-name b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+  #t-status { display: flex; flex: none; }
+  #t-context { color: var(--dim); font: 10px/1.5 ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  #t-task { color: #a5b1c4; font-size: 11px; padding: 6px 12px; border-bottom: 1px solid #2b3341; flex: none; max-height: 15vh; overflow: auto; overflow-wrap: anywhere; }
+  #t-simple { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  pre { flex: 1; min-height: 0; padding: 8px 12px; margin: 0; overflow: auto; color: #dce3ef; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; -webkit-overflow-scrolling: touch; }
+  /* Flex sizing gives the terminal all space left by its toolbar and controls. */
+  #t-full { flex: 1; min-height: 0; padding: 6px; overflow: hidden; }
+  #t-full .xterm { height: 100%; }
+  .terminal-controls { background: var(--panel); border-top: 1px solid var(--line); padding: 8px max(12px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); flex: none; }
+  .keys { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 8px; scrollbar-width: thin; }
+  .send { display: flex; gap: 8px; }
+  .send button { flex: none; }
+  .empty { border: 1px dashed var(--line); border-radius: 8px; padding: 28px 16px; text-align: center; color: var(--dim); font-size: 12px; background: var(--panel); }
+  .empty-symbol { display: block; color: var(--accent); font: 22px/1 ui-monospace, monospace; margin-bottom: 10px; }
+  .empty-title { display: block; color: var(--text); font-weight: 600; margin-bottom: 4px; }
+  .no-terminals { border-top: 1px solid var(--line); padding: 8px 12px; color: var(--dim); font-size: 11px; }
+  .workspace.stale .content, .workspace.stale .stats { opacity: .5; }
+  .err { color: var(--danger); background: var(--panel); border: 1px solid var(--danger); border-radius: 6px; padding: 8px 12px; font-size: 12px; margin: 10px 0; overflow-wrap: anywhere; }
+  #t-error { margin: 0; border-radius: 0; flex: none; max-height: 20vh; overflow: auto; }
+  @media (max-width: 900px) {
+    .content { grid-template-columns: minmax(0, 1fr) 230px; gap: 14px; }
+  }
+  @media (max-width: 700px) {
+    .content { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .workspace { padding: 12px max(12px, env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+    .topbar-inner { padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right)); }
+    h1 { font-size: 18px; margin-bottom: 10px; }
+    .connection { font-size: 10px; }
+    .stats { margin-bottom: 10px; }
+    .stat { padding: 8px 10px; gap: 5px; }
+    .stat-top { gap: 4px; }
+    .stat-value { font-size: 16px; }
+    .tools { order: -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .tools .section-heading { display: none; }
+    .tools details { margin: 0; }
+    .tools details[open] { grid-column: 1 / -1; }
+    body { font-size: 14px; }
+    .worktree-head, .terminal-row { gap: 8px; padding: 10px; }
+    .worktree-info { display: block; }
+    .repo { margin-bottom: 1px; font-size: 12px; }
+    .repo:empty { display: none; }
+    .name { font-size: 15px; }
+    .branch { display: block; margin-top: 2px; font-size: 12px; }
+    .branch:empty { display: none; }
+    .agent-name { font-size: 14px; }
+    .session-number { font-size: 12px; }
+    .task { font-size: 13px; }
+    .status { font-size: 12px; padding: 3px 7px; }
+    .stat-top { font-size: 12px; }
+    .no-terminals, .empty { font-size: 13px; }
+    button { font-size: 13px; }
+    button { min-height: 36px; }
+    input, select { font-size: 16px; min-height: 38px; }
+    summary { min-height: 40px; padding: 8px 10px; font-size: 13px; }
+    .section-caption { display: none; }
+    .terminal-toolbar { gap: 8px; }
+    .terminal-toolbar .actions { gap: 4px; }
+    .terminal-toolbar button { padding-inline: 8px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    button { transition: none; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 6 6 6-6 6M13 18h6"/></svg>
+      <div class="brand-name">syro</div>
+    </div>
+    <span class="connection" id="hint" role="status"></span>
+  </div>
+</header>
+<main class="workspace" id="workspace">
+  <h1 id="page-title"></h1>
+  <div class="stats">
+    <div class="stat"><div class="stat-top" id="stat-worktrees-label"></div><strong class="stat-value" id="stat-worktrees">—</strong></div>
+    <div class="stat"><div class="stat-top"><span class="dot working" aria-hidden="true"></span><span id="stat-working-label"></span></div><strong class="stat-value" id="stat-working">—</strong></div>
+    <button class="stat attention" id="stat-attention-btn" disabled><span class="stat-top"><span class="dot permission" aria-hidden="true"></span><span id="stat-attention-label"></span></span><strong class="stat-value" id="stat-attention">—</strong></button>
+  </div>
+  <div id="error" class="err" role="alert" hidden></div>
+  <div class="content">
+    <section aria-labelledby="worktrees-title">
+      <div class="section-heading"><h2 id="worktrees-title"></h2><span class="count" id="worktree-count">0</span><span class="section-caption" id="list-caption"></span></div>
+      <div id="list"><div class="empty" id="loading" role="status"></div></div>
+    </section>
+    <aside class="tools" aria-labelledby="tools-title">
+      <div class="section-heading"><h2 id="tools-title"></h2></div>
+      <details class="card" id="new-worktree">
+        <summary id="new-summary"></summary>
+        <form id="new-form">
+          <div>
+            <label class="label" id="new-repo-label" for="new-repo"></label>
+            <input id="new-repo" list="repos" required autocapitalize="off" autocorrect="off" spellcheck="false">
+            <datalist id="repos"></datalist>
+          </div>
+          <div>
+            <label class="label" id="new-name-label" for="new-name"></label>
+            <input id="new-name" required autocapitalize="off" autocorrect="off" spellcheck="false">
+          </div>
+          <button class="primary" type="submit" id="new-create"></button>
+        </form>
+      </details>
+      <details class="card" id="new-terminal">
+        <summary id="term-summary"></summary>
+        <form id="term-form">
+          <div>
+            <label class="label" id="term-worktree-label" for="term-worktree"></label>
+            <select id="term-worktree" required></select>
+          </div>
+          <div>
+            <label class="label" id="term-agent-label" for="term-agent"></label>
+            <select id="term-agent"></select>
+          </div>
+          <button class="primary" type="submit" id="term-create"></button>
+        </form>
+      </details>
+    </aside>
+  </div>
+</main>
+<dialog class="terminal-panel" id="terminal" aria-labelledby="t-name">
+  <div class="terminal-toolbar">
+    <button id="t-close"></button>
+    <div class="terminal-title">
+      <div class="terminal-name"><b id="t-name"></b><span id="t-status"></span></div>
+      <div id="t-context"></div>
+    </div>
+    <button id="t-full-btn"></button>
+  </div>
+  <div id="t-error" class="err" role="alert" hidden></div>
+  <div id="t-task" hidden></div>
+  <div id="t-full" hidden></div>
+  <div id="t-simple"><pre id="t-text" tabindex="0"></pre></div>
+  <div class="terminal-controls">
+    <div class="keys" id="t-keys"></div>
+    <form class="send" id="t-send-form">
+      <input id="t-input" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button class="primary" type="submit" id="t-send"></button>
+    </form>
+  </div>
+</dialog>
+
+<script>
+// The server has turned `?token=` into a cookie by now; the token must not stay
+// in the address bar, the history or a screenshot.
+if (/[?&]token=/.test(location.search)) history.replaceState(history.state, "", location.pathname);
+const ZH = String("__syro_locale__" || navigator.language || "")
+  .toLowerCase()
+  .startsWith("zh");
+const T = ZH ? {
+  poll: "实时连接", updated: "更新于", notUpdated: "连接中断，正在重连", connecting: "正在连接…",
+  title: "工作区总览",
+  worktrees: "工作树", working: "运行中", attention: "需要关注", tools: "快捷操作",
+  listCaption: "所有仓库 · 实时同步", loading: "正在加载工作区…",
+  noWorktrees: "还没有工作树", emptyHint: "新建一个工作树，开始你的下一个任务。",
+  noTerminals: "暂无终端，点击 + 启动。",
+  statuses: { working: "运行中", idle: "空闲", permission: "等待授权", stalled: "可能卡住", none: "未运行" },
+  input: "向终端发送文字…", repoPlaceholder: "选择或输入仓库", namePlaceholder: "例如：fix-login",
+  open: "进入", remove: "删除",
+  removeAsk: (name) => "删除工作树「" + name + "」？它的 git 工作树目录会一并从磁盘移除。",
+  stale: "连接中断，以下为断线前的数据。", shellName: "终端",
+  copy: "复制会话命令", copied: "已复制",
+  close: "‹ 返回", send: "发送",
+  full: "完整终端", simple: "简洁视图", ended: "[终端已结束]",
+  new: "新建工作树", repo: "仓库（名字或 id）", name: "工作树名字", create: "创建",
+  newTerminal: "新建终端", worktree: "工作树", agent: "Agent", start: "启动",
+  shell: "普通 shell",
+  keys: {
+    enter: "回车", esc: "Esc", tab: "Tab", backspace: "退格", space: "空格",
+    up: "↑", down: "↓", left: "←", right: "→", "ctrl-c": "Ctrl-C", "ctrl-d": "Ctrl-D",
+  },
+} : {
+  poll: "Live connection", updated: "Updated", notUpdated: "Disconnected · Reconnecting", connecting: "Connecting…",
+  title: "Workspace overview",
+  worktrees: "Worktrees", working: "Running", attention: "Needs attention", tools: "Quick actions",
+  listCaption: "All repositories · Live updates", loading: "Loading your workspace…",
+  noWorktrees: "A fresh workspace", emptyHint: "Create a worktree to start your next task.",
+  noTerminals: "No terminals. Use + to start one.",
+  statuses: { working: "Running", idle: "Idle", permission: "Approve?", stalled: "Stalled?", none: "Not running" },
+  input: "Send text to terminal…", repoPlaceholder: "Select or enter a repository", namePlaceholder: "e.g. fix-login",
+  open: "Open", remove: "Remove",
+  removeAsk: (name) => "Remove the worktree \"" + name + "\"? Its git worktree directory is deleted from disk.",
+  stale: "Disconnected. What is shown is from before the connection dropped.", shellName: "Shell",
+  copy: "Copy resume command", copied: "Copied",
+  close: "‹ Back", send: "Send",
+  full: "Full terminal", simple: "Simple view", ended: "[the terminal ended]",
+  new: "New worktree", repo: "Repository (name or id)", name: "Worktree name", create: "Create",
+  newTerminal: "New terminal", worktree: "Worktree", agent: "Agent", start: "Start",
+  shell: "Plain shell",
+  keys: {
+    enter: "Enter", esc: "Esc", tab: "Tab", backspace: "Backspace", space: "Space",
+    up: "↑", down: "↓", left: "←", right: "→", "ctrl-c": "Ctrl-C", "ctrl-d": "Ctrl-D",
+  },
+};
+// The keys the panel offers as buttons, in the order they are drawn.
+const KEYS = ["enter", "esc", "ctrl-c", "y", "n", "tab", "up", "down", "left", "right"];
+const ICONS = {
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/>',
+  remove: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
+  add: '<path d="M12 5v14M5 12h14"/>',
+};
+
+function iconButton(icon, label) {
+  const button = document.createElement("button");
+  button.className = "icon-button";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[icon] + '</svg>';
+  return button;
+}
+
+let listing = { worktrees: [] };
+// The presets the panel may start, from `/api/agents`; fetched once.
+let agents = [];
+
+function say(message) {
+  const active = document.getElementById("terminal").open ? "t-error" : "error";
+  for (const id of ["error", "t-error"]) {
+    const box = document.getElementById(id);
+    box.textContent = id === active ? message || "" : "";
+    box.hidden = !box.textContent;
+  }
+}
+
+async function api(path, options) {
+  const response = await fetch(path, Object.assign({
+    headers: { "content-type": "application/json" },
+  }, options));
+  const text = await response.text();
+  if (!response.ok) throw new Error(text || (options && options.method || "GET") + " " + path);
+  return text;
+}
+
+function post(path, body) {
+  return api(path, { method: "POST", body: JSON.stringify(body) });
+}
+
+function dot(status, stalled) {
+  const el = document.createElement("span");
+  el.className = "dot" + (status ? " " + status : "") + (stalled ? " stalled" : "");
+  el.setAttribute("aria-hidden", "true");
+  return el;
+}
+
+function statusBadge(status, stalled) {
+  const badge = document.createElement("span");
+  badge.className = "status" + (status ? " " + status : "") + (stalled ? " stalled" : "");
+  badge.append(dot(status, stalled), T.statuses[stalled ? "stalled" : status || "none"] || T.statuses.none);
+  return badge;
+}
+
+// What a terminal is called: its agent, or "Shell" for one that runs none.
+function terminalName(terminal) {
+  return terminal.agent_name || terminal.agent || T.shellName;
+}
+
+const needsYou = (t) => t.status === "permission" || t.stalled;
+
+// Waiting on you first, then running, then the rest. `sort` is stable, so the
+// app's own order holds within each group and a push does not shuffle the list.
+function urgency(wt) {
+  const terminals = wt.terminals || [];
+  if (terminals.some(needsYou)) return 0;
+  if (terminals.some((t) => t.status === "working")) return 1;
+  return 2;
+}
+
+// The rows by terminal id, as last drawn: what "Needs attention" scrolls to.
+let rows = new Map();
+
+function render() {
+  const focused = document.activeElement;
+  const list = document.getElementById("list");
+  list.textContent = "";
+  rows = new Map();
+  const worktrees = (listing.worktrees || []).slice().sort((a, b) => urgency(a) - urgency(b));
+  const terminals = worktrees.flatMap((wt) => wt.terminals || []);
+  const attention = terminals.filter(needsYou);
+  document.getElementById("stat-worktrees").textContent = worktrees.length;
+  document.getElementById("worktree-count").textContent = worktrees.length;
+  document.getElementById("stat-working").textContent = terminals.filter((t) => t.status === "working" && !t.stalled).length;
+  document.getElementById("stat-attention").textContent = attention.length;
+  document.getElementById("stat-attention-btn").disabled = !attention.length;
+  if (!worktrees.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    const symbol = document.createElement("span");
+    symbol.className = "empty-symbol";
+    symbol.textContent = ">_";
+    symbol.setAttribute("aria-hidden", "true");
+    const title = document.createElement("span");
+    title.className = "empty-title";
+    title.textContent = T.noWorktrees;
+    empty.append(symbol, title, T.emptyHint);
+    list.append(empty);
+  }
+  const repos = new Set();
+  for (const wt of worktrees) {
+    repos.add(wt.repo);
+    const card = document.createElement("article");
+    card.className = "card worktree-card";
+
+    const head = document.createElement("div");
+    head.className = "worktree-head";
+    const title = document.createElement("div");
+    title.className = "worktree-info";
+    const repo = document.createElement("div");
+    repo.className = "repo";
+    repo.textContent = wt.repo === wt.name ? "" : wt.repo;
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = wt.name;
+    const branch = document.createElement("span");
+    branch.className = "branch";
+    branch.textContent = wt.branch === wt.name ? "" : wt.branch;
+    title.append(repo, name, branch);
+    // With terminals, their rows carry the status; the head repeating it is noise.
+    head.append(title, (wt.terminals || []).length ? document.createElement("span") : statusBadge(wt.status, wt.stalled));
+    const headActions = document.createElement("div");
+    headActions.className = "actions";
+    const add = iconButton("add", T.newTerminal);
+    add.id = "add-" + wt.id;
+    add.onclick = () => {
+      document.getElementById("new-terminal").open = true;
+      document.getElementById("term-worktree").value = wt.id;
+      document.getElementById("term-agent").focus();
+    };
+    const remove = iconButton("remove", T.remove);
+    remove.id = "remove-" + wt.id;
+    remove.className += " danger";
+    remove.onclick = async () => {
+      if (!confirm(T.removeAsk(wt.repo === wt.name ? wt.name : wt.repo + " / " + wt.name))) return;
+      try { await post("/api/worktrees/remove", { id: wt.id }); refresh(); }
+      catch (error) { say(String(error.message)); }
+    };
+    headActions.append(add, remove);
+    head.append(headActions);
+    card.append(head);
+
+    for (const [index, terminal] of (wt.terminals || []).entries()) {
+      const row = document.createElement("div");
+      row.className = "terminal-row";
+      // The whole row opens the terminal; the Open button stays for keyboards and
+      // screen readers.
+      row.onclick = () => openTerminalView(terminal);
+      rows.set(terminal.id, row);
+      const info = document.createElement("div");
+      info.className = "agent-info";
+      const label = document.createElement("div");
+      label.className = "agent-name";
+      const who = terminalName(terminal);
+      const number = document.createElement("span");
+      number.className = "session-number";
+      number.textContent = String(index + 1).padStart(2, "0");
+      const agent = document.createElement("span");
+      agent.className = "agent-label";
+      agent.textContent = who;
+      agent.title = who;
+      label.append(number, agent);
+      const task = document.createElement("div");
+      task.className = "task";
+      task.textContent = terminal.task || "";
+      task.title = terminal.task || "";
+      info.append(label, task);
+      row.append(info, statusBadge(terminal.status, terminal.stalled));
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      if (terminal.resume) {
+        const copy = iconButton("copy", T.copy);
+        copy.id = "copy-" + terminal.id;
+        copy.onclick = async (event) => {
+          event?.stopPropagation();
+          try {
+            await navigator.clipboard.writeText(terminal.resume);
+            copy.title = T.copied;
+            copy.setAttribute("aria-label", T.copied);
+            copy.dataset.copied = "true";
+          } catch { say(terminal.resume); }
+          setTimeout(() => {
+            copy.title = T.copy;
+            copy.setAttribute("aria-label", T.copy);
+            delete copy.dataset.copied;
+          }, 1500);
+        };
+        actions.append(copy);
+      }
+      const open = document.createElement("button");
+      open.className = "open";
+      open.id = "open-" + terminal.id;
+      open.textContent = T.open;
+      open.setAttribute("aria-label", T.open + " · " + who + " · " + number.textContent);
+      open.onclick = (event) => { event?.stopPropagation(); openTerminalView(terminal); };
+      actions.append(open);
+      row.append(actions);
+      card.append(row);
+    }
+    if (!(wt.terminals || []).length) {
+      const empty = document.createElement("div");
+      empty.className = "no-terminals";
+      empty.textContent = T.noTerminals;
+      card.append(empty);
+    }
+    list.append(card);
+  }
+  const datalist = document.getElementById("repos");
+  datalist.textContent = "";
+  for (const repo of repos) {
+    const option = document.createElement("option");
+    option.value = repo;
+    datalist.append(option);
+  }
+
+  // The worktree picker for a new terminal. Its choice is kept across the poll
+  // that just rebuilt the list, or it would jump back to the first row twice a
+  // second while a thumb is on it.
+  const picker = document.getElementById("term-worktree");
+  const chosen = picker.value;
+  picker.textContent = "";
+  for (const wt of worktrees) {
+    const option = document.createElement("option");
+    option.value = wt.id;
+    option.textContent = wt.repo + " / " + wt.name;
+    picker.append(option);
+  }
+  if (worktrees.some((wt) => wt.id === chosen)) picker.value = chosen;
+  if (focused && !focused.isConnected && focused.id) {
+    document.getElementById(focused.id)?.focus({ preventScroll: true });
+  }
+}
+
+// The agent picker never changes: it is the app's presets, not the current run.
+async function loadAgents() {
+  try {
+    agents = JSON.parse(await api("/api/agents"));
+  } catch (error) {
+    return;
+  }
+  const picker = document.getElementById("term-agent");
+  const shell = document.createElement("option");
+  shell.value = "";
+  shell.textContent = T.shell;
+  picker.append(shell);
+  for (const agent of agents) {
+    const option = document.createElement("option");
+    option.value = agent.id;
+    option.textContent = agent.name;
+    picker.append(option);
+  }
+}
+
+// Disconnected: say so where the list is, and grey it out, or a status from
+// minutes ago reads as the agent still running.
+function markOffline(message) {
+  const hint = document.getElementById("hint");
+  hint.textContent = T.notUpdated;
+  hint.dataset.state = "offline";
+  document.getElementById("workspace").classList.add("stale");
+  say(message || T.stale);
+}
+
+function applyState(next) {
+  listing = next;
+  const hint = document.getElementById("hint");
+  hint.dataset.state = "live";
+  hint.textContent = T.poll;
+  document.getElementById("workspace").classList.remove("stale");
+  hint.title = T.updated + " " + new Date().toLocaleTimeString();
+  say("");
+  // A terminal that is gone — its tab closed, its worktree removed — closes the
+  // view here rather than polling a 404 for as long as the page is open.
+  if (shown) {
+    const current = listing.worktrees.flatMap((wt) => wt.terminals || []).find((t) => t.id === shown.id);
+    if (!current) requestCloseTerminalView();
+    else { shown = current; updateTerminalHeading(); }
+  }
+  render();
+}
+
+async function refresh() {
+  try {
+    applyState(JSON.parse(await api("/api/state")));
+  } catch (error) {
+    markOffline(T.stale + " " + String(error.message || error));
+  }
+}
+
+// The state is pushed, not polled: the app sends it when it changes and says
+// nothing otherwise, so a phone in a pocket is not woken every two seconds to be
+// told the same thing. `EventSource` reconnects on its own after a drop.
+function watchState() {
+  if (!window.EventSource) return false;
+  const stream = new EventSource("/api/state/stream");
+  stream.addEventListener("state", (event) => {
+    try {
+      applyState(JSON.parse(event.data));
+    } catch (error) {
+      say(String(error.message || error));
+    }
+  });
+  stream.onerror = () => markOffline();
+  return true;
+}
+
+// The open terminal, if any: what the key buttons and the input send to.
+let shown = null;
+
+function updateTerminalHeading() {
+  const wt = listing.worktrees.find((wt) => (wt.terminals || []).some((t) => t.id === shown.id));
+  const index = wt ? wt.terminals.findIndex((t) => t.id === shown.id) + 1 : 1;
+  document.getElementById("t-name").textContent = terminalName(shown) + " · " + String(index).padStart(2, "0");
+  document.getElementById("t-name").title = document.getElementById("t-name").textContent;
+  const context = document.getElementById("t-context");
+  context.textContent = wt ? wt.repo + " / " + wt.name : shown.id;
+  context.title = context.textContent;
+  const status = document.getElementById("t-status");
+  status.textContent = "";
+  status.append(statusBadge(shown.status, shown.stalled));
+  const task = document.getElementById("t-task");
+  task.textContent = shown.task || "";
+  task.title = task.textContent;
+  task.hidden = !shown.task;
+}
+
+function openTerminalView(terminal, pushHistory = true) {
+  closeFullTerminal();
+  shown = terminal;
+  const dialog = document.getElementById("terminal");
+  if (!dialog.open) {
+    if (pushHistory) history.pushState({ syroTerminal: terminal.id }, "");
+    dialog.showModal();
+    document.body.classList.add("session-open");
+  }
+  document.getElementById("t-text").textContent = "";
+  document.getElementById("t-input").value = "";
+  say("");
+  updateTerminalHeading();
+  fitTerminalToViewport();
+  openFullTerminal();
+}
+
+function closeTerminalView() {
+  const id = shown?.id;
+  closeFullTerminal();
+  shown = null;
+  document.getElementById("terminal").close();
+  document.body.classList.remove("session-open");
+  document.getElementById("open-" + id)?.focus({ preventScroll: true });
+}
+
+function requestCloseTerminalView() {
+  closeTerminalView();
+  if (history.state?.syroTerminal) history.back();
+}
+
+// --- the full terminal ------------------------------------------------------
+//
+// xterm.js, fetched only when asked for: 291 KiB has no business loading for a
+// page whose job is to say whether an agent is working.
+
+let library = null;
+let term = null;
+let fit = null;
+let stream = null;
+let fullAttempt = 0;
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("could not load " + src));
+    document.head.append(script);
+  });
+}
+
+function loadLibrary() {
+  if (!library) library = (async () => {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "/xterm.css";
+    document.head.append(css);
+    await loadScript("/xterm.js");
+    await loadScript("/xterm-addon-fit.js");
+    return {
+      Terminal: window.Terminal,
+      FitAddon: (window.FitAddon && window.FitAddon.FitAddon) || window.FitAddon,
+    };
+  })().catch((error) => { library = null; throw error; });
+  return library;
+}
+
+function fromHex(text) {
+  const bytes = new Uint8Array(text.length / 2);
+  for (let at = 0; at < bytes.length; at++) {
+    bytes[at] = parseInt(text.slice(at * 2, at * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function terminalPath(leaf) {
+  return "/api/terminal/" + encodeURIComponent(shown.id) + "/" + leaf;
+}
+
+function sendSize() {
+  if (!term) return;
+  post(terminalPath("resize"), { cols: term.cols, rows: term.rows })
+    .catch((error) => say(String(error.message || error)));
+}
+
+async function openFullTerminal() {
+  if (!shown || !document.getElementById("t-full").hidden) return;
+  const attempt = ++fullAttempt;
+  const terminalId = shown.id;
+  document.getElementById("t-full").hidden = false;
+  document.getElementById("t-simple").hidden = true;
+  document.getElementById("t-full-btn").textContent = T.simple;
+  try {
+    const { Terminal, FitAddon } = await loadLibrary();
+    // The user may have returned or switched views while the library loaded.
+    if (attempt !== fullAttempt || shown?.id !== terminalId) return;
+    term = new Terminal({ fontSize: 11, scrollback: 4000, theme: { background: "#10151e", foreground: "#dce3ef" } });
+    fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById("t-full"));
+    fit.fit();
+    term.onData((data) => {
+      post("/api/terminal/" + encodeURIComponent(terminalId) + "/input", { text: data })
+        .catch((error) => say(String(error.message || error)));
+    });
+    // The child is told the size this screen actually has; a TUI drawing for a
+    // window nobody is looking at is worse than one that redraws.
+    sendSize();
+    stream = new EventSource(terminalPath("stream"));
+    stream.addEventListener("paint", (event) => term.write(fromHex(event.data)));
+    stream.addEventListener("bytes", (event) => term.write(fromHex(event.data)));
+    stream.addEventListener("end", () => {
+      term.write("\r\n" + T.ended + "\r\n");
+      // Closed explicitly: an `EventSource` reconnects on its own, and this one
+      // would reconnect forever to a terminal that has ended.
+      if (stream) { stream.close(); stream = null; }
+    });
+    // On a phone, focus pops the keyboard over half the screen before anyone has
+    // read it; a tap on the terminal focuses it when typing is wanted.
+    if (!window.matchMedia?.("(pointer: coarse)").matches) term.focus();
+  } catch (error) {
+    // Back to the view that always works rather than an empty box.
+    if (attempt !== fullAttempt) return;
+    say(String(error.message || error));
+    closeFullTerminal();
+    loadText();
+  }
+}
+
+function closeFullTerminal() {
+  fullAttempt++;
+  if (stream) { stream.close(); stream = null; }
+  // Disposing is what drops the bytes' reader, which is how the app's reader
+  // thread stops writing into a queue nobody reads.
+  if (term) { term.dispose(); term = null; }
+  fit = null;
+  document.getElementById("t-full").hidden = true;
+  document.getElementById("t-simple").hidden = false;
+  document.getElementById("t-full-btn").textContent = T.full;
+}
+
+async function loadText() {
+  if (!shown || !document.getElementById("t-full").hidden) return;
+  const terminalId = shown.id;
+  try {
+    const text = await api("/api/terminal/" + encodeURIComponent(terminalId) + "/snapshot");
+    if (shown?.id !== terminalId || !document.getElementById("t-full").hidden) return;
+    const pre = document.getElementById("t-text");
+    // Only scroll to the bottom when it was already there: a reader scrolled up
+    // must not be yanked back down by the next poll.
+    const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 24;
+    pre.textContent = text;
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+  } catch (error) {
+    if (shown?.id === terminalId) say(String(error.message || error));
+  }
+}
+
+async function sendKeys(keys) {
+  if (!shown) return;
+  try { await post("/api/terminal/" + encodeURIComponent(shown.id) + "/input", { keys }); }
+  catch (error) { say(String(error.message || error)); }
+  loadText();
+}
+
+function buildKeys() {
+  const box = document.getElementById("t-keys");
+  box.textContent = "";
+  for (const key of KEYS) {
+    const button = document.createElement("button");
+    button.className = "key";
+    button.textContent = T.keys[key] || key;
+    button.onclick = () => sendKeys([key]);
+    box.append(button);
+  }
+}
+
+document.documentElement.lang = ZH ? "zh-CN" : "en";
+for (const [id, text] of Object.entries({
+  "page-title": T.title,
+  "stat-worktrees-label": T.worktrees, "stat-working-label": T.working,
+  "stat-attention-label": T.attention, "worktrees-title": T.worktrees,
+  "list-caption": T.listCaption, "tools-title": T.tools,
+  loading: T.loading, hint: T.connecting,
+})) document.getElementById(id).textContent = text;
+document.getElementById("t-input").placeholder = T.input;
+document.getElementById("t-input").setAttribute("aria-label", T.input);
+document.getElementById("new-repo").placeholder = T.repoPlaceholder;
+document.getElementById("new-name").placeholder = T.namePlaceholder;
+document.getElementById("t-close").textContent = T.close;
+document.getElementById("t-send").textContent = T.send;
+document.getElementById("t-full-btn").textContent = T.full;
+document.getElementById("new-summary").textContent = T.new;
+document.getElementById("new-repo-label").textContent = T.repo;
+document.getElementById("new-name-label").textContent = T.name;
+document.getElementById("new-create").textContent = T.create;
+document.getElementById("term-summary").textContent = T.newTerminal;
+document.getElementById("term-worktree-label").textContent = T.worktree;
+document.getElementById("term-agent-label").textContent = T.agent;
+document.getElementById("term-create").textContent = T.start;
+
+document.getElementById("t-close").onclick = requestCloseTerminalView;
+document.getElementById("terminal").addEventListener("cancel", (event) => {
+  // Escape belongs to the agent when the interactive terminal has focus.
+  event.preventDefault();
+  if (!term) requestCloseTerminalView();
+});
+window.addEventListener("popstate", (event) => {
+  const terminal = listing.worktrees.flatMap((wt) => wt.terminals || []).find((t) => t.id === event.state?.syroTerminal);
+  if (terminal) openTerminalView(terminal, false);
+  else closeTerminalView();
+});
+
+document.getElementById("t-full-btn").onclick = () => {
+  if (!document.getElementById("t-full").hidden) { closeFullTerminal(); loadText(); }
+  else openFullTerminal();
+};
+
+function fitTerminalToViewport() {
+  const dialog = document.getElementById("terminal");
+  if (!dialog.open) return;
+  if (window.visualViewport) {
+    dialog.style.height = window.visualViewport.height + "px";
+    dialog.style.top = window.visualViewport.offsetTop + "px";
+  }
+  if (!term || !fit) return;
+  const cols = term.cols, rows = term.rows;
+  fit.fit();
+  if (cols !== term.cols || rows !== term.rows) sendSize();
+}
+window.addEventListener("resize", fitTerminalToViewport);
+window.visualViewport?.addEventListener("resize", fitTerminalToViewport);
+window.visualViewport?.addEventListener("scroll", fitTerminalToViewport);
+if (window.ResizeObserver) {
+  new window.ResizeObserver(fitTerminalToViewport).observe(document.getElementById("t-full"));
+}
+
+document.getElementById("t-send-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const input = document.getElementById("t-input");
+  const send = document.getElementById("t-send");
+  if (!input.value || !shown || send.disabled) return;
+  const text = input.value, terminalId = shown.id;
+  send.disabled = true;
+  try {
+    await post("/api/terminal/" + encodeURIComponent(terminalId) + "/input", { text });
+    if (shown?.id === terminalId && input.value === text) input.value = "";
+  } catch (error) { say(String(error.message || error)); }
+  finally { send.disabled = false; }
+  if (shown?.id === terminalId) input.focus();
+  loadText();
+};
+
+// One request at a time from a create form: a second tap on a slow network
+// would make a second terminal. Success folds the form away; the new row
+// arrives on the state stream, so only a page without one has to ask again.
+async function submitOnce(buttonId, detailsId, request) {
+  const button = document.getElementById(buttonId);
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    await request();
+    say("");
+    document.getElementById(detailsId).open = false;
+    if (!window.EventSource) setTimeout(refresh, 800);
+  } catch (error) {
+    say(String(error.message || error));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+document.getElementById("new-form").onsubmit = (event) => {
+  event.preventDefault();
+  const repo = document.getElementById("new-repo").value.trim();
+  const name = document.getElementById("new-name").value.trim();
+  if (!repo || !name) return;
+  return submitOnce("new-create", "new-worktree", async () => {
+    await post("/api/worktrees", { repo, name });
+    document.getElementById("new-name").value = "";
+  });
+};
+
+document.getElementById("term-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const worktree = document.getElementById("term-worktree").value;
+  const agent = document.getElementById("term-agent").value;
+  if (!worktree) return;
+  const body = { worktree };
+  if (agent) body.agent = agent;
+  return submitOnce("term-create", "new-terminal", () => post("/api/terminals", body));
+};
+
+// "Needs attention" takes you to the first terminal that does.
+document.getElementById("stat-attention-btn").onclick = () => {
+  const first = [...rows].find(([id]) => listing.worktrees.some((wt) =>
+    (wt.terminals || []).some((t) => t.id === id && needsYou(t))));
+  first?.[1].scrollIntoView({ behavior: "smooth", block: "center" });
+};
+
+buildKeys();
+loadAgents();
+if (!watchState()) {
+  // No `EventSource`: the poll this replaced still works, just less politely.
+  refresh();
+  setInterval(refresh, 2000);
+}
+// The simple terminal view is polled while it is open — that is a page someone is
+// looking at, not a page in a pocket.
+setInterval(() => { if (shown && !term) loadText(); }, 1200);
+</script>
+</body>
+</html>

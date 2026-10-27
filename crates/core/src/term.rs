@@ -3,8 +3,9 @@
 use std::io::{Read, Write};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use alacritty_terminal::event::{EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -191,6 +192,47 @@ fn std_status(status: portable_pty::ExitStatus) -> ExitStatus {
     ExitStatus::from_raw(status.exit_code())
 }
 
+/// A second reader of a terminal's bytes, besides its own grid — how the web
+/// panel watches a terminal. Made by [`TermSession::subscribe`]; dropping it ends
+/// the subscription at the next read.
+#[derive(Debug)]
+pub struct Subscription {
+    frames: Receiver<Vec<u8>>,
+    lagged: Arc<AtomicBool>,
+}
+
+impl Subscription {
+    /// The next chunk the child wrote, waiting up to `timeout`. The three
+    /// outcomes a reader needs: a chunk, nothing yet, or the terminal is gone.
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, std::sync::mpsc::RecvTimeoutError> {
+        self.frames.recv_timeout(timeout)
+    }
+
+    /// The next chunk, if one is already queued. `None` when there is not, or
+    /// when the terminal is gone — [`Self::recv_timeout`] is what tells those
+    /// apart.
+    pub fn try_chunk(&self) -> Option<Vec<u8>> {
+        self.frames.try_recv().ok()
+    }
+
+    /// Drop whatever is already queued, without reading it. For a reader that is
+    /// about to be handed the screen itself, which already includes these frames.
+    pub fn drain(&self) {
+        while self.frames.try_recv().is_ok() {}
+    }
+
+    /// Whether a frame was dropped since the last call, clearing it. `true` means
+    /// this reader fell behind and its view of the screen is wrong: it has to be
+    /// repainted from the grid, because the bytes that would have updated it are
+    /// gone.
+    pub fn lagged(&self) -> bool {
+        self.lagged.swap(false, Ordering::Relaxed)
+    }
+}
+
 /// A live terminal: PTY child + grid + event channel.
 pub struct TermSession {
     child: Mutex<Box<dyn Child + Send>>,
@@ -201,6 +243,43 @@ pub struct TermSession {
     events: Receiver<TermEvent>,
     eof: Arc<AtomicBool>,
     exit_reported: AtomicBool,
+    /// Everyone else reading the child's byte stream, besides the grid. Empty
+    /// unless the web panel is watching a terminal; a subscriber that stops
+    /// reading is dropped on the next send. See [`Self::subscribe`].
+    subscribers: Arc<Mutex<Vec<Subscriber>>>,
+}
+
+/// How many reads one subscriber may fall behind by before its frames are
+/// dropped. A frame is one read (up to 64 KiB), so this bounds one subscriber at
+/// a few megabytes — a phone that stopped reading must not grow the app.
+const SUBSCRIBER_QUEUE: usize = 64;
+
+/// One reader of the child's bytes besides the grid, and whether it is still in
+/// step with it. A subscriber whose queue filled has missed a frame, and its view
+/// of the screen is wrong from then on until it is given the grid again —
+/// [`Subscription::lagged`] is how it finds out.
+struct Subscriber {
+    frames: SyncSender<Vec<u8>>,
+    lagged: Arc<AtomicBool>,
+}
+
+/// Hand one read to every subscriber, dropping the ones that are gone and, for a
+/// subscriber that is behind, dropping the frame rather than waiting: the reader
+/// thread is the child's only drain, and a browser must never stall it.
+fn forward(subscribers: &Mutex<Vec<Subscriber>>, bytes: &[u8]) {
+    let mut readers = subscribers.lock().unwrap();
+    readers.retain_mut(
+        |subscriber| match subscriber.frames.try_send(bytes.to_vec()) {
+            Ok(()) => true,
+            // Quoted for the reader's benefit: the frame is gone, so its screen is
+            // wrong until it is repainted from the grid.
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                subscriber.lagged.store(true, Ordering::Relaxed);
+                true
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
+        },
+    );
 }
 
 /// The locale a child gets when the app has none. A `.app` launched from Finder
@@ -269,6 +348,8 @@ impl TermSession {
         let reader_term = Arc::clone(&term);
         let reader_writer = Arc::clone(&writer);
         let reader_eof = Arc::clone(&eof);
+        let subscribers = Arc::new(Mutex::new(Vec::new()));
+        let reader_subscribers = Arc::clone(&subscribers);
         std::thread::Builder::new()
             .name("syro-term-reader".to_string())
             .spawn(move || {
@@ -297,6 +378,7 @@ impl TermSession {
                             processor.advance(&mut *terminal, &buffer[..bytes]);
                             // Released before the send: the UI paints under this lock, so it must not queue behind a channel fill.
                             drop(terminal);
+                            forward(&reader_subscribers, &buffer[..bytes]);
                             // One event per read, not per byte.
                             if events.send(TermEvent::Wakeup).is_err() {
                                 break;
@@ -323,7 +405,23 @@ impl TermSession {
             events: incoming,
             eof,
             exit_reported: AtomicBool::new(false),
+            subscribers,
         })
+    }
+
+    /// Every byte the child writes from now on, as it was read. The grid has
+    /// already had them; this is for a second reader, which is the web panel.
+    pub fn subscribe(&self) -> Subscription {
+        let (frames, bytes) = std::sync::mpsc::sync_channel(SUBSCRIBER_QUEUE);
+        let lagged = Arc::new(AtomicBool::new(false));
+        self.subscribers.lock().unwrap().push(Subscriber {
+            frames,
+            lagged: Arc::clone(&lagged),
+        });
+        Subscription {
+            frames: bytes,
+            lagged,
+        }
     }
 
     /// Bytes from the keyboard, straight to the child; the caller encodes the key.
@@ -817,6 +915,110 @@ mod tests {
         assert_eq!(snapshot.lines[0], "hello world");
         // The child left the cursor on the line below what it printed.
         assert_eq!(snapshot.cursor, (1, 0));
+    }
+
+    #[test]
+    fn a_subscriber_gets_the_same_bytes_the_grid_did() {
+        let session = sh("printf 'seen by two readers\\r\\n'; sleep 5");
+        let bytes = session.subscribe();
+        let mut seen = Vec::new();
+        assert!(
+            wait_for(
+                || {
+                    while let Some(chunk) = bytes.try_chunk() {
+                        seen.extend(chunk);
+                    }
+                    seen.windows(4).any(|window| window == b"read")
+                },
+                &session
+            ),
+            "the subscriber never saw the child's output: {:?}",
+            String::from_utf8_lossy(&seen)
+        );
+        // The same bytes the grid was fed: the panel's terminal and the app's
+        // grid must not disagree about what the child said.
+        let text = String::from_utf8_lossy(&seen).into_owned();
+        assert!(text.contains("seen by two readers"), "{text:?}");
+        assert!(session.snapshot().text().contains("seen by two readers"));
+    }
+
+    #[test]
+    fn a_subscriber_that_stopped_reading_is_dropped_not_waited_for() {
+        // The receiver is dropped at once, so the first forward finds it gone.
+        let session = sh("printf 'nobody is listening\\r\\n'; sleep 5");
+        drop(session.subscribe());
+        // A second reader must still be served, and the reader thread must not
+        // have stalled on the dead one: the grid is the proof it kept reading.
+        let live = session.subscribe();
+        assert!(
+            wait_for(
+                || live.try_chunk().is_some() || session.snapshot().text().contains("nobody"),
+                &session
+            ),
+            "the reader thread stalled behind a dropped subscriber"
+        );
+        assert!(
+            wait_for(|| session.subscribers.lock().unwrap().len() <= 1, &session),
+            "the dropped subscriber is still in the list"
+        );
+    }
+
+    #[test]
+    fn a_subscriber_that_falls_behind_is_told_it_is() {
+        let (frames, bytes) = std::sync::mpsc::sync_channel(2);
+        let lagged = Arc::new(AtomicBool::new(false));
+        let subscribers = Mutex::new(vec![Subscriber {
+            frames,
+            lagged: Arc::clone(&lagged),
+        }]);
+
+        forward(&subscribers, b"first");
+        forward(&subscribers, b"second");
+        assert!(
+            !lagged.load(Ordering::Relaxed),
+            "a queued frame is not a drop"
+        );
+        // The queue is full: this frame is dropped, and the reader has to be told
+        // its screen is no longer the grid.
+        forward(&subscribers, b"third");
+        assert!(lagged.load(Ordering::Relaxed), "the drop was not recorded");
+
+        let subscription = Subscription {
+            frames: bytes,
+            lagged: Arc::clone(&lagged),
+        };
+        assert_eq!(
+            subscription
+                .recv_timeout(Duration::from_millis(10))
+                .unwrap(),
+            b"first"
+        );
+        // Taken, not just read: a reader asks once and then repaints.
+        assert!(subscription.lagged());
+        assert!(!subscription.lagged(), "lagged() did not clear the flag");
+
+        // A reader that is gone is dropped from the list rather than written to
+        // forever.
+        drop(subscription);
+        forward(&subscribers, b"fourth");
+        assert!(
+            subscribers.lock().unwrap().is_empty(),
+            "a disconnected subscriber was kept"
+        );
+    }
+
+    #[test]
+    fn a_subscription_hands_over_what_it_caught_and_drains_the_rest() {
+        let session = sh("printf 'one\\r\\ntwo\\r\\n'; sleep 5");
+        let bytes = session.subscribe();
+        assert!(
+            wait_for(|| bytes.try_chunk().is_some(), &session),
+            "nothing ever arrived"
+        );
+        bytes.drain();
+        // Nothing left: the caller is about to be given the grid, which already
+        // holds these frames.
+        assert!(bytes.try_chunk().is_none(), "drain left a frame behind");
     }
 
     #[test]

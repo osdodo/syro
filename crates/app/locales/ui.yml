@@ -863,6 +863,15 @@ settings:
   computer_awake_off:
     en: Off
     zh-CN: 关闭
+  web:
+    en: Web panel
+    zh-CN: 网页面板
+  web_off:
+    en: Off — see [web] in settings.toml
+    zh-CN: 未开启 —— 见 settings.toml 里的 [web]
+  web_copy:
+    en: Copy link
+    zh-CN: 复制链接
   computer_awake_off_desc:
     en: Allow the system to sleep normally
     zh-CN: 允许系统正常进入睡眠状态

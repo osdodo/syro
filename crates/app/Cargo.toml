@@ -15,6 +15,12 @@ sys-locale.workspace = true
 # types beats copying the grid into a parallel one every frame.
 alacritty_terminal.workspace = true
 syro-core = { path = "../core" }
+# The web panel's two halves: the accept loop sends a request, the GPUI main
+# thread answers on the other end. `async-channel` is already in the tree
+# through gpui, so this adds no download; serde_json is core's, reused for the
+# page's request and answer bodies.
+async-channel = "2"
+serde_json.workspace = true
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

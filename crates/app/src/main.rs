@@ -27,6 +27,7 @@ mod sidebar;
 mod split;
 mod state;
 mod usage_chart;
+mod web;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -38,6 +39,7 @@ use gpui_kit::component::{ActiveTheme as _, Icon, IconName, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
+use syro_core::api;
 use syro_core::config::Settings;
 use syro_core::event::CoreEvent;
 use syro_core::model::{AgentSpec, RepoId, TabLayout, TabSpec, Worktree, WorktreeId};
@@ -314,6 +316,9 @@ pub struct Workspace {
     recent: Vec<(WorktreeId, split::Pane)>,
     /// The sidebars as they were when the grid button folded them: `(left_open, panel)`.
     before_grid: Option<(bool, Option<Panel>)>,
+    /// Where the panel's token is read from. A field rather than a constant,
+    /// because a test must write a scratch file instead of the developer's own.
+    web_token_path: PathBuf,
     _events: Subscription,
 }
 
@@ -368,6 +373,7 @@ impl Workspace {
             grid: false,
             recent: Vec::new(),
             before_grid: None,
+            web_token_path: web::token_path(),
             _events: events,
         };
         // Nothing is built here: saved tabs and the terminal come back on the
@@ -523,6 +529,242 @@ impl Workspace {
     /// One pane's view by content id.
     fn pane(&self, worktree_id: &WorktreeId, pane: split::Pane) -> Option<&PaneView> {
         self.panes.get(worktree_id)?.get(&pane)
+    }
+
+    // --- the web panel ---------------------------------------------------
+    //
+    // The panel's own thread can only ask. Everything below runs on the main
+    // thread, because the terminals it reads and writes are `Rc` (see
+    // `docs/web-panel.md`).
+
+    /// Start the panel, once per process. A second window's call finds the port
+    /// taken and leaves the first window serving it.
+    pub fn start_web(&mut self, cx: &mut Context<Self>) {
+        let settings = self.state.read(cx).settings().web.clone();
+        if !settings.enabled {
+            return;
+        }
+        let (requests, inbox) = async_channel::bounded(64);
+        let token = match web::token_at(&self.web_token_path) {
+            Ok(token) => token,
+            Err(error) => {
+                tracing::warn!("the web panel has no token: {error:#}");
+                return;
+            }
+        };
+        let url = match web::start(&settings, token, requests) {
+            Ok(url) => url,
+            Err(error) => {
+                tracing::warn!("the web panel was not started: {error:#}");
+                return;
+            }
+        };
+        // Said out loud, because the URL carries the token and the log is where
+        // it is read from.
+        tracing::info!("web panel: {url}");
+        eprintln!("syro: web panel on {url}");
+        // Also kept on the state, so the settings form can show it and copy it:
+        // a URL that only exists in a log is a URL nobody finds.
+        self.state
+            .update(cx, |state, cx| state.set_web_url(Some(url), cx));
+        Self::serve_web(inbox, cx);
+    }
+
+    /// Answer the panel's requests until the channel closes. Its own method so a
+    /// test can drive the loop without a socket in the way.
+    fn serve_web(inbox: async_channel::Receiver<web::WebRequest>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            while let Ok(request) = inbox.recv().await {
+                // `answer` always sends a reply; an error here is the window
+                // being gone, and the panel's thread is left to time out.
+                if this
+                    .update(cx, |workspace, cx| workspace.answer(request, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// One panel request, answered where the state is.
+    pub fn answer(&mut self, request: web::WebRequest, cx: &mut Context<Self>) {
+        let reply = self.run_web(request.action, cx);
+        // The panel's thread is blocked on this. Dropping it without a send is
+        // a `503` there, which is why every branch of `run_web` answers.
+        let _ = request.reply.send(reply);
+    }
+
+    fn run_web(
+        &mut self,
+        action: web::Action,
+        cx: &mut Context<Self>,
+    ) -> Result<web::Payload, String> {
+        match action {
+            web::Action::State => {
+                let snapshot = self.web_snapshot(cx);
+                serde_json::to_value(snapshot)
+                    .map(web::Payload::Json)
+                    .map_err(|error| format!("could not encode the state: {error}"))
+            }
+            web::Action::Snapshot { terminal } => {
+                let view = self.web_terminal_entity(&terminal, cx)?;
+                Ok(web::Payload::Text(view.read(cx).snapshot_text()))
+            }
+            web::Action::Input { terminal, bytes } => {
+                let view = self.web_terminal_entity(&terminal, cx)?;
+                view.read(cx)
+                    .write_bytes(&bytes)
+                    .map_err(|error| format!("the terminal refused input: {error:#}"))?;
+                Ok(web::Payload::Ok)
+            }
+            web::Action::Resize {
+                terminal,
+                cols,
+                rows,
+            } => {
+                let view = self.web_terminal_entity(&terminal, cx)?;
+                view.read(cx)
+                    .resize_term(cols, rows)
+                    .map_err(|error| format!("the terminal refused the size: {error:#}"))?;
+                Ok(web::Payload::Ok)
+            }
+            web::Action::CreateWorktree { repo, name, base } => {
+                let repo_id = self
+                    .web_repo_id(&repo, cx)
+                    .ok_or_else(|| format!("no repository named {repo}"))?;
+                self.state.update(cx, |state, cx| {
+                    state.create_worktree(&repo_id, &name, base, cx)
+                });
+                Ok(web::Payload::Ok)
+            }
+            web::Action::RemoveWorktree { id, force } => {
+                if self.state.read(cx).worktree(&id).is_none() {
+                    return Err(format!("no worktree {id}"));
+                }
+                self.state
+                    .update(cx, |state, cx| state.remove_worktree(&id, force, cx));
+                Ok(web::Payload::Ok)
+            }
+            web::Action::Agents => {
+                let agents: Vec<api::AgentOption> = self
+                    .state
+                    .read(cx)
+                    .agents()
+                    .iter()
+                    .map(api::AgentOption::from)
+                    .collect();
+                serde_json::to_value(agents)
+                    .map(web::Payload::Json)
+                    .map_err(|error| format!("could not encode the agents: {error}"))
+            }
+            web::Action::StartTerminal { worktree, agent } => {
+                if self.state.read(cx).worktree(&worktree).is_none() {
+                    return Err(format!("no worktree {worktree}"));
+                }
+                if let Some(id) = &agent
+                    && self.state.read(cx).agent(id).is_none()
+                {
+                    return Err(format!("no agent {id}"));
+                }
+                // As the history panel does: the terminal is opened where it can
+                // be seen, not off screen in a worktree nobody is looking at.
+                self.state
+                    .update(cx, |state, cx| state.activate(&worktree, cx));
+                let action = terminal::New {
+                    worktree_id: worktree,
+                    agent,
+                    model: None,
+                    resume: None,
+                    seed: None,
+                };
+                self.start_terminal(&action, cx);
+                Ok(web::Payload::Ok)
+            }
+            web::Action::Stream { terminal } => {
+                let view = self.web_terminal_entity(&terminal, cx)?;
+                let (text, bytes) = view.read(cx).stream();
+                Ok(web::Payload::Stream { text, bytes })
+            }
+        }
+    }
+
+    /// The terminal with this id, wherever it is: the panel names a terminal by
+    /// id, not by the tab that holds it, because a page has no tabs.
+    fn web_terminal_entity(&self, id: &str, cx: &App) -> Result<Entity<TerminalView>, String> {
+        self.panes
+            .values()
+            .flat_map(|panes| panes.values())
+            .find_map(|view| match view {
+                PaneView::Terminal { view, .. } if view.read(cx).terminal_id().as_str() == id => {
+                    Some(view.clone())
+                }
+                _ => None,
+            })
+            .ok_or_else(|| format!("no terminal {id}"))
+    }
+
+    /// A repository by name or by id; the page types the name.
+    fn web_repo_id(&self, given: &str, cx: &App) -> Option<String> {
+        self.state
+            .read(cx)
+            .repos()
+            .iter()
+            .find(|repo| repo.id == given || repo.name == given)
+            .map(|repo| repo.id.clone())
+    }
+
+    /// Every worktree and terminal, as the panel shows it.
+    pub fn web_snapshot(&self, cx: &App) -> api::Snapshot {
+        let state = self.state.read(cx);
+        let worktrees = state
+            .worktrees()
+            .iter()
+            .map(|worktree| api::WorktreeStatus {
+                id: worktree.id.clone(),
+                repo: state
+                    .repos()
+                    .iter()
+                    .find(|repo| repo.id == worktree.repo_id)
+                    .map(|repo| repo.name.clone())
+                    .unwrap_or_default(),
+                name: worktree.name.clone(),
+                branch: worktree.branch.clone(),
+                status: state.status_of(&worktree.id),
+                stalled: state.stalled_of(&worktree.id),
+                terminals: self
+                    .panes
+                    .get(&worktree.id)
+                    .into_iter()
+                    .flat_map(|panes| panes.values())
+                    .filter_map(|view| match view {
+                        PaneView::Terminal { view, .. } => Some(Self::web_terminal(view.read(cx))),
+                        _ => None,
+                    })
+                    .collect(),
+            })
+            .collect();
+        api::Snapshot {
+            worktrees,
+            active: state.active_id().cloned(),
+        }
+    }
+
+    /// One terminal as the panel lists it.
+    fn web_terminal(view: &TerminalView) -> api::TerminalStatus {
+        let size = view.term_size();
+        api::TerminalStatus {
+            id: view.terminal_id().clone(),
+            agent: view.agent_id().cloned(),
+            agent_name: view.agent_name().map(str::to_string),
+            status: view.agent_status(),
+            stalled: view.is_stalled(),
+            task: view.task().map(str::to_string),
+            resume: view.resume_command(),
+            cols: size.columns,
+            rows: size.screen_lines,
+        }
     }
 
     /// The view in the pane with the keyboard.
@@ -4319,6 +4561,9 @@ fn main() {
 
                 let workspace = cx.new(|cx| Workspace::new(cx, state));
                 register_workspace_actions(&workspace, cx);
+                // The phone panel, on loopback by default. It has to live in
+                // this process, because the state it serves does.
+                workspace.update(cx, |workspace, cx| workspace.start_web(cx));
                 workspace
             },
         )
@@ -4359,6 +4604,7 @@ mod window_tests {
     use crate::split;
     use crate::state::fixture::{scratch_repo, temp_store};
     use crate::state::{AppState, branch_or_name, register_actions};
+    use crate::web;
     use crate::{
         TermSize, TermSpec, Workspace, app_keymap, dialog_background, fit_to_display,
         register_workspace_actions, saved_session, unrunnable, with_settings,
@@ -10111,6 +10357,292 @@ mod window_tests {
         );
     }
 
+    /// The panel's startup: it binds a port, keeps the URL, and writes the token
+    /// where the next start will find it. No request is made here — a socket
+    /// round trip needs a thread outside the test's scheduler, which is what
+    /// `web::tests` is for.
+    #[gpui_kit::test]
+    fn the_panel_binds_a_port_and_keeps_its_url(cx: &mut TestAppContext) {
+        let mut settings = Settings::default();
+        // Any free port: a test must not fail because 8777 is taken.
+        settings.web.port = 0;
+        let fixture = open_with_settings(cx, "web-bind", settings);
+        // A scratch token, so this does not read or write the developer's own.
+        let (_, token_dir) = temp_store("web-bind");
+        let token_path = token_dir.join("web-token");
+        cx.update(|cx| {
+            fixture.workspace.update(cx, |workspace, cx| {
+                workspace.web_token_path = token_path.clone();
+                workspace.start_web(cx);
+            })
+        });
+        let url = cx
+            .update(|cx| fixture.state.read(cx).web_url().map(str::to_string))
+            .expect("the panel did not start");
+        assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+        // The real port, not the `0` that was asked for, and the token that the
+        // next start will read back out of the file.
+        assert!(url.contains("?token="), "{url}");
+        let token = std::fs::read_to_string(&token_path).expect("the token was not written");
+        assert!(url.ends_with(token.trim()), "{url}");
+
+        // A panel turned off in `settings.toml` binds nothing at all.
+        let mut off = Settings::default();
+        off.web.enabled = false;
+        let off = open_with_settings(cx, "web-off", off);
+        cx.update(|cx| {
+            off.workspace
+                .update(cx, |workspace, cx| workspace.start_web(cx))
+        });
+        assert!(
+            cx.update(|cx| off.state.read(cx).web_url().is_none()),
+            "a disabled panel still bound a port"
+        );
+    }
+
+    /// The loop that answers the panel: a request on the channel is polled off
+    /// the executor and answered on the main thread. The socket is not in the
+    /// way, because what this checks is that `cx.spawn`'s task is run at all.
+    #[gpui_kit::test]
+    fn the_panel_loop_answers_what_its_channel_carries(cx: &mut TestAppContext) {
+        let fixture = open(cx, "web-loop");
+        let (requests, inbox) = async_channel::bounded::<web::WebRequest>(4);
+        cx.update(|cx| {
+            fixture
+                .workspace
+                .update(cx, |_workspace, cx| Workspace::serve_web(inbox, cx))
+        });
+
+        let (reply, answer) = std::sync::mpsc::channel();
+        requests
+            .send_blocking(web::WebRequest {
+                action: web::Action::State,
+                reply,
+            })
+            .expect("the panel's channel is open");
+
+        // Pumped, because the answer is produced by the spawned task: one that
+        // is never polled leaves this empty.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let payload = loop {
+            cx.run_until_parked();
+            if let Ok(payload) = answer.try_recv() {
+                break payload;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the panel's loop never answered the channel"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let snapshot = match payload {
+            Ok(web::Payload::Json(value)) => value,
+            other => panic!("the state action answered {other:?}"),
+        };
+        assert!(
+            snapshot
+                .get("worktrees")
+                .is_some_and(|list| list.is_array()),
+            "{snapshot}"
+        );
+    }
+
+    /// One panel action, through the real bridge, with its answer waited for.
+    fn ask_web(
+        cx: &mut TestAppContext,
+        fixture: &Fixture,
+        action: web::Action,
+    ) -> Result<web::Payload, String> {
+        let (reply, answer) = std::sync::mpsc::channel();
+        cx.update(|cx| {
+            fixture.workspace.update(cx, |workspace, cx| {
+                workspace.answer(web::WebRequest { action, reply }, cx)
+            })
+        });
+        answer
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the panel answer never came")
+    }
+
+    /// The panel's bridge, end to end: a request names a terminal by id and the
+    /// bytes land in that terminal's child. The sockets are `web::tests`; this is
+    /// the half that runs on the main thread, where the terminals are.
+    #[gpui_kit::test]
+    fn a_web_request_reaches_the_terminal_it_names(cx: &mut TestAppContext) {
+        let fixture = open(cx, "web-bridge");
+        assert!(
+            draw_until(cx, &fixture, |cx| cx.update(|cx| fixture
+                .workspace
+                .read(cx)
+                .active_terminal(cx)
+                .is_some())),
+            "no terminal for the panel to reach"
+        );
+        let terminal = cx
+            .update(|cx| fixture.workspace.read(cx).active_terminal(cx))
+            .expect("the worktree's terminal");
+        let id = cx.update(|cx| terminal.read(cx).terminal_id().clone());
+
+        // What the page reads: the active worktree, and this terminal under it
+        // with the id the page will send back.
+        let snapshot = cx.update(|cx| fixture.workspace.read(cx).web_snapshot(cx));
+        let active = snapshot.active.clone().expect("an active worktree");
+        let worktree = snapshot
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.id == active)
+            .expect("the active worktree is listed");
+        assert!(!worktree.repo.is_empty(), "a worktree with no repository");
+        let listed = worktree
+            .terminals
+            .iter()
+            .find(|listed| listed.id == id)
+            .expect("the terminal the fixture opened");
+        assert!(
+            listed.cols > 0 && listed.rows > 0,
+            "a terminal with no size"
+        );
+
+        // That id reads its text...
+        let text = ask_web(
+            cx,
+            &fixture,
+            web::Action::Snapshot {
+                terminal: id.clone(),
+            },
+        );
+        assert!(matches!(text, Ok(web::Payload::Text(_))), "{text:?}");
+
+        // ...and takes its keystrokes, which is the whole point of the panel.
+        let answered = ask_web(
+            cx,
+            &fixture,
+            web::Action::Input {
+                terminal: id.clone(),
+                bytes: b"echo WEB_PANEL\r".to_vec(),
+            },
+        );
+        assert!(answered.is_ok(), "{answered:?}");
+        assert!(
+            draw_until(cx, &fixture, |cx| cx.update(|cx| terminal
+                .read(cx)
+                .snapshot_text()
+                .contains("WEB_PANEL"))),
+            "the shell never got what the panel sent"
+        );
+
+        // A terminal that is not there is refused, not guessed at: an id the
+        // page made up must not write into some other terminal.
+        let refused = ask_web(
+            cx,
+            &fixture,
+            web::Action::Input {
+                terminal: "terminal-999".into(),
+                bytes: b"x".to_vec(),
+            },
+        );
+        assert!(refused.is_err(), "an unknown terminal was answered");
+
+        // And the live view: the screen to paint before the stream, which is the
+        // echo that was just typed, plus a subscription that is live from now on.
+        let streamed = ask_web(
+            cx,
+            &fixture,
+            web::Action::Stream {
+                terminal: id.clone(),
+            },
+        );
+        match streamed {
+            Ok(web::Payload::Stream { text, bytes }) => {
+                assert!(text.contains("WEB_PANEL"), "{text}");
+                // Dropping it unsubscribes: a stream the page closed must not
+                // leave the reader thread writing into a queue nobody reads.
+                drop(bytes);
+            }
+            other => panic!("the stream action answered {other:?}"),
+        }
+        let refused = ask_web(
+            cx,
+            &fixture,
+            web::Action::Stream {
+                terminal: "terminal-999".into(),
+            },
+        );
+        assert!(
+            matches!(refused, Err(_)),
+            "the stream of an unknown terminal was answered"
+        );
+    }
+
+    /// The panel can start work, not just type into what is already running.
+    #[gpui_kit::test]
+    fn a_web_request_opens_a_terminal_in_the_worktree_it_names(cx: &mut TestAppContext) {
+        let fixture = open(cx, "web-start");
+        assert!(
+            draw_until(cx, &fixture, |cx| terminal_tabs(cx, &fixture) == 1),
+            "the fixture opened no terminal to start beside"
+        );
+        let active = cx
+            .update(|cx| fixture.workspace.read(cx).web_snapshot(cx).active)
+            .expect("an active worktree");
+
+        // The picker the page fills: the app's own presets, by id and name.
+        let agents = ask_web(cx, &fixture, web::Action::Agents);
+        let listed = match agents {
+            Ok(web::Payload::Json(serde_json::Value::Array(list))) => list,
+            other => panic!("the agents action answered {other:?}"),
+        };
+        assert!(
+            listed.iter().any(|agent| agent["id"] == "claude"),
+            "the builtin presets are not listed: {listed:?}"
+        );
+        assert!(
+            listed.iter().all(|agent| agent.get("command").is_none()),
+            "the page was told a command line: {listed:?}"
+        );
+
+        // A plain shell in the active worktree, which is the one the panel
+        // picked.
+        let started = ask_web(
+            cx,
+            &fixture,
+            web::Action::StartTerminal {
+                worktree: active.clone(),
+                agent: None,
+            },
+        );
+        assert!(started.is_ok(), "{started:?}");
+        assert!(
+            draw_until(cx, &fixture, |cx| terminal_tabs(cx, &fixture) == 2),
+            "the terminal the panel asked for never opened"
+        );
+
+        // A worktree or a preset that is not there is refused, not guessed at.
+        let refused = ask_web(
+            cx,
+            &fixture,
+            web::Action::StartTerminal {
+                worktree: "/no/such/worktree".into(),
+                agent: None,
+            },
+        );
+        assert!(refused.is_err(), "an unknown worktree was answered");
+        let refused = ask_web(
+            cx,
+            &fixture,
+            web::Action::StartTerminal {
+                worktree: active,
+                agent: Some("no-such-agent".into()),
+            },
+        );
+        assert!(refused.is_err(), "an unknown agent was answered");
+        assert_eq!(
+            terminal_tabs(cx, &fixture),
+            2,
+            "a refused request still opened a terminal"
+        );
+    }
+
     /// A tab opened while split lands in the pane with the keyboard, and the
     /// panes beside it keep what they had.
     #[gpui_kit::test]
@@ -10855,6 +11387,55 @@ mod window_tests {
             "the terminal's grid did not follow the font size: {rows_before} rows before, {} after",
             terminal_rows(cx, &fixture)
         );
+    }
+
+    /// The settings form says where the panel is, and copies it: a URL that only
+    /// ever appeared in the startup log is a URL nobody finds.
+    #[gpui_kit::test]
+    fn the_web_panel_url_is_shown_and_copied(cx: &mut TestAppContext) {
+        // Panel off, which is what a form opened before `start_web` would show.
+        let fixture = open(cx, "settings-web-off");
+        open_settings_tab(cx, &fixture, "settings-tab-general");
+        let off = label(cx, &fixture, "settings-web-url").expect("the panel's row");
+        assert!(off.contains("settings.toml"), "{off}");
+        assert!(
+            !found(cx, &fixture, "settings-web-copy"),
+            "a copy button for no URL"
+        );
+
+        // And with a panel up: the real URL, and the button puts it on the
+        // clipboard.
+        let mut settings = Settings::default();
+        settings.web.port = 0;
+        let live = open_with_settings(cx, "settings-web-on", settings);
+        let (_, token_dir) = temp_store("settings-web-on");
+        cx.update(|cx| {
+            live.workspace.update(cx, |workspace, cx| {
+                workspace.web_token_path = token_dir.join("web-token");
+                workspace.start_web(cx);
+            })
+        });
+        open_settings_tab(cx, &live, "settings-tab-general");
+        let url = cx
+            .update(|cx| live.state.read(cx).web_url().map(str::to_string))
+            .expect("the panel did not start");
+        assert_eq!(
+            label(cx, &live, "settings-web-url").as_deref(),
+            Some(url.as_str())
+        );
+        // The row sits below the fold of the test window: scroll it into view.
+        cx.update_window(live.window.into(), |_, window, cx| {
+            window.scroll(
+                "settings-language",
+                ScrollDelta::Lines(Point { x: 0., y: -40. }),
+                cx,
+            );
+        })
+        .unwrap();
+        draw(cx, &live);
+        click_visible(cx, &live, "settings-web-copy");
+        let copied = cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
+        assert_eq!(copied.as_deref(), Some(url.as_str()));
     }
 
     /// The appearance is a dropdown, and picking a palette lands as the theme.

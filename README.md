@@ -23,6 +23,9 @@ window. Built in Rust on [GPUI](https://gpui-kit.com) — no Electron, Chromium 
   daily token-usage chart by model.
 - **Hooks** — run scripts on worktree events, configured globally or per repo via
   `syro.yaml` (`scripts.setup` / `scripts.archive`).
+- **Web panel for a phone** — every worktree's agent status and task, keys you can
+  send to a terminal or a full xterm.js terminal streamed over SSE, terminals and
+  worktrees started or removed — see `docs/web-panel.md`.
 - **Quick open** for files and worktrees, optional keep-awake while agents run, and
   English / Chinese UI.
 

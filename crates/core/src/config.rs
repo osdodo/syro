@@ -74,6 +74,44 @@ pub enum ComputerAwakeMode {
     On,
 }
 
+/// The web panel: a plain HTTP server inside the app process, for a phone on
+/// the same network (see `docs/web-panel.md`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebSettings {
+    /// Whether the panel is up at all.
+    #[serde(default = "default_web_enabled")]
+    pub enabled: bool,
+    /// The address to bind. Loopback by default; a Tailscale address is what
+    /// makes it reachable from a phone, and a public one is a mistake the panel
+    /// cannot defend against.
+    #[serde(default = "default_web_bind")]
+    pub bind: String,
+    #[serde(default = "default_web_port")]
+    pub port: u16,
+}
+
+fn default_web_enabled() -> bool {
+    true
+}
+
+fn default_web_bind() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_web_port() -> u16 {
+    8777
+}
+
+impl Default for WebSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_web_enabled(),
+            bind: default_web_bind(),
+            port: default_web_port(),
+        }
+    }
+}
+
 /// Which palette the app draws in. `settings.toml` spells it
 /// `appearance = "light" | "dark"`, or leaves it out to follow the system.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -110,6 +148,10 @@ pub struct Settings {
     pub agents: Vec<AgentSpec>,
     #[serde(default, rename = "hook")]
     pub hooks: Vec<HookSpec>,
+    /// The phone panel. A section of its own rather than a flag, because the
+    /// bind address and the port are what a phone needs and a toggle is not.
+    #[serde(default)]
+    pub web: WebSettings,
     #[serde(default)]
     pub keymap: BTreeMap<String, String>,
     /// The command the AI button runs to write a commit message: the prompt is
@@ -134,6 +176,7 @@ impl Default for Settings {
             background_blur: 0,
             agents: Vec::new(),
             hooks: Vec::new(),
+            web: WebSettings::default(),
             keymap: BTreeMap::new(),
             commit_message_command: None,
             language: None,
@@ -218,6 +261,11 @@ mod tests {
         assert_eq!(s.computer_awake, ComputerAwakeMode::Off);
         assert!(s.agents.is_empty());
         assert!(s.hooks.is_empty());
+        // The panel is on by default, on loopback, where nobody but this machine
+        // can reach it.
+        assert!(s.web.enabled);
+        assert_eq!(s.web.bind, "127.0.0.1");
+        assert_eq!(s.web.port, 8777);
         assert!(s.keymap.is_empty());
         // No command in the file means the AI button runs the default one.
         assert!(s.commit_message_command.is_none());
@@ -241,6 +289,23 @@ mod tests {
         assert_eq!(read(r#"appearance = "light""#), Some(Appearance::Light));
         assert_eq!(read(r#"appearance = "dark""#), Some(Appearance::Dark));
         assert_eq!(read(""), None);
+    }
+
+    #[test]
+    fn the_web_section_reads_whole_or_a_field_at_a_time() {
+        let web = |text: &str| toml::from_str::<Settings>(text).unwrap().web;
+        // Nothing in the file: loopback, and on.
+        assert_eq!(web(""), WebSettings::default());
+        // A section with one field keeps the defaults for the rest.
+        let partial = web("[web]\nport = 9000\n");
+        assert_eq!(partial.port, 9000);
+        assert!(partial.enabled);
+        assert_eq!(partial.bind, "127.0.0.1");
+        // And all of them, spelled out.
+        let full = web("[web]\nenabled = false\nbind = \"100.64.0.1\"\nport = 1\n");
+        assert!(!full.enabled);
+        assert_eq!(full.bind, "100.64.0.1");
+        assert_eq!(full.port, 1);
     }
 
     #[test]
