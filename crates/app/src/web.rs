@@ -27,6 +27,8 @@ const XTERM_CSS: &str = include_str!("web/xterm.css");
 /// `@xterm/addon-fit`, so the full terminal asks the child for the size the
 /// phone's screen actually has.
 const XTERM_FIT_JS: &str = include_str!("web/xterm-addon-fit.js");
+/// The app's icon, for a phone that pins the panel to its home screen.
+const ICON: &[u8] = include_bytes!("../assets/logo.png");
 
 const HTML: &str = "text/html; charset=utf-8";
 const TEXT: &str = "text/plain; charset=utf-8";
@@ -34,6 +36,7 @@ const JSON: &str = "application/json";
 const JS: &str = "text/javascript; charset=utf-8";
 const CSS: &str = "text/css; charset=utf-8";
 const EVENTS: &str = "text/event-stream";
+const PNG: &str = "image/png";
 
 /// How often a stream with nothing to say says so anyway: a comment keeps the
 /// connection warm, and the write that fails is how a page that left is found.
@@ -575,6 +578,7 @@ fn route(
         ("GET", ["xterm.js"]) => Outcome::new(200, JS, XTERM_JS.as_bytes().to_vec()),
         ("GET", ["xterm-addon-fit.js"]) => Outcome::new(200, JS, XTERM_FIT_JS.as_bytes().to_vec()),
         ("GET", ["xterm.css"]) => Outcome::new(200, CSS, XTERM_CSS.as_bytes().to_vec()),
+        ("GET", ["icon.png"]) => Outcome::new(200, PNG, ICON.to_vec()),
         ("GET", ["api", "state"]) => answered(ask(requests, Action::State)),
         ("GET", ["api", "agents"]) => answered(ask(requests, Action::Agents)),
         ("GET", ["api", "terminal", id, "snapshot"]) => answered(ask(
@@ -1226,6 +1230,7 @@ mod tests {
             ("/xterm.js", "Terminal"),
             ("/xterm-addon-fit.js", "FitAddon"),
             ("/xterm.css", ".xterm"),
+            ("/icon.png", "PNG"),
         ] {
             let response = round_trip(&get(path), TOKEN);
             assert!(response.starts_with("HTTP/1.1 200"), "{path}: {response}");

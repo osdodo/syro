@@ -62,10 +62,16 @@ function panel(locale = "en", options = {}) {
       EventSource, Terminal, FitAddon: class { fit() {} },
       addEventListener(name, callback) { listeners[name] = callback; },
     }, EventSource,
-    history: { state: null, pushState(state) { this.state = state; }, back() { this.state = null; listeners.popstate({ state: null }); } },
+    history: {
+      state: null, url: null,
+      pushState(state) { this.state = state; },
+      replaceState(state, _title, url) { this.state = state; this.url = url; },
+      back() { this.state = null; listeners.popstate({ state: null }); },
+    },
+    location: { search: options.search || "", pathname: "/" },
     navigator: { language: locale },
     fetch: options.fetch || (async () => ({ ok: true, text: async () => "[]" })),
-    setInterval() {}, setTimeout() {},
+    setInterval() {}, setTimeout() {}, confirm: () => false,
   };
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   runInNewContext(script.replace('"__syro_locale__"', JSON.stringify(locale)), context);
@@ -81,7 +87,7 @@ test("overview counts running and attention terminals without double counting st
   assert.equal(elements["stat-worktrees"].textContent, "2");
   assert.equal(elements["stat-working"].textContent, "1");
   assert.equal(elements["stat-attention"].textContent, "2");
-  assert.match(elements.list.textContent, /May be stalled/);
+  assert.match(elements.list.textContent, /Stalled\?/);
   assert.match(elements.list.textContent, /Idle/);
 });
 
@@ -174,4 +180,70 @@ test("a failed text send keeps the input and displays its error in the session",
   assert.equal(p.elements["t-send"].disabled, false);
   assert.match(p.elements["t-error"].textContent, /PTY unavailable/);
   assert.equal(p.elements["t-error"].hidden, false);
+});
+
+test("worktrees waiting on you come first, and a shell is named, not numbered", () => {
+  const { applyState, elements } = panel();
+  const shell = { id: "t-9f3", status: null, stalled: false };
+  applyState({ worktrees: [
+    worktree("quiet", [shell]),
+    worktree("busy", [terminal("a", "working")]),
+    worktree("asks", [terminal("b", "permission")]),
+  ] });
+  const cards = elements.list.children.filter((child) => typeof child === "object");
+  const names = cards.map((card) => card.children[0].children[0].children[1].textContent);
+  assert.deepEqual(names, ["asks", "busy", "quiet"]);
+  assert.match(elements.list.textContent, /Shell/);
+  assert.doesNotMatch(elements.list.textContent, /t-9f3/);
+  assert.equal(elements["stat-attention-btn"].disabled, false);
+  applyState({ worktrees: [worktree("busy", [terminal("a", "working")])] });
+  assert.equal(elements["stat-attention-btn"].disabled, true);
+});
+
+test("a worktree head says neither its branch nor its status twice", () => {
+  const { applyState, elements } = panel();
+  applyState({ worktrees: [worktree("same", [terminal("a", "working")]), { ...worktree("bare"), branch: "feature/x", status: null }] });
+  const [same, bare] = elements.list.children.filter((child) => typeof child === "object");
+  // Branch equal to the name: left out. Status: on the terminal row only.
+  assert.equal(same.children[0].children[0].children[2].textContent, "");
+  assert.doesNotMatch(same.children[0].textContent, /Running/);
+  // No terminals: the head keeps both.
+  assert.equal(bare.children[0].children[0].children[2].textContent, "feature/x");
+  assert.match(bare.children[0].textContent, /Not running/);
+});
+
+test("the token is taken out of the address bar", () => {
+  const p = panel("en", { search: "?token=abc" });
+  assert.equal(p.history.url, "/");
+});
+
+test("a create form sends once, then folds away", async () => {
+  let release, calls = 0;
+  const p = panel("en", { fetch: async (_path, options) => {
+    if (options?.method) { calls++; await new Promise((resolve) => { release = resolve; }); }
+    return { ok: true, text: async () => "[]" };
+  } });
+  p.applyState({ worktrees: [worktree("one")] });
+  p.elements["term-worktree"].value = "one";
+  p.elements["new-terminal"].open = true;
+  const first = p.elements["term-form"].onsubmit({ preventDefault() {} });
+  p.elements["term-form"].onsubmit({ preventDefault() {} });
+  assert.equal(p.elements["term-create"].disabled, true);
+  await tick();
+  release();
+  await first;
+  assert.equal(calls, 1);
+  assert.equal(p.elements["term-create"].disabled, false);
+  assert.equal(p.elements["new-terminal"].open, false);
+});
+
+test("a dropped connection greys the list out until the next state", () => {
+  const { applyState, elements, stream } = panel();
+  applyState({ worktrees: [worktree("one")] });
+  stream.onerror();
+  assert.equal(elements.workspace.classList.contains("stale"), true);
+  assert.match(elements.error.textContent, /Disconnected/);
+  stream.state({ data: JSON.stringify({ worktrees: [] }) });
+  assert.equal(elements.workspace.classList.contains("stale"), false);
+  assert.equal(elements.error.hidden, true);
 });

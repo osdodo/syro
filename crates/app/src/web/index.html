@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="color-scheme" content="dark light">
 <title>syro · Workspace</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%235363db'/%3E%3Cpath d='m7 8 4 4-4 4M13 16h4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="/icon.png">
 <style>
   :root {
     color-scheme: light dark;
@@ -53,6 +55,9 @@
   h1 { font-size: 20px; line-height: 1.3; letter-spacing: -.4px; margin: 0 0 12px; }
   .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
   .stat { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; }
+  button.stat { color: inherit; background: none; border: 0; border-radius: 0; min-height: 0; font: inherit; text-align: left; }
+  button.stat:disabled { opacity: 1; cursor: default; }
+  button.stat:not(:disabled):hover { background: var(--permission-soft); }
   .stat + .stat { border-left: 1px solid var(--line); }
   .stat-top { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 11px; }
   .stat-value { font-size: 18px; font-weight: 650; line-height: 1.2; font-variant-numeric: tabular-nums; }
@@ -64,26 +69,30 @@
   .count { color: var(--dim); background: var(--panel); border: 1px solid var(--line); padding: 0 7px; border-radius: 5px; font-size: 11px; font-variant-numeric: tabular-nums; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
   .worktree-card { margin-bottom: 10px; overflow: hidden; }
-  .worktree-head { display: grid; grid-template-columns: minmax(0, 1fr) 108px 88px; align-items: center; gap: 10px; padding: 10px 12px; }
+  .worktree-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 10px 12px; }
   .worktree-info { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 8px; min-width: 0; }
   .repo { color: var(--dim); font-size: 10px; overflow-wrap: anywhere; }
   .name { font-size: 13px; font-weight: 650; overflow-wrap: anywhere; }
   .branch { color: var(--dim); font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
   .branch::before { content: "⑂ "; }
-  .status { display: inline-flex; align-items: center; gap: 5px; justify-self: start; min-width: 0; font-size: 10px; font-weight: 550; color: var(--dim); background: var(--surface); padding: 3px 6px; border-radius: 4px; }
+  .branch:empty { display: none; }
+  .status { display: inline-flex; align-items: center; gap: 5px; justify-self: end; white-space: nowrap; min-width: 0; font-size: 10px; font-weight: 550; color: var(--dim); background: var(--surface); padding: 3px 6px; border-radius: 4px; }
   .status.working { color: var(--working); background: var(--working-soft); }
   .status.permission, .status.stalled { color: var(--permission); background: var(--permission-soft); }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--idle); flex: none; }
   .dot.working { background: var(--working); }
   .dot.permission, .dot.stalled { background: var(--permission); }
-  .terminal-row { display: grid; grid-template-columns: minmax(0, 1fr) 108px 88px; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--line); }
+  .terminal-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--line); cursor: pointer; }
+  .terminal-row:hover { background: var(--surface); }
   .agent-info { min-width: 0; }
   .agent-name { display: flex; align-items: baseline; gap: 6px; font-size: 12px; font-weight: 600; min-width: 0; }
   .agent-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .session-number { color: var(--dim); font: 10px ui-monospace, monospace; flex: none; }
   .task { color: var(--dim); font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .task:empty { display: none; }
-  .actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+  .actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; min-width: 88px; }
+  /* Room between "+" and the bin, so a thumb aiming for one does not hit the other. */
+  .worktree-head .actions { gap: 16px; min-width: 98px; }
   button {
     color: var(--text); background: var(--panel); border: 1px solid var(--line);
     border-radius: 6px; padding: 5px 10px; min-height: 32px; font-size: 11px;
@@ -144,6 +153,7 @@
   .empty-symbol { display: block; color: var(--accent); font: 22px/1 ui-monospace, monospace; margin-bottom: 10px; }
   .empty-title { display: block; color: var(--text); font-weight: 600; margin-bottom: 4px; }
   .no-terminals { border-top: 1px solid var(--line); padding: 8px 12px; color: var(--dim); font-size: 11px; }
+  .workspace.stale .content, .workspace.stale .stats { opacity: .5; }
   .err { color: var(--danger); background: var(--panel); border: 1px solid var(--danger); border-radius: 6px; padding: 8px 12px; font-size: 12px; margin: 10px 0; overflow-wrap: anywhere; }
   #t-error { margin: 0; border-radius: 0; flex: none; max-height: 20vh; overflow: auto; }
   @media (max-width: 900px) {
@@ -157,21 +167,30 @@
     .connection { font-size: 10px; }
     .stats { margin-bottom: 10px; }
     .stat { padding: 8px 10px; gap: 5px; }
-    .stat-top { gap: 4px; font-size: 10px; }
+    .stat-top { gap: 4px; }
     .stat-value { font-size: 16px; }
     .tools { order: -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .tools .section-heading { display: none; }
     .tools details { margin: 0; }
     .tools details[open] { grid-column: 1 / -1; }
-    .worktree-head, .terminal-row { grid-template-columns: minmax(0, 1fr) 68px 88px; gap: 8px; padding: 8px 10px; }
+    body { font-size: 14px; }
+    .worktree-head, .terminal-row { gap: 8px; padding: 10px; }
     .worktree-info { display: block; }
-    .repo { margin-bottom: 1px; }
+    .repo { margin-bottom: 1px; font-size: 12px; }
     .repo:empty { display: none; }
-    .name { font-size: 12px; }
-    .branch { display: block; margin-top: 2px; }
+    .name { font-size: 15px; }
+    .branch { display: block; margin-top: 2px; font-size: 12px; }
+    .branch:empty { display: none; }
+    .agent-name { font-size: 14px; }
+    .session-number { font-size: 12px; }
+    .task { font-size: 13px; }
+    .status { font-size: 12px; padding: 3px 7px; }
+    .stat-top { font-size: 12px; }
+    .no-terminals, .empty { font-size: 13px; }
+    button { font-size: 13px; }
     button { min-height: 36px; }
     input, select { font-size: 16px; min-height: 38px; }
-    summary { min-height: 40px; padding: 8px 10px; font-size: 11px; }
+    summary { min-height: 40px; padding: 8px 10px; font-size: 13px; }
     .section-caption { display: none; }
     .terminal-toolbar { gap: 8px; }
     .terminal-toolbar .actions { gap: 4px; }
@@ -192,12 +211,12 @@
     <span class="connection" id="hint" role="status"></span>
   </div>
 </header>
-<main class="workspace">
+<main class="workspace" id="workspace">
   <h1 id="page-title"></h1>
   <div class="stats">
     <div class="stat"><div class="stat-top" id="stat-worktrees-label"></div><strong class="stat-value" id="stat-worktrees">—</strong></div>
     <div class="stat"><div class="stat-top"><span class="dot working" aria-hidden="true"></span><span id="stat-working-label"></span></div><strong class="stat-value" id="stat-working">—</strong></div>
-    <div class="stat attention"><div class="stat-top"><span class="dot permission" aria-hidden="true"></span><span id="stat-attention-label"></span></div><strong class="stat-value" id="stat-attention">—</strong></div>
+    <button class="stat attention" id="stat-attention-btn" disabled><span class="stat-top"><span class="dot permission" aria-hidden="true"></span><span id="stat-attention-label"></span></span><strong class="stat-value" id="stat-attention">—</strong></button>
   </div>
   <div id="error" class="err" role="alert" hidden></div>
   <div class="content">
@@ -262,6 +281,9 @@
 </dialog>
 
 <script>
+// The server has turned `?token=` into a cookie by now; the token must not stay
+// in the address bar, the history or a screenshot.
+if (/[?&]token=/.test(location.search)) history.replaceState(history.state, "", location.pathname);
 const ZH = String("__syro_locale__" || navigator.language || "")
   .toLowerCase()
   .startsWith("zh");
@@ -274,7 +296,9 @@ const T = ZH ? {
   noTerminals: "暂无终端，点击 + 启动。",
   statuses: { working: "运行中", idle: "空闲", permission: "等待授权", stalled: "可能卡住", none: "未运行" },
   input: "向终端发送文字…", repoPlaceholder: "选择或输入仓库", namePlaceholder: "例如：fix-login",
-  open: "进入", remove: "删除", removeAsk: "删除这个工作树？",
+  open: "进入", remove: "删除",
+  removeAsk: (name) => "删除工作树「" + name + "」？它的 git 工作树目录会一并从磁盘移除。",
+  stale: "连接中断，以下为断线前的数据。", shellName: "终端",
   copy: "复制会话命令", copied: "已复制",
   close: "‹ 返回", send: "发送",
   full: "完整终端", simple: "简洁视图", ended: "[终端已结束]",
@@ -292,9 +316,11 @@ const T = ZH ? {
   listCaption: "All repositories · Live updates", loading: "Loading your workspace…",
   noWorktrees: "A fresh workspace", emptyHint: "Create a worktree to start your next task.",
   noTerminals: "No terminals. Use + to start one.",
-  statuses: { working: "Running", idle: "Idle", permission: "Awaiting approval", stalled: "May be stalled", none: "Not running" },
+  statuses: { working: "Running", idle: "Idle", permission: "Approve?", stalled: "Stalled?", none: "Not running" },
   input: "Send text to terminal…", repoPlaceholder: "Select or enter a repository", namePlaceholder: "e.g. fix-login",
-  open: "Open", remove: "Remove", removeAsk: "Remove this worktree?",
+  open: "Open", remove: "Remove",
+  removeAsk: (name) => "Remove the worktree \"" + name + "\"? Its git worktree directory is deleted from disk.",
+  stale: "Disconnected. What is shown is from before the connection dropped.", shellName: "Shell",
   copy: "Copy resume command", copied: "Copied",
   close: "‹ Back", send: "Send",
   full: "Full terminal", simple: "Simple view", ended: "[the terminal ended]",
@@ -363,16 +389,38 @@ function statusBadge(status, stalled) {
   return badge;
 }
 
+// What a terminal is called: its agent, or "Shell" for one that runs none.
+function terminalName(terminal) {
+  return terminal.agent_name || terminal.agent || T.shellName;
+}
+
+const needsYou = (t) => t.status === "permission" || t.stalled;
+
+// Waiting on you first, then running, then the rest. `sort` is stable, so the
+// app's own order holds within each group and a push does not shuffle the list.
+function urgency(wt) {
+  const terminals = wt.terminals || [];
+  if (terminals.some(needsYou)) return 0;
+  if (terminals.some((t) => t.status === "working")) return 1;
+  return 2;
+}
+
+// The rows by terminal id, as last drawn: what "Needs attention" scrolls to.
+let rows = new Map();
+
 function render() {
   const focused = document.activeElement;
   const list = document.getElementById("list");
   list.textContent = "";
-  const worktrees = listing.worktrees || [];
+  rows = new Map();
+  const worktrees = (listing.worktrees || []).slice().sort((a, b) => urgency(a) - urgency(b));
   const terminals = worktrees.flatMap((wt) => wt.terminals || []);
+  const attention = terminals.filter(needsYou);
   document.getElementById("stat-worktrees").textContent = worktrees.length;
   document.getElementById("worktree-count").textContent = worktrees.length;
   document.getElementById("stat-working").textContent = terminals.filter((t) => t.status === "working" && !t.stalled).length;
-  document.getElementById("stat-attention").textContent = terminals.filter((t) => t.status === "permission" || t.stalled).length;
+  document.getElementById("stat-attention").textContent = attention.length;
+  document.getElementById("stat-attention-btn").disabled = !attention.length;
   if (!worktrees.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
@@ -404,9 +452,10 @@ function render() {
     name.textContent = wt.name;
     const branch = document.createElement("span");
     branch.className = "branch";
-    branch.textContent = wt.branch;
+    branch.textContent = wt.branch === wt.name ? "" : wt.branch;
     title.append(repo, name, branch);
-    head.append(title, statusBadge(wt.status, wt.stalled));
+    // With terminals, their rows carry the status; the head repeating it is noise.
+    head.append(title, (wt.terminals || []).length ? document.createElement("span") : statusBadge(wt.status, wt.stalled));
     const headActions = document.createElement("div");
     headActions.className = "actions";
     const add = iconButton("add", T.newTerminal);
@@ -420,7 +469,7 @@ function render() {
     remove.id = "remove-" + wt.id;
     remove.className += " danger";
     remove.onclick = async () => {
-      if (!confirm(T.removeAsk)) return;
+      if (!confirm(T.removeAsk(wt.repo === wt.name ? wt.name : wt.repo + " / " + wt.name))) return;
       try { await post("/api/worktrees/remove", { id: wt.id }); refresh(); }
       catch (error) { say(String(error.message)); }
     };
@@ -431,11 +480,15 @@ function render() {
     for (const [index, terminal] of (wt.terminals || []).entries()) {
       const row = document.createElement("div");
       row.className = "terminal-row";
+      // The whole row opens the terminal; the Open button stays for keyboards and
+      // screen readers.
+      row.onclick = () => openTerminalView(terminal);
+      rows.set(terminal.id, row);
       const info = document.createElement("div");
       info.className = "agent-info";
       const label = document.createElement("div");
       label.className = "agent-name";
-      const who = terminal.agent_name || terminal.agent || terminal.id;
+      const who = terminalName(terminal);
       const number = document.createElement("span");
       number.className = "session-number";
       number.textContent = String(index + 1).padStart(2, "0");
@@ -455,7 +508,8 @@ function render() {
       if (terminal.resume) {
         const copy = iconButton("copy", T.copy);
         copy.id = "copy-" + terminal.id;
-        copy.onclick = async () => {
+        copy.onclick = async (event) => {
+          event?.stopPropagation();
           try {
             await navigator.clipboard.writeText(terminal.resume);
             copy.title = T.copied;
@@ -475,7 +529,7 @@ function render() {
       open.id = "open-" + terminal.id;
       open.textContent = T.open;
       open.setAttribute("aria-label", T.open + " · " + who + " · " + number.textContent);
-      open.onclick = () => openTerminalView(terminal);
+      open.onclick = (event) => { event?.stopPropagation(); openTerminalView(terminal); };
       actions.append(open);
       row.append(actions);
       card.append(row);
@@ -534,11 +588,22 @@ async function loadAgents() {
   }
 }
 
+// Disconnected: say so where the list is, and grey it out, or a status from
+// minutes ago reads as the agent still running.
+function markOffline(message) {
+  const hint = document.getElementById("hint");
+  hint.textContent = T.notUpdated;
+  hint.dataset.state = "offline";
+  document.getElementById("workspace").classList.add("stale");
+  say(message || T.stale);
+}
+
 function applyState(next) {
   listing = next;
   const hint = document.getElementById("hint");
   hint.dataset.state = "live";
   hint.textContent = T.poll;
+  document.getElementById("workspace").classList.remove("stale");
   hint.title = T.updated + " " + new Date().toLocaleTimeString();
   say("");
   // A terminal that is gone — its tab closed, its worktree removed — closes the
@@ -555,9 +620,7 @@ async function refresh() {
   try {
     applyState(JSON.parse(await api("/api/state")));
   } catch (error) {
-    document.getElementById("hint").textContent = T.notUpdated;
-    document.getElementById("hint").dataset.state = "offline";
-    say(String(error.message || error));
+    markOffline(T.stale + " " + String(error.message || error));
   }
 }
 
@@ -574,10 +637,7 @@ function watchState() {
       say(String(error.message || error));
     }
   });
-  stream.onerror = () => {
-    document.getElementById("hint").textContent = T.notUpdated;
-    document.getElementById("hint").dataset.state = "offline";
-  };
+  stream.onerror = () => markOffline();
   return true;
 }
 
@@ -587,7 +647,7 @@ let shown = null;
 function updateTerminalHeading() {
   const wt = listing.worktrees.find((wt) => (wt.terminals || []).some((t) => t.id === shown.id));
   const index = wt ? wt.terminals.findIndex((t) => t.id === shown.id) + 1 : 1;
-  document.getElementById("t-name").textContent = (shown.agent_name || shown.agent || shown.id) + " · " + String(index).padStart(2, "0");
+  document.getElementById("t-name").textContent = terminalName(shown) + " · " + String(index).padStart(2, "0");
   document.getElementById("t-name").title = document.getElementById("t-name").textContent;
   const context = document.getElementById("t-context");
   context.textContent = wt ? wt.repo + " / " + wt.name : shown.id;
@@ -719,7 +779,9 @@ async function openFullTerminal() {
       // would reconnect forever to a terminal that has ended.
       if (stream) { stream.close(); stream = null; }
     });
-    term.focus();
+    // On a phone, focus pops the keyboard over half the screen before anyone has
+    // read it; a tap on the terminal focuses it when typing is wanted.
+    if (!window.matchMedia?.("(pointer: coarse)").matches) term.focus();
   } catch (error) {
     // Back to the view that always works rather than an empty box.
     if (attempt !== fullAttempt) return;
@@ -853,19 +915,34 @@ document.getElementById("t-send-form").onsubmit = async (event) => {
   loadText();
 };
 
-document.getElementById("new-form").onsubmit = async (event) => {
+// One request at a time from a create form: a second tap on a slow network
+// would make a second terminal. Success folds the form away; the new row
+// arrives on the state stream, so only a page without one has to ask again.
+async function submitOnce(buttonId, detailsId, request) {
+  const button = document.getElementById(buttonId);
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    await request();
+    say("");
+    document.getElementById(detailsId).open = false;
+    if (!window.EventSource) setTimeout(refresh, 800);
+  } catch (error) {
+    say(String(error.message || error));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+document.getElementById("new-form").onsubmit = (event) => {
   event.preventDefault();
   const repo = document.getElementById("new-repo").value.trim();
   const name = document.getElementById("new-name").value.trim();
   if (!repo || !name) return;
-  try {
+  return submitOnce("new-create", "new-worktree", async () => {
     await post("/api/worktrees", { repo, name });
     document.getElementById("new-name").value = "";
-    say("");
-    setTimeout(refresh, 800);
-  } catch (error) {
-    say(String(error.message || error));
-  }
+  });
 };
 
 document.getElementById("term-form").onsubmit = async (event) => {
@@ -875,15 +952,14 @@ document.getElementById("term-form").onsubmit = async (event) => {
   if (!worktree) return;
   const body = { worktree };
   if (agent) body.agent = agent;
-  try {
-    await post("/api/terminals", body);
-    say("");
-    // An agent takes a moment to write its first transcript; the tab shows up
-    // either way, so one later poll is enough.
-    setTimeout(refresh, 600);
-  } catch (error) {
-    say(String(error.message || error));
-  }
+  return submitOnce("term-create", "new-terminal", () => post("/api/terminals", body));
+};
+
+// "Needs attention" takes you to the first terminal that does.
+document.getElementById("stat-attention-btn").onclick = () => {
+  const first = [...rows].find(([id]) => listing.worktrees.some((wt) =>
+    (wt.terminals || []).some((t) => t.id === id && needsYou(t))));
+  first?.[1].scrollIntoView({ behavior: "smooth", block: "center" });
 };
 
 buildKeys();
