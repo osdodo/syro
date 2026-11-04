@@ -24,7 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - run: cargo install cargo-bundle --locked
+      # 0.12 rejects `osx_minimum_system_version` in [package.metadata.bundle].
+      - run: cargo install cargo-bundle --version 0.11.0 --locked
       # Before bundling, not after: cargo-bundle writes the version into Info.plist,
       # and editing the plist after bundle.sh signs it would break the signature.
       - name: Set version from tag
