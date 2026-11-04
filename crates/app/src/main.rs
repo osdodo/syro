@@ -11395,12 +11395,16 @@ mod window_tests {
     fn the_web_panel_url_is_shown_and_copied(cx: &mut TestAppContext) {
         // Panel off, which is what a form opened before `start_web` would show.
         let fixture = open(cx, "settings-web-off");
-        open_settings_tab(cx, &fixture, "settings-tab-general");
+        open_settings_tab(cx, &fixture, "settings-tab-web");
         let off = label(cx, &fixture, "settings-web-url").expect("the panel's row");
         assert!(off.contains("settings.toml"), "{off}");
         assert!(
             !found(cx, &fixture, "settings-web-copy"),
             "a copy button for no URL"
+        );
+        assert!(
+            !found(cx, &fixture, "settings-web-qr"),
+            "a QR code for no URL"
         );
 
         // And with a panel up: the real URL, and the button puts it on the
@@ -11415,7 +11419,7 @@ mod window_tests {
                 workspace.start_web(cx);
             })
         });
-        open_settings_tab(cx, &live, "settings-tab-general");
+        open_settings_tab(cx, &live, "settings-tab-web");
         let url = cx
             .update(|cx| live.state.read(cx).web_url().map(str::to_string))
             .expect("the panel did not start");
@@ -11423,10 +11427,14 @@ mod window_tests {
             label(cx, &live, "settings-web-url").as_deref(),
             Some(url.as_str())
         );
+        assert!(
+            found(cx, &live, "settings-web-qr"),
+            "no QR code for the URL"
+        );
         // The row sits below the fold of the test window: scroll it into view.
         cx.update_window(live.window.into(), |_, window, cx| {
             window.scroll(
-                "settings-language",
+                "settings-web",
                 ScrollDelta::Lines(Point { x: 0., y: -40. }),
                 cx,
             );
@@ -11690,7 +11698,10 @@ mod window_tests {
                 .into_iter()
                 .filter(|quad| {
                     let (painted, clip) = (&quad.bounds, &quad.content_mask.bounds);
+                    // Only what is painted *in* the row: the dialog's own
+                    // surface is centred on it too, and is not this row's.
                     row.contains(&painted.center())
+                        && painted.size.height <= row.size.height
                         && !(clip.left() <= painted.left()
                             && clip.top() <= painted.top()
                             && clip.right() >= painted.right()
@@ -11797,20 +11808,29 @@ mod window_tests {
             "the settings panes are cramped"
         );
         let language = bounds_of(cx, &fixture, "settings-language");
-        let command = bounds_of(cx, &fixture, "settings-commit-message");
         assert!(
             language.size.height >= px(44.),
             "the control row is cramped"
         );
-        assert!(
-            command.origin.y >= language.bottom() + px(8.),
-            "settings sections touch"
-        );
+        // The power section is the one below it, and only macOS has one.
+        if cfg!(target_os = "macos") {
+            let power = bounds_of(cx, &fixture, "settings-computer-awake");
+            assert!(
+                power.origin.y >= language.bottom() + px(8.),
+                "settings sections touch"
+            );
+        }
     }
 
+    // shortcut: macOS only, because elsewhere the general tab is one row and
+    // never overflows; point it at a taller tab if this needs to run there.
+    #[cfg(target_os = "macos")]
     #[gpui_kit::test]
     fn settings_content_scrolls_without_moving_the_categories(cx: &mut TestAppContext) {
         let fixture = open(cx, "settings-scroll");
+        // The dialog slides in on a clock: without this, a loaded machine
+        // measures the tabs mid-slide and again after it.
+        cx.update(|cx| cx.set_reduce_motion(true));
         open_settings(cx, &fixture);
         draw(cx, &fixture);
         cx.simulate_window_resize(fixture.window.into(), size(px(1000.), px(440.)));
@@ -11865,12 +11885,14 @@ mod window_tests {
     fn the_settings_tabs_hold_the_rows_they_name(cx: &mut TestAppContext) {
         let fixture = open(cx, "settings-tabs");
         open_settings(cx, &fixture);
+        // Each setting reads as a row: its name on the left, its control on
+        // the right.
         let assert_stacked = |cx: &mut TestAppContext, label: &str, control: &str| {
             let label = bounds_of(cx, &fixture, label);
             let control = bounds_of(cx, &fixture, control);
             assert!(
-                control.origin.y >= label.bottom() + px(6.),
-                "the control is not spaced below its label: {label:?}, {control:?}"
+                control.origin.x >= label.right() + px(12.),
+                "the control is not beside its label: {label:?}, {control:?}"
             );
         };
         draw(cx, &fixture);
@@ -11879,7 +11901,11 @@ mod window_tests {
         // It opens on the general rows, and the other tabs' rows are not drawn: a
         // form is one category at a time.
         assert!(found(cx, &fixture, "settings-language"));
-        assert!(found(cx, &fixture, "settings-computer-awake"));
+        // The sleep setting only exists where it does something.
+        assert_eq!(
+            found(cx, &fixture, "settings-computer-awake"),
+            cfg!(target_os = "macos")
+        );
         assert!(!found(cx, &fixture, "settings-font-plus"));
         assert!(!found(cx, &fixture, "settings-opacity-slider"));
 
@@ -11948,16 +11974,16 @@ mod window_tests {
         );
     }
 
-    /// The AI command is a field on the general tab, and what is typed lands in
+    /// The AI command is a field on the git tab, and what is typed lands in
     /// the state and in the file the state is written to.
     #[gpui_kit::test]
     fn the_ai_command_setting_reaches_the_state(cx: &mut TestAppContext) {
         let fixture = open(cx, "settings-ai-command");
-        open_settings(cx, &fixture);
+        open_settings_tab(cx, &fixture, "settings-tab-git");
 
         assert!(
             found(cx, &fixture, "settings-commit-message-input"),
-            "the general tab has no AI command field"
+            "the git tab has no AI command field"
         );
         click_visible(cx, &fixture, "settings-commit-message-input");
         type_text(cx, &fixture, "cat");
@@ -12006,6 +12032,7 @@ mod window_tests {
 
     /// The sleep setting is a row of the general tab, and picking an answer lands
     /// in the state and in the file the state writes it to.
+    #[cfg(target_os = "macos")]
     #[gpui_kit::test]
     fn the_sleep_setting_reaches_the_state(cx: &mut TestAppContext) {
         let fixture = open(cx, "settings-awake");
@@ -12022,6 +12049,8 @@ mod window_tests {
         );
         assert!(found(cx, &fixture, "settings-computer-awake-off"));
         assert!(found(cx, &fixture, "settings-computer-awake-auto"));
+        // Display off sits beside it; not clicked, because it really darkens the screen.
+        assert!(found(cx, &fixture, "settings-display-off-button"));
 
         let state = fixture.state.clone();
         assert!(

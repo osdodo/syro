@@ -23,6 +23,7 @@ async-channel = "2"
 serde_json.workspace = true
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 
 # The blur radius: gpui only knows blurred-or-not, so the app sets the window's
 # radius itself (see `settings_view::set_blur_radius`). Both are already in the

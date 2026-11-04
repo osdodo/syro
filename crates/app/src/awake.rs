@@ -73,6 +73,24 @@ impl AwakeAssertion {
     }
 }
 
+/// Turn the display off now, leaving the machine running: with the assertion
+/// held (`caffeinate -i -s`, no `-d`), a dark screen does not take the system
+/// down with it. Off the UI thread, because `pmset` is a process to wait on.
+#[cfg(target_os = "macos")]
+pub fn sleep_display() {
+    std::thread::spawn(|| {
+        if let Err(error) = Command::new("/usr/bin/pmset")
+            .arg("displaysleepnow")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+        {
+            tracing::warn!(%error, "could not turn the display off");
+        }
+    });
+}
+
 impl Default for AwakeAssertion {
     fn default() -> Self {
         Self::new()
