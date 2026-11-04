@@ -11296,7 +11296,7 @@ mod window_tests {
         });
         assert_eq!(
             label(cx, &fixture, "usage-open").unwrap(),
-            "Usage: 1.1k tokens and ~$1.25+ over the last 14 days"
+            "Usage: 1k tokens and ~$1.25+ over the last 14 days"
         );
         click_visible(cx, &fixture, "usage-open");
         assert!(draw_until(cx, &fixture, |cx| found(

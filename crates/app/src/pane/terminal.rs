@@ -3910,6 +3910,8 @@ mod window_tests {
             Rc::new(RefCell::new(None));
         let slot = built.clone();
         let (window, _pair) = cx.update(|cx| {
+            // The tree's rows read the component layer's theme, which `init` sets.
+            gpui_kit::init(cx);
             let bounds = Bounds {
                 origin: Point::default(),
                 size: size(px(800.), px(400.)),
