@@ -6,6 +6,7 @@ members = ["crates/core", "crates/app"]
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT"
 
 [workspace.dependencies]
 # --- gpui-kit: one git tag, never crates.io ---
