@@ -81,9 +81,9 @@ pub struct WebSettings {
     /// Whether the panel is up at all.
     #[serde(default = "default_web_enabled")]
     pub enabled: bool,
-    /// The address to bind. Loopback by default; a Tailscale address is what
-    /// makes it reachable from a phone, and a public one is a mistake the panel
-    /// cannot defend against.
+    /// The address to bind. Every interface by default, so a phone on the same
+    /// network can open it; the token is the only guard, so a public network
+    /// is a mistake the panel cannot defend against.
     #[serde(default = "default_web_bind")]
     pub bind: String,
     #[serde(default = "default_web_port")]
@@ -95,7 +95,7 @@ fn default_web_enabled() -> bool {
 }
 
 fn default_web_bind() -> String {
-    "127.0.0.1".to_string()
+    "0.0.0.0".to_string()
 }
 
 fn default_web_port() -> u16 {
@@ -261,10 +261,9 @@ mod tests {
         assert_eq!(s.computer_awake, ComputerAwakeMode::Off);
         assert!(s.agents.is_empty());
         assert!(s.hooks.is_empty());
-        // The panel is on by default, on loopback, where nobody but this machine
-        // can reach it.
+        // The panel is on by default, on every interface, so a phone can reach it.
         assert!(s.web.enabled);
-        assert_eq!(s.web.bind, "127.0.0.1");
+        assert_eq!(s.web.bind, "0.0.0.0");
         assert_eq!(s.web.port, 8777);
         assert!(s.keymap.is_empty());
         // No command in the file means the AI button runs the default one.
@@ -294,13 +293,13 @@ mod tests {
     #[test]
     fn the_web_section_reads_whole_or_a_field_at_a_time() {
         let web = |text: &str| toml::from_str::<Settings>(text).unwrap().web;
-        // Nothing in the file: loopback, and on.
+        // Nothing in the file: every interface, and on.
         assert_eq!(web(""), WebSettings::default());
         // A section with one field keeps the defaults for the rest.
         let partial = web("[web]\nport = 9000\n");
         assert_eq!(partial.port, 9000);
         assert!(partial.enabled);
-        assert_eq!(partial.bind, "127.0.0.1");
+        assert_eq!(partial.bind, "0.0.0.0");
         // And all of them, spelled out.
         let full = web("[web]\nenabled = false\nbind = \"100.64.0.1\"\nport = 1\n");
         assert!(!full.enabled);

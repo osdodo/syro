@@ -79,6 +79,94 @@ fn web_qr(url: &str) -> Option<std::sync::Arc<Image>> {
     )))
 }
 
+/// A labelled link with a copy button, or just the label when there is no link.
+fn web_link_row(
+    id: &str,
+    shown: String,
+    url: Option<&str>,
+    colors: &ColorTokens,
+    cx: &App,
+) -> AnyElement {
+    let address = div()
+        .id(SharedString::from(format!("{id}-url")))
+        .test_support()
+        // The URL is the whole point of the row, and a screen reader can read it
+        // out even when the panel is too narrow to show it.
+        .aria_label(SharedString::from(shown.clone()))
+        .text_xs()
+        .font_family(Theme::global(cx).tokens.typography.mono.clone())
+        .text_color(colors.muted_foreground)
+        .text_ellipsis()
+        .child(SharedString::from(shown));
+    let copy = match url {
+        Some(url) => {
+            let url = url.to_string();
+            Button::new(SharedString::from(format!("{id}-copy")))
+                .small()
+                .outline()
+                .label(t!("settings.web_copy"))
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(url.clone()))
+                })
+                .into_any_element()
+        }
+        None => div().into_any_element(),
+    };
+    div()
+        .id(SharedString::from(id.to_string()))
+        .test_support()
+        .h_flex()
+        .items_center()
+        .gap_6()
+        .px_4()
+        .py_3()
+        .min_h(px(56.))
+        .child(
+            div()
+                .v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(div().text_sm().child(t!("settings.web_link")))
+                .child(address),
+        )
+        .child(div().flex_shrink_0().child(copy))
+        .into_any_element()
+}
+
+/// `url` as a QR code beside a line of help.
+fn web_scan_row(id: &str, url: &str, help: String, colors: &ColorTokens) -> Option<AnyElement> {
+    let qr = web_qr(url)?;
+    Some(
+        div()
+            .h_flex()
+            .w_full()
+            .items_center()
+            .gap_6()
+            .p_4()
+            .child(
+                div()
+                    .id(SharedString::from(id.to_string()))
+                    .test_support()
+                    .aria_label(t!("settings.web_qr").to_string())
+                    .size(px(144.))
+                    .flex_shrink_0()
+                    .rounded_md()
+                    .overflow_hidden()
+                    .child(img(qr).size_full()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(help),
+            )
+            .into_any_element(),
+    )
+}
+
 /// A scrollback the app will use, from a step that may be negative.
 fn clamp_scrollback(lines: i64) -> u32 {
     lines.clamp(MIN_SCROLLBACK as i64, MAX_SCROLLBACK as i64) as u32
@@ -1231,94 +1319,118 @@ impl SettingsView {
     /// the listener is bound, so a control here would be a control that lies
     /// until the next launch.
     fn web_tab(&self, colors: &ColorTokens, cx: &App) -> AnyElement {
-        let url = self.state.read(cx).web_url().map(str::to_string);
+        let state = self.state.read(cx);
+        let url = state.web_url().map(str::to_string);
+        let remote = url
+            .as_deref()
+            .and_then(|url| crate::web::tailscale_url(url, &state.settings().web.bind));
         let shown = url
             .clone()
             .unwrap_or_else(|| t!("settings.web_off").to_string());
-        let address = div()
-            .id("settings-web-url")
-            .test_support()
-            // The URL is the whole point of the row, and a screen reader can
-            // read it out even when the panel is too narrow to show it.
-            .aria_label(SharedString::from(shown.clone()))
-            .text_xs()
-            .font_family(Theme::global(cx).tokens.typography.mono.clone())
-            .text_color(colors.muted_foreground)
-            .text_ellipsis()
-            .child(SharedString::from(shown));
-        let copy = match &url {
-            Some(url) => {
-                let url = url.clone();
-                Button::new("settings-web-copy")
-                    .small()
-                    .outline()
-                    .label(t!("settings.web_copy"))
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(url.clone()))
-                    })
-                    .into_any_element()
-            }
-            None => div().into_any_element(),
-        };
-        let link = div()
-            .id("settings-web")
-            .test_support()
-            .h_flex()
-            .items_center()
-            .gap_6()
-            .px_4()
-            .py_3()
-            .min_h(px(56.))
-            .child(
-                div()
-                    .v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_0p5()
-                    .child(div().text_sm().child(t!("settings.web_link")))
-                    .child(address),
-            )
-            .child(div().flex_shrink_0().child(copy))
-            .into_any_element();
 
+        let mut rows = vec![web_link_row(
+            "settings-web",
+            shown,
+            url.as_deref(),
+            colors,
+            cx,
+        )];
+        if url.is_some() {
+            let state = self.state.clone();
+            let regenerate = Button::new("settings-web-token-regenerate")
+                .small()
+                .outline()
+                .label(t!("settings.web_token_regenerate"))
+                .on_click(move |_, _, cx| {
+                    state.update(cx, |state, cx| {
+                        if let Err(error) = state.regenerate_web_token(cx) {
+                            tracing::warn!("the web token was not replaced: {error:#}");
+                        }
+                    })
+                })
+                .into_any_element();
+            rows.push(setting_row(
+                "web-token",
+                &t!("settings.web_token"),
+                Some(t!("settings.web_token_desc").to_string()),
+                regenerate,
+                colors,
+            ));
+        }
         let mut sections = vec![section(
             "web-link",
             Some(t!("settings.section_connection").to_string()),
             None,
-            vec![link],
+            rows,
             colors,
         )];
-        if let Some(qr) = url.as_deref().and_then(web_qr) {
-            let scan = div()
-                .h_flex()
-                .items_center()
-                .gap_6()
-                .p_4()
-                .child(
-                    div()
-                        .id("settings-web-qr")
-                        .test_support()
-                        .aria_label(t!("settings.web_qr").to_string())
-                        .size(px(144.))
-                        .flex_shrink_0()
-                        .rounded_md()
-                        .overflow_hidden()
-                        .child(img(qr).size_full()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_xs()
-                        .text_color(colors.muted_foreground)
-                        .child(t!("settings.web_scan")),
-                )
-                .into_any_element();
+        if let Some(qr) = url.as_deref().and_then(|url| {
+            web_scan_row(
+                "settings-web-qr",
+                url,
+                t!("settings.web_scan").to_string(),
+                colors,
+            )
+        }) {
             sections.push(section(
                 "web-qr",
                 Some(t!("settings.section_scan").to_string()),
                 None,
-                vec![scan],
+                vec![qr],
+                colors,
+            ));
+        }
+        // Away from home: the same panel over Tailscale, or how to get there.
+        if url.is_some() {
+            let rows = match &remote {
+                Some(remote) => {
+                    let mut rows = vec![web_link_row(
+                        "settings-web-remote",
+                        remote.clone(),
+                        Some(remote),
+                        colors,
+                        cx,
+                    )];
+                    rows.extend(web_scan_row(
+                        "settings-web-remote-qr",
+                        remote,
+                        t!("settings.web_remote_scan").to_string(),
+                        colors,
+                    ));
+                    rows
+                }
+                None => vec![
+                    div()
+                        .id("settings-web-remote-none")
+                        .test_support()
+                        .h_flex()
+                        .items_center()
+                        .gap_6()
+                        .px_4()
+                        .py_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .text_color(colors.muted_foreground)
+                                .child(t!("settings.web_remote_none")),
+                        )
+                        .child(
+                            Button::new("settings-web-remote-get")
+                                .small()
+                                .outline()
+                                .label(t!("settings.web_remote_get"))
+                                .on_click(|_, _, cx| cx.open_url("https://tailscale.com/download")),
+                        )
+                        .into_any_element(),
+                ],
+            };
+            sections.push(section(
+                "web-remote",
+                Some(t!("settings.section_remote").to_string()),
+                None,
+                rows,
                 colors,
             ));
         }

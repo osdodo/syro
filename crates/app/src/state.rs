@@ -307,6 +307,9 @@ pub struct AppState {
     /// here rather than on the view that starts it, because the settings form is
     /// where a user looks for it and the form only knows the state.
     web_url: Option<String>,
+    /// Where the panel's token lives and the copy the running panel checks, so
+    /// the settings form can replace it.
+    web_token: Option<(PathBuf, std::sync::Arc<std::sync::Mutex<String>>)>,
     /// How wide the side panels were as last dragged (the layout restore — the widths are
     /// layout, and `state.json` is where layout lives).
     sidebar_width: Option<f32>,
@@ -351,6 +354,7 @@ impl AppState {
             state_error,
             hook_error: None,
             web_url: None,
+            web_token: None,
             sidebar_width: loaded.sidebar_width,
             right_width: loaded.right_width,
             hidden_repos: loaded.hidden_repos,
@@ -519,6 +523,29 @@ impl AppState {
             self.web_url = url;
             cx.notify();
         }
+    }
+
+    /// The token the running panel checks, and the file it is kept in.
+    pub fn set_web_token(
+        &mut self,
+        path: PathBuf,
+        token: std::sync::Arc<std::sync::Mutex<String>>,
+    ) {
+        self.web_token = Some((path, token));
+    }
+
+    /// A new token for the running panel: written to its file, checked from the
+    /// next request on, and put in the URL the form shows.
+    pub fn regenerate_web_token(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        let (path, shared) = self.web_token.as_ref().context("the web panel is off")?;
+        let token = crate::web::regenerate_token(path)?;
+        *shared.lock().unwrap() = token.clone();
+        if let Some((base, _)) = self.web_url.as_deref().and_then(|url| url.rsplit_once("token=")) {
+            self.web_url = Some(format!("{base}token={token}"));
+        }
+        cx.notify();
+        Ok(())
     }
 
     /// How wide the sidebar was left, or `None` for the default width.

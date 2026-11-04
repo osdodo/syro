@@ -866,6 +866,9 @@ settings:
   section_scan:
     en: Scan to open
     zh-CN: 扫码访问
+  section_remote:
+    en: Away from home
+    zh-CN: 外网访问
   language_desc:
     en: The language the app is shown in
     zh-CN: 应用界面显示的语言
@@ -932,6 +935,24 @@ settings:
   web_copy:
     en: Copy link
     zh-CN: 复制链接
+  web_remote_scan:
+    en: Scan with a phone signed in to the same Tailscale account to open the panel from anywhere.
+    zh-CN: 手机登录同一个 Tailscale 账号后扫码，即可在任何网络下打开网页面板。
+  web_remote_none:
+    en: Tailscale is not running. Install it and sign in with the same account on this Mac and your phone to open the panel from anywhere.
+    zh-CN: 未检测到 Tailscale。在这台 Mac 和手机上安装并登录同一账号后，即可在外网访问。
+  web_remote_get:
+    en: Get Tailscale
+    zh-CN: 获取 Tailscale
+  web_token:
+    en: Access token
+    zh-CN: 访问令牌
+  web_token_desc:
+    en: Make a new one if the link leaked. Every device that opened the old link has to scan again.
+    zh-CN: 链接泄露时换一个新的。用旧链接打开过的设备需要重新扫码。
+  web_token_regenerate:
+    en: Regenerate
+    zh-CN: 重新生成
   web_qr:
     en: QR code for the web panel link
     zh-CN: 网页面板链接二维码

@@ -8,6 +8,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -144,10 +145,11 @@ enum StreamSource {
 
 /// Bind the panel and serve it. `Ok(url)` is the address to open, token and all.
 ///
-/// The caller keeps `requests` and answers them; this only listens.
+/// The caller keeps `requests` and answers them; this only listens. `token` is
+/// shared so the settings form can replace it while the panel runs.
 pub fn start(
     settings: &WebSettings,
-    token: String,
+    token: Arc<Mutex<String>>,
     requests: async_channel::Sender<WebRequest>,
 ) -> anyhow::Result<String> {
     let ip: IpAddr = settings
@@ -162,8 +164,13 @@ pub fn start(
     })?;
     // Read back rather than reuse the request: port 0 means "any free one", and
     // the URL is what the user has to open.
-    let addr = listener.local_addr()?;
-    let url = format!("http://{addr}/?token={token}");
+    let mut addr = listener.local_addr()?;
+    // `0.0.0.0` listens everywhere but opens nowhere: show the address a phone
+    // on the same network would reach instead.
+    if addr.ip().is_unspecified() {
+        addr.set_ip(outward_ip("192.0.2.1:9").unwrap_or(IpAddr::from([127, 0, 0, 1])));
+    }
+    let url = format!("http://{addr}/?token={}", token.lock().unwrap());
     std::thread::Builder::new()
         .name("syro-web".to_string())
         .spawn(move || {
@@ -172,13 +179,50 @@ pub fn start(
             // nothing and costs a way to starve the UI.
             for stream in listener.incoming() {
                 match stream {
-                    Ok(stream) => handle(stream, &token, &requests),
+                    Ok(stream) => {
+                        let token = token.lock().unwrap().clone();
+                        handle(stream, &token, &requests)
+                    }
                     Err(error) => tracing::debug!(%error, "the web panel refused a connection"),
                 }
             }
         })
         .context("starting the web panel thread")?;
     Ok(url)
+}
+
+/// The address this machine would send to `target` from. A UDP `connect` sends
+/// nothing; it only asks the OS which interface it would use.
+fn outward_ip(target: &str) -> Option<IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect(target).ok()?;
+    Some(socket.local_addr().ok()?.ip())
+}
+
+/// The panel's URL on this Mac's Tailscale address, for a phone away from home.
+/// `None` when Tailscale is not up, or the panel is not bound to every
+/// interface and so does not listen there. Cheap enough to ask on every render,
+/// so turning Tailscale on shows up without a restart.
+pub fn tailscale_url(local: &str, bind: &str) -> Option<String> {
+    if !bind.parse::<IpAddr>().is_ok_and(|ip| ip.is_unspecified()) {
+        return None;
+    }
+    // 100.100.100.100 is Tailscale's own resolver: only its tunnel routes there.
+    let ip = outward_ip("100.100.100.100:53").filter(is_tailscale)?;
+    rehost(local, ip)
+}
+
+/// Tailscale hands out addresses from the CGNAT range, 100.64.0.0/10.
+fn is_tailscale(ip: &IpAddr) -> bool {
+    matches!(ip, IpAddr::V4(v4) if v4.octets()[0] == 100 && v4.octets()[1] & 0xC0 == 64)
+}
+
+/// `url` with its host swapped for `ip`, port and token kept.
+fn rehost(url: &str, ip: IpAddr) -> Option<String> {
+    let (authority, rest) = url.strip_prefix("http://")?.split_once('/')?;
+    let mut addr: SocketAddr = authority.parse().ok()?;
+    addr.set_ip(ip);
+    Some(format!("http://{addr}/{rest}"))
 }
 
 /// The panel's token, read from `path` or made and written there, so a
@@ -199,6 +243,17 @@ pub fn token_at(path: &std::path::Path) -> anyhow::Result<String> {
     std::fs::write(path, &token).with_context(|| format!("writing {}", path.display()))?;
     restrict(path);
     Ok(token)
+}
+
+/// Throw the token at `path` away for a new one, so every link and every
+/// device holding the old one is locked out.
+pub fn regenerate_token(path: &std::path::Path) -> anyhow::Result<String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).with_context(|| format!("removing {}", path.display())),
+    }
+    token_at(path)
 }
 
 pub(crate) fn token_path() -> PathBuf {
@@ -899,6 +954,32 @@ mod tests {
     }
 
     const TOKEN: &str = "abc";
+
+    #[test]
+    fn binding_everywhere_shows_an_address_a_phone_can_open() {
+        let settings = WebSettings {
+            bind: "0.0.0.0".to_string(),
+            port: 0,
+            ..WebSettings::default()
+        };
+        let (requests, _keep) = async_channel::unbounded();
+        let url = start(&settings, Arc::new(Mutex::new("t".to_string())), requests).unwrap();
+        assert!(!url.contains("0.0.0.0"), "{url}");
+    }
+
+    #[test]
+    fn the_tailscale_link_keeps_the_port_and_token() {
+        let ip: IpAddr = "100.101.102.103".parse().unwrap();
+        assert!(is_tailscale(&ip));
+        assert!(!is_tailscale(&"192.168.31.54".parse().unwrap()));
+        assert!(!is_tailscale(&"100.128.0.1".parse().unwrap()));
+        assert_eq!(
+            rehost("http://192.168.31.54:8777/?token=abc", ip).as_deref(),
+            Some("http://100.101.102.103:8777/?token=abc")
+        );
+        // Loopback does not listen on the tunnel, so it gets no remote link.
+        assert!(tailscale_url("http://127.0.0.1:8777/?token=abc", "127.0.0.1").is_none());
+    }
 
     #[test]
     fn the_page_and_the_state_need_the_token() {

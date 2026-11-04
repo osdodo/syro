@@ -552,7 +552,8 @@ impl Workspace {
                 return;
             }
         };
-        let url = match web::start(&settings, token, requests) {
+        let token = std::sync::Arc::new(std::sync::Mutex::new(token));
+        let url = match web::start(&settings, token.clone(), requests) {
             Ok(url) => url,
             Err(error) => {
                 tracing::warn!("the web panel was not started: {error:#}");
@@ -565,8 +566,11 @@ impl Workspace {
         eprintln!("syro: web panel on {url}");
         // Also kept on the state, so the settings form can show it and copy it:
         // a URL that only exists in a log is a URL nobody finds.
-        self.state
-            .update(cx, |state, cx| state.set_web_url(Some(url), cx));
+        let path = self.web_token_path.clone();
+        self.state.update(cx, |state, cx| {
+            state.set_web_url(Some(url), cx);
+            state.set_web_token(path, token);
+        });
         Self::serve_web(inbox, cx);
     }
 
@@ -10378,6 +10382,7 @@ mod window_tests {
         let mut settings = Settings::default();
         // Any free port: a test must not fail because 8777 is taken.
         settings.web.port = 0;
+        settings.web.bind = "127.0.0.1".to_string();
         let fixture = open_with_settings(cx, "web-bind", settings);
         // A scratch token, so this does not read or write the developer's own.
         let (_, token_dir) = temp_store("web-bind");
@@ -10397,6 +10402,33 @@ mod window_tests {
         assert!(url.contains("?token="), "{url}");
         let token = std::fs::read_to_string(&token_path).expect("the token was not written");
         assert!(url.ends_with(token.trim()), "{url}");
+
+        // A new token from the form: written, shown, and the old one refused by
+        // the panel that is already running.
+        cx.update(|cx| {
+            fixture
+                .state
+                .update(cx, |state, cx| state.regenerate_web_token(cx))
+        })
+        .expect("the token was not replaced");
+        let fresh = std::fs::read_to_string(&token_path).unwrap();
+        assert_ne!(fresh.trim(), token.trim());
+        let new_url = cx
+            .update(|cx| fixture.state.read(cx).web_url().map(str::to_string))
+            .unwrap();
+        assert!(new_url.ends_with(fresh.trim()), "{new_url}");
+        let get = |url: &str| {
+            use std::io::{Read as _, Write as _};
+            let rest = url.strip_prefix("http://").unwrap();
+            let (host, path) = rest.split_once('/').unwrap();
+            let mut stream = std::net::TcpStream::connect(host).unwrap();
+            write!(stream, "GET /{path} HTTP/1.1\r\nHost: {host}\r\n\r\n").unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).unwrap();
+            response
+        };
+        assert!(get(&url).starts_with("HTTP/1.1 401"), "the old token still works");
+        assert!(get(&new_url).starts_with("HTTP/1.1 200"), "the new token is refused");
 
         // A panel turned off in `settings.toml` binds nothing at all.
         let mut off = Settings::default();
@@ -11418,6 +11450,10 @@ mod window_tests {
             !found(cx, &fixture, "settings-web-qr"),
             "a QR code for no URL"
         );
+        assert!(
+            !found(cx, &fixture, "settings-web-remote-none"),
+            "remote access for no panel"
+        );
 
         // And with a panel up: the real URL, and the button puts it on the
         // clipboard.
@@ -11443,11 +11479,19 @@ mod window_tests {
             found(cx, &live, "settings-web-qr"),
             "no QR code for the URL"
         );
+        // Away from home: a Tailscale link, or how to get one, depending on
+        // whether this machine runs it.
+        assert!(
+            found(cx, &live, "settings-web-remote") || found(cx, &live, "settings-web-remote-none"),
+            "no remote access section"
+        );
         // The row sits below the fold of the test window: scroll it into view.
         cx.update_window(live.window.into(), |_, window, cx| {
             window.scroll(
                 "settings-web",
-                ScrollDelta::Lines(Point { x: 0., y: -40. }),
+                // Not to the bottom: the remote access section below would push
+                // this row off the top.
+                ScrollDelta::Lines(Point { x: 0., y: -5. }),
                 cx,
             );
         })
