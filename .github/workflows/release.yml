@@ -1,0 +1,54 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-bundle --locked
+      # Before bundling, not after: cargo-bundle writes the version into Info.plist,
+      # and editing the plist after bundle.sh signs it would break the signature.
+      - name: Set version from tag
+        run: sed -i '' "s/^version = \".*\"/version = \"${GITHUB_REF_NAME#v}\"/" Cargo.toml
+      - run: ./bundle.sh
+      - name: Rename dmg
+        run: |
+          mkdir -p dist
+          mv target/release/bundle/osx/syro.dmg "dist/syro-${GITHUB_REF_NAME#v}-macos-${{ matrix.arch }}.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  release:
+    needs: [macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
