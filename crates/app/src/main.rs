@@ -4499,6 +4499,18 @@ fn main() {
             }
         };
 
+        // Model prices for the usage panel: the cached list at once, a fresh one
+        // daily. Checked hourly, so a failed fetch is retried without a restart.
+        let _ = std::thread::Builder::new()
+            .name("syro-prices".to_string())
+            .spawn(|| {
+                let path = syro_core::config_dir().join("model-prices.json");
+                loop {
+                    syro_core::pricing::refresh(&path);
+                    std::thread::sleep(std::time::Duration::from_secs(60 * 60));
+                }
+            });
+
         // How the app looks, before the window opens: the appearance and the terminal's type from
         // `settings.toml`.
         settings_view::apply(cx, &settings);

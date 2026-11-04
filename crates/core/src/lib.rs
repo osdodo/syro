@@ -12,6 +12,7 @@ pub mod fs_tree;
 pub mod git;
 pub mod hooks;
 pub mod model;
+pub mod pricing;
 pub mod resource;
 pub mod session;
 pub mod store;

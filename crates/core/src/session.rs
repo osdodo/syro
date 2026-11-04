@@ -254,6 +254,8 @@ fn day_label(day: i32) -> String {
 #[derive(Debug, Default)]
 pub struct Cache {
     entries: HashMap<PathBuf, Entry>,
+    /// The price table the folds were costed with (see [`crate::pricing::generation`]).
+    prices: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -358,6 +360,12 @@ pub fn scan_at(roots: &SessionRoots, cache: &mut Cache, limit: usize, now: i64) 
     let mut total = candidates.len();
     candidates.truncate(limit);
 
+    // A new price list re-costs everything: the folds hold costs, not prices.
+    let prices = crate::pricing::generation();
+    if cache.prices != prices {
+        cache.entries.clear();
+        cache.prices = prices;
+    }
     let live: Vec<&Path> = candidates.iter().map(|c| c.path.as_path()).collect();
     cache
         .entries
@@ -1554,7 +1562,7 @@ impl Tokens {
             .input_tokens
             .unwrap_or(0)
             .checked_sub(read.checked_add(write)?)?;
-        openai_cost(model, input, self.output_tokens.unwrap_or(0), read, write)
+        crate::pricing::cost(model, input, self.output_tokens.unwrap_or(0), read, write)
     }
 
     /// The tokens this report covers, and the pair a later event is matched against.
@@ -1566,34 +1574,6 @@ impl Tokens {
             (input, output, self.total_tokens.unwrap_or(0)),
         )
     }
-}
-
-/// OpenAI Standard USD per 1M tokens, checked 2026-10-16:
-/// https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing
-/// Cache-write rate (1.25x input): https://developers.openai.com/api/docs/guides/prompt-caching
-/// shortcut: a dated Standard-rate snapshot, refresh when OpenAI changes prices;
-/// Fast/Ultrafast, regional premiums and tool fees are not estimated.
-fn openai_cost(model: &str, input: u64, output: u64, read: u64, write: u64) -> Option<f64> {
-    let (input_rate, read_rate, output_rate) = match model {
-        "gpt-6.1-sol" => (2., 0.1, 10.),
-        "gpt-6-sol" => (2., 0.2, 10.),
-        // Current promotion, published as available at least through 2026-11-21.
-        "gpt-5.6-sol" => (4., 0.4, 20.),
-        _ => return None,
-    };
-    let prompt = input.checked_add(read)?.checked_add(write)?;
-    // Long-context prices apply to the whole request, not only the excess.
-    let (input_multiplier, output_multiplier) = if prompt > 272_000 {
-        (2., 1.5)
-    } else {
-        (1., 1.)
-    };
-    Some(
-        ((input as f64 * input_rate + read as f64 * read_rate + write as f64 * input_rate * 1.25)
-            * input_multiplier
-            + output as f64 * output_rate * output_multiplier)
-            / 1_000_000.,
-    )
 }
 
 /// One record, as far as the count needs it: every field optional and borrowed, so a line costs
@@ -1663,18 +1643,23 @@ impl Record<'_> {
             return None;
         }
         let recorded = cost;
-        let cost = recorded.or_else(|| {
-            if agent == SessionAgent::Pi {
-                openai_cost(
-                    message.model?,
-                    usage.input.unwrap_or(0),
-                    usage.output.unwrap_or(0),
-                    usage.cache_read.unwrap_or(0),
-                    usage.cache_write.unwrap_or(0),
-                )
-            } else {
-                None
-            }
+        let cost = recorded.or_else(|| match agent {
+            SessionAgent::Pi => crate::pricing::cost(
+                message.model?,
+                usage.input.unwrap_or(0),
+                usage.output.unwrap_or(0),
+                usage.cache_read.unwrap_or(0),
+                usage.cache_write.unwrap_or(0),
+            ),
+            // Claude Code no longer writes `costUSD`; its counts are the API's.
+            SessionAgent::Claude => crate::pricing::cost(
+                message.model?,
+                usage.input_tokens.unwrap_or(0),
+                usage.output_tokens.unwrap_or(0),
+                usage.cache_read_input_tokens.unwrap_or(0),
+                usage.cache_creation_input_tokens.unwrap_or(0),
+            ),
+            SessionAgent::Codex | SessionAgent::OpenCode => None,
         });
         // An agent that records neither is named by the agent itself (`Claude Code`),
         // so a record is never labelled with nothing.
@@ -1902,6 +1887,7 @@ mod tests {
     #[test]
     fn pi_gpt_zero_or_missing_prices_use_official_rates() {
         for (model, expected) in [
+            ("gpt-6-astra", 1.255),
             ("gpt-6.1-sol", 0.243),
             ("gpt-6-sol", 0.251),
             ("gpt-5.6-sol", 0.502),
