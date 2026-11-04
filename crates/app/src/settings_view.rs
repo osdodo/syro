@@ -9,7 +9,7 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::searchable_list::SearchableListItem;
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
-use gpui_kit::component::{IndexPath, Sizable as _, ThemeMode};
+use gpui_kit::component::{Disableable as _, IndexPath, Sizable as _, ThemeMode};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
@@ -63,6 +63,20 @@ pub const MAX_BLUR: u32 = 50;
 /// applied.
 fn clamp_font(size: f32) -> f32 {
     size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+}
+
+/// The panel's URL as a QR code, for a phone to scan instead of type. Black on
+/// white whatever the theme, because that is what scanners read reliably.
+fn web_qr(url: &str) -> Option<std::sync::Arc<Image>> {
+    let svg = qrcode::QrCode::new(url)
+        .ok()?
+        .render::<qrcode::render::svg::Color>()
+        .quiet_zone(true)
+        .build();
+    Some(std::sync::Arc::new(Image::from_bytes(
+        ImageFormat::Svg,
+        svg.into_bytes(),
+    )))
 }
 
 /// A scrollback the app will use, from a step that may be negative.
@@ -304,18 +318,40 @@ enum Category {
     Appearance,
     Terminal,
     General,
+    Git,
+    Web,
 }
 
 impl Category {
     /// In tab order. The first is the one the form opens on: the everyday
     /// settings come first, and how the app looks comes last.
-    const ALL: [Category; 3] = [Self::General, Self::Terminal, Self::Appearance];
+    const ALL: [Category; 5] = [
+        Self::General,
+        Self::Terminal,
+        Self::Git,
+        Self::Web,
+        Self::Appearance,
+    ];
 
     fn label(self) -> String {
         match self {
             Self::Appearance => t!("settings.appearance"),
             Self::Terminal => t!("settings.terminal"),
             Self::General => t!("settings.general"),
+            Self::Git => t!("settings.git"),
+            Self::Web => t!("settings.web"),
+        }
+        .to_string()
+    }
+
+    /// The line under the tab's heading: what lives on it.
+    fn description(self) -> String {
+        match self {
+            Self::Appearance => t!("settings.appearance_desc"),
+            Self::Terminal => t!("settings.terminal_desc"),
+            Self::General => t!("settings.general_desc"),
+            Self::Git => t!("settings.git_desc"),
+            Self::Web => t!("settings.web_desc"),
         }
         .to_string()
     }
@@ -326,6 +362,8 @@ impl Category {
             Self::Appearance => "settings-tab-appearance",
             Self::Terminal => "settings-tab-terminal",
             Self::General => "settings-tab-general",
+            Self::Git => "settings-tab-git",
+            Self::Web => "settings-tab-web",
         }
     }
 }
@@ -676,57 +714,144 @@ fn slid(event: &SliderEvent) -> (f32, bool) {
     }
 }
 
-/// A labelled slider row: the setting, the track, and the value it is at.
-fn slider_row(
+/// A titled group of settings on one card, its rows split by hairlines: the
+/// card is what tells one group from the next at a glance.
+fn section(
     id: &str,
-    label: String,
-    slider: Slider,
-    value: String,
+    title: Option<String>,
+    footer: Option<String>,
+    rows: Vec<AnyElement>,
+    colors: &ColorTokens,
+) -> AnyElement {
+    let mut card = div()
+        .v_flex()
+        .w_full()
+        .rounded_lg()
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.muted.opacity(0.4));
+    for (index, row) in rows.into_iter().enumerate() {
+        card = card.child(
+            div()
+                .w_full()
+                .when(index > 0, |el| el.border_t_1().border_color(colors.border))
+                .child(row),
+        );
+    }
+    div()
+        .id(SharedString::from(format!("settings-section-{id}")))
+        .test_support()
+        .v_flex()
+        .w_full()
+        .gap_2()
+        .when_some(title, |el, title| {
+            el.child(
+                div()
+                    .px_1()
+                    .text_xs()
+                    .font_semibold()
+                    .text_color(colors.muted_foreground)
+                    .child(SharedString::from(title)),
+            )
+        })
+        .child(card)
+        .when_some(footer, |el, footer| {
+            el.child(
+                div()
+                    .px_1()
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(SharedString::from(footer)),
+            )
+        })
+        .into_any_element()
+}
+
+/// One setting: its name and what it does on the left, its control on the
+/// right — the layout every settings screen trains the eye to scan.
+fn setting_row(
+    id: &str,
+    label: &str,
+    description: Option<String>,
+    control: AnyElement,
     colors: &ColorTokens,
 ) -> AnyElement {
     div()
         .id(SharedString::from(format!("settings-{id}")))
         .test_support()
-        .v_flex()
-        .w_full()
-        .gap_2()
+        .h_flex()
+        .items_center()
+        .justify_between()
+        .gap_6()
+        .px_4()
+        .py_3()
+        .min_h(px(56.))
         .child(
             div()
-                .id(SharedString::from(format!("settings-{id}-label")))
-                .test_support()
-                .text_sm()
-                .child(SharedString::from(label.clone())),
-        )
-        .child(
-            div()
-                .h_flex()
-                .items_center()
-                .gap_3()
+                .v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
                 .child(
                     div()
-                        .id(SharedString::from(format!("settings-{id}-slider")))
+                        .id(SharedString::from(format!("settings-{id}-label")))
                         .test_support()
-                        .flex_1()
-                        .min_w_0()
-                        .child(slider),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("settings-{id}-value")))
-                        .test_support()
-                        .aria_label(SharedString::from(format!("{label}: {value}")))
-                        .w(px(48.))
-                        .flex_shrink_0()
-                        .text_right()
                         .text_sm()
-                        .text_color(colors.muted_foreground)
-                        .child(SharedString::from(value)),
-                ),
+                        .child(SharedString::from(label.to_string())),
+                )
+                .when_some(description, |el, description| {
+                    el.child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.muted_foreground)
+                            .child(SharedString::from(description)),
+                    )
+                }),
         )
+        .child(div().flex_shrink_0().child(control))
         .into_any_element()
 }
 
-/// One labelled row: what the setting is, the value, and the two buttons that move it.
+/// The value a slider or a stepper is at, beside it.
+fn value_label(id: &str, label: &str, value: String, colors: &ColorTokens) -> AnyElement {
+    div()
+        .id(SharedString::from(format!("settings-{id}-value")))
+        .test_support()
+        .aria_label(SharedString::from(format!("{label}: {value}")))
+        .min_w(px(56.))
+        .text_center()
+        .text_sm()
+        .text_color(colors.muted_foreground)
+        .child(SharedString::from(value))
+        .into_any_element()
+}
+
+/// A slider setting: the track and the value it is at, on the right.
+fn slider_row(
+    id: &str,
+    label: String,
+    description: String,
+    slider: Slider,
+    value: String,
+    colors: &ColorTokens,
+) -> AnyElement {
+    let control = div()
+        .h_flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .id(SharedString::from(format!("settings-{id}-slider")))
+                .test_support()
+                .w(px(220.))
+                .child(slider),
+        )
+        .child(value_label(id, &label, value, colors))
+        .into_any_element();
+    setting_row(id, &label, Some(description), control, colors)
+}
+
+/// A stepper setting: the value between the two buttons that move it.
 fn stepper(
     id: &str,
     label: &str,
@@ -735,39 +860,15 @@ fn stepper(
     minus: AnyElement,
     plus: AnyElement,
 ) -> AnyElement {
-    div()
-        .id(SharedString::from(format!("settings-{id}")))
-        .test_support()
-        .v_flex()
-        .w_full()
-        .gap_2()
-        .child(
-            div()
-                .id(SharedString::from(format!("settings-{id}-label")))
-                .test_support()
-                .text_sm()
-                .child(SharedString::from(label.to_string())),
-        )
-        .child(
-            div()
-                .h_flex()
-                .items_center()
-                .gap_1()
-                .child(minus)
-                .child(
-                    div()
-                        .id(SharedString::from(format!("settings-{id}-value")))
-                        .test_support()
-                        .aria_label(SharedString::from(format!("{label}: {value}")))
-                        .min_w(px(96.))
-                        .text_center()
-                        .text_sm()
-                        .text_color(colors.muted_foreground)
-                        .child(SharedString::from(value)),
-                )
-                .child(plus),
-        )
-        .into_any_element()
+    let control = div()
+        .h_flex()
+        .items_center()
+        .gap_1()
+        .child(minus)
+        .child(value_label(id, label, value, colors))
+        .child(plus)
+        .into_any_element();
+    setting_row(id, label, None, control, colors)
 }
 
 impl Render for SettingsView {
@@ -824,6 +925,8 @@ impl Render for SettingsView {
             Category::Appearance => self.appearance_tab(&colors),
             Category::Terminal => self.terminal_tab(&colors, cx),
             Category::General => self.general_tab(&colors, cx),
+            Category::Git => self.git_tab(&colors),
+            Category::Web => self.web_tab(&colors, cx),
         };
 
         let mut form = div()
@@ -874,13 +977,23 @@ impl Render for SettingsView {
                                         .pb_4()
                                         .child(
                                             div()
-                                                .mb_4()
+                                                .id("settings-heading")
+                                                .test_support()
+                                                .v_flex()
+                                                .gap_1()
+                                                .mb_5()
                                                 .pt_2()
-                                                .pb_3()
-                                                .border_b_1()
-                                                .border_color(colors.border)
-                                                .text_lg()
-                                                .child(SharedString::from(self.category.label())),
+                                                .child(div().text_lg().font_semibold().child(
+                                                    SharedString::from(self.category.label()),
+                                                ))
+                                                .child(
+                                                    div()
+                                                        .text_sm()
+                                                        .text_color(colors.muted_foreground)
+                                                        .child(SharedString::from(
+                                                            self.category.description(),
+                                                        )),
+                                                ),
                                         )
                                         .child(pane),
                                 ),
@@ -913,181 +1026,174 @@ impl Render for SettingsView {
 }
 
 impl SettingsView {
-    /// The rows of the appearance tab: the palette, and how much of the window
-    /// it is drawn on.
+    /// A dropdown, at the width every picker on the form shares so they line up.
+    fn picker<T: SearchableListItem + 'static>(
+        select: &Entity<SelectState<Vec<T>>>,
+        id: &'static str,
+        label: String,
+    ) -> AnyElement
+    where
+        T::Value: Clone,
+    {
+        div()
+            .w(px(180.))
+            .child(
+                Select::new(select)
+                    .id(id)
+                    .small()
+                    .accessibility_label(label)
+                    .menu_width(px(180.)),
+            )
+            .into_any_element()
+    }
+
+    /// The appearance tab: the palette, and how much of the window it is
+    /// drawn on.
     fn appearance_tab(&self, colors: &ColorTokens) -> AnyElement {
         let percent = transparency(self.opacity) * 100.;
-
-        div()
-            .id("settings-appearance-rows")
-            .test_support()
-            .v_flex()
-            .w_full()
-            .gap_6()
-            .child(
-                div()
-                    .id("settings-appearance")
-                    .test_support()
-                    .v_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("settings-appearance-label")
-                            .test_support()
-                            .text_sm()
-                            .child(t!("settings.appearance")),
-                    )
-                    .child(
-                        // The same fixed width as the language picker, so the two
-                        // dropdowns line up.
-                        div().w(px(160.)).flex_shrink_0().child(
-                            Select::new(&self.appearance_select)
-                                .id("settings-appearance-select")
-                                .small()
-                                .accessibility_label(t!("settings.appearance").to_string())
-                                .menu_width(px(160.)),
-                        ),
-                    ),
-            )
-            // The slider is the whole travel of the setting: the thumb at 0% is a
-            // solid window, at the far end the most transparent the app goes.
-            .child(slider_row(
-                "opacity",
-                t!("settings.opacity").to_string(),
-                Slider::new(&self.opacity_slider),
-                format!("{percent:.0}%"),
-                colors,
-            ))
-            // Under the transparency, because it is about the same thing: what a
-            // see-through window does to what is behind it. Off while the window
-            // is solid, because then there is nothing behind it to blur.
-            .child(slider_row(
-                "blur",
-                t!("settings.blur").to_string(),
-                Slider::new(&self.blur_slider).disabled(!is_transparent(self.opacity)),
-                self.blur.to_string(),
-                colors,
-            ))
-            .into_any_element()
+        let label = t!("settings.appearance").to_string();
+        let theme = setting_row(
+            "appearance",
+            &label,
+            Some(t!("settings.appearance_hint").to_string()),
+            Self::picker(
+                &self.appearance_select,
+                "settings-appearance-select",
+                label.clone(),
+            ),
+            colors,
+        );
+        // The slider is the whole travel of the setting: the thumb at 0% is a
+        // solid window, at the far end the most transparent the app goes.
+        let opacity = slider_row(
+            "opacity",
+            t!("settings.opacity").to_string(),
+            t!("settings.opacity_desc").to_string(),
+            Slider::new(&self.opacity_slider),
+            format!("{percent:.0}%"),
+            colors,
+        );
+        // Off while the window is solid: there is nothing behind it to blur.
+        let blur = slider_row(
+            "blur",
+            t!("settings.blur").to_string(),
+            t!("settings.blur_desc").to_string(),
+            Slider::new(&self.blur_slider).disabled(!is_transparent(self.opacity)),
+            self.blur.to_string(),
+            colors,
+        );
+        tab_rows(
+            "settings-appearance-rows",
+            vec![
+                section(
+                    "theme",
+                    Some(t!("settings.section_theme").to_string()),
+                    None,
+                    vec![theme],
+                    colors,
+                ),
+                section(
+                    "window",
+                    Some(t!("settings.section_window").to_string()),
+                    None,
+                    vec![opacity, blur],
+                    colors,
+                ),
+            ],
+        )
     }
 
-    /// The rows of the terminal tab.
+    /// The terminal tab.
     fn terminal_tab(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
-        let font_minus = Button::new("settings-font-minus")
-            .small()
-            .outline()
-            .label("−")
-            .on_click(cx.listener(|this, _, _, cx| this.step_font(-1., cx)))
-            .into_any_element();
-        let font_plus = Button::new("settings-font-plus")
-            .small()
-            .outline()
-            .label("+")
-            .on_click(cx.listener(|this, _, _, cx| this.step_font(1., cx)))
-            .into_any_element();
-        let scrollback_minus = Button::new("settings-scrollback-minus")
-            .small()
-            .outline()
-            .label("−")
-            .on_click(
-                cx.listener(|this, _, _, cx| this.step_scrollback(-(SCROLLBACK_STEP as i64), cx)),
-            )
-            .into_any_element();
-        let scrollback_plus = Button::new("settings-scrollback-plus")
-            .small()
-            .outline()
-            .label("+")
-            .on_click(
-                cx.listener(|this, _, _, cx| this.step_scrollback(SCROLLBACK_STEP as i64, cx)),
-            )
-            .into_any_element();
-
-        div()
-            .id("settings-terminal-rows")
-            .test_support()
-            .v_flex()
-            .w_full()
-            .gap_6()
-            .child(stepper(
-                "font",
-                &t!("settings.font_size"),
-                format!("{:.0} px", self.font_size),
+        let step = |id: &'static str, label: &'static str, by: i64| {
+            Button::new(id)
+                .small()
+                .outline()
+                .label(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if id.starts_with("settings-font") {
+                        this.step_font(by as f32, cx)
+                    } else {
+                        this.step_scrollback(by, cx)
+                    }
+                }))
+                .into_any_element()
+        };
+        let scroll = SCROLLBACK_STEP as i64;
+        let font = stepper(
+            "font",
+            &t!("settings.font_size"),
+            format!("{:.0} px", self.font_size),
+            colors,
+            step("settings-font-minus", "−", -1),
+            step("settings-font-plus", "+", 1),
+        );
+        let scrollback = stepper(
+            "scrollback",
+            &t!("settings.scrollback"),
+            t!("settings.lines", count = self.scrollback).to_string(),
+            colors,
+            step("settings-scrollback-minus", "−", -scroll),
+            step("settings-scrollback-plus", "+", scroll),
+        );
+        // Said where the setting is, not in a tooltip: both are facts about
+        // *when* a change lands, and a font size that seems to do nothing needs
+        // its reason on screen.
+        tab_rows(
+            "settings-terminal-rows",
+            vec![section(
+                "terminal",
+                Some(t!("settings.section_display").to_string()),
+                Some(t!("settings.note").to_string()),
+                vec![font, scrollback],
                 colors,
-                font_minus,
-                font_plus,
-            ))
-            .child(stepper(
-                "scrollback",
-                &t!("settings.scrollback"),
-                t!("settings.lines", count = self.scrollback).to_string(),
-                colors,
-                scrollback_minus,
-                scrollback_plus,
-            ))
-            // Said where the setting is, not in a tooltip: both of these are
-            // facts about *when* a change lands, and a user who changes the font
-            // size and sees nothing happen needs to know why.
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(colors.muted_foreground)
-                    .child(t!("settings.note")),
-            )
-            .into_any_element()
+            )],
+        )
     }
 
-    /// The rows of the general tab.
+    /// The general tab: the language, and whether the machine may sleep.
+    // `cx` and the `mut` are for the macOS-only power section.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables, unused_mut))]
     fn general_tab(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("settings-general-rows")
-            .test_support()
-            .v_flex()
-            .w_full()
-            .gap_6()
-            .child(
-                div()
-                    .id("settings-language")
-                    .test_support()
-                    .v_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("settings-language-label")
-                            .test_support()
-                            .text_sm()
-                            .child(t!("settings.language")),
-                    )
-                    .child(
-                        // A fixed width, so the trigger and the menu line up and
-                        // the whole of it is the clickable control.
-                        div().w(px(160.)).flex_shrink_0().child(
-                            Select::new(&self.language_select)
-                                .id("settings-language-select")
-                                .small()
-                                .accessibility_label(t!("settings.language").to_string())
-                                .menu_width(px(160.)),
-                        ),
-                    ),
-            )
-            .child(self.commit_message_row(colors))
-            .child(self.awake_row(colors, cx))
-            .child(self.web_row(colors, cx))
-            .into_any_element()
+        let label = t!("settings.language").to_string();
+        let language = setting_row(
+            "language",
+            &label,
+            Some(t!("settings.language_desc").to_string()),
+            Self::picker(
+                &self.language_select,
+                "settings-language-select",
+                label.clone(),
+            ),
+            colors,
+        );
+        let mut sections = vec![section(
+            "interface",
+            Some(t!("settings.section_interface").to_string()),
+            None,
+            vec![language],
+            colors,
+        )];
+        // Only macOS has a sleep assertion behind it (see `awake.rs`): elsewhere
+        // the setting would be a control that does nothing.
+        #[cfg(target_os = "macos")]
+        sections.push(self.awake_section(colors, cx));
+        tab_rows("settings-general-rows", sections)
     }
 
-    /// The command the AI button runs: one field, and the diff goes in on its
-    /// stdin. Blank is the default, which the placeholder names.
-    fn commit_message_row(&self, colors: &ColorTokens) -> AnyElement {
-        div()
+    /// The git tab: the command the AI button runs, with the diff on its stdin.
+    /// Blank is the default, which the placeholder names.
+    fn git_tab(&self, colors: &ColorTokens) -> AnyElement {
+        // Label above the field rather than beside it: a command line needs the
+        // card's whole width.
+        let command = div()
             .id("settings-commit-message")
             .test_support()
             .v_flex()
             .w_full()
-            .pt_4()
-            .pb_2()
-            .border_t_1()
-            .border_color(colors.border)
             .gap_2()
+            .px_4()
+            .py_3()
             .child(div().text_sm().child(t!("settings.commit_message_command")))
             .child(
                 div()
@@ -1105,66 +1211,126 @@ impl SettingsView {
                         default = commit_message::DEFAULT_COMMAND
                     )),
             )
-            .into_any_element()
+            .into_any_element();
+        tab_rows(
+            "settings-git-rows",
+            vec![section(
+                "commit",
+                Some(t!("settings.section_commit").to_string()),
+                None,
+                vec![command],
+                colors,
+            )],
+        )
     }
 
-    /// The phone panel's address, with a copy button. Otherwise the URL exists
-    /// only in the log the app was launched from, which is not where anyone looks
-    /// for it.
+    /// The web panel tab: its address, a copy button, and the address as a QR
+    /// code for a phone to scan.
     ///
     /// The switch and the port stay in `settings.toml`: both are read once, when
     /// the listener is bound, so a control here would be a control that lies
     /// until the next launch.
-    fn web_row(&self, colors: &ColorTokens, cx: &App) -> AnyElement {
+    fn web_tab(&self, colors: &ColorTokens, cx: &App) -> AnyElement {
         let url = self.state.read(cx).web_url().map(str::to_string);
         let shown = url
             .clone()
             .unwrap_or_else(|| t!("settings.web_off").to_string());
-        let mut row = div()
-            .id("settings-web")
+        let address = div()
+            .id("settings-web-url")
             .test_support()
-            .h_flex()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .v_flex()
-                    .child(div().text_sm().child(t!("settings.web")))
-                    .child(
-                        div()
-                            .id("settings-web-url")
-                            .test_support()
-                            // The URL is the whole point of the row, and a
-                            // screen reader can read it out even when the panel
-                            // is too narrow to show it.
-                            .aria_label(SharedString::from(shown.clone()))
-                            .text_xs()
-                            .text_color(colors.muted_foreground)
-                            .text_ellipsis()
-                            .child(SharedString::from(shown)),
-                    ),
-            );
-        if let Some(url) = url {
-            row = row.child(
+            // The URL is the whole point of the row, and a screen reader can
+            // read it out even when the panel is too narrow to show it.
+            .aria_label(SharedString::from(shown.clone()))
+            .text_xs()
+            .font_family(Theme::global(cx).tokens.typography.mono.clone())
+            .text_color(colors.muted_foreground)
+            .text_ellipsis()
+            .child(SharedString::from(shown));
+        let copy = match &url {
+            Some(url) => {
+                let url = url.clone();
                 Button::new("settings-web-copy")
                     .small()
                     .outline()
                     .label(t!("settings.web_copy"))
                     .on_click(move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(url.clone()))
-                    }),
-            );
+                    })
+                    .into_any_element()
+            }
+            None => div().into_any_element(),
+        };
+        let link = div()
+            .id("settings-web")
+            .test_support()
+            .h_flex()
+            .items_center()
+            .gap_6()
+            .px_4()
+            .py_3()
+            .min_h(px(56.))
+            .child(
+                div()
+                    .v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_0p5()
+                    .child(div().text_sm().child(t!("settings.web_link")))
+                    .child(address),
+            )
+            .child(div().flex_shrink_0().child(copy))
+            .into_any_element();
+
+        let mut sections = vec![section(
+            "web-link",
+            Some(t!("settings.section_connection").to_string()),
+            None,
+            vec![link],
+            colors,
+        )];
+        if let Some(qr) = url.as_deref().and_then(web_qr) {
+            let scan = div()
+                .h_flex()
+                .items_center()
+                .gap_6()
+                .p_4()
+                .child(
+                    div()
+                        .id("settings-web-qr")
+                        .test_support()
+                        .aria_label(t!("settings.web_qr").to_string())
+                        .size(px(144.))
+                        .flex_shrink_0()
+                        .rounded_md()
+                        .overflow_hidden()
+                        .child(img(qr).size_full()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(colors.muted_foreground)
+                        .child(t!("settings.web_scan")),
+                )
+                .into_any_element();
+            sections.push(section(
+                "web-qr",
+                Some(t!("settings.section_scan").to_string()),
+                None,
+                vec![scan],
+                colors,
+            ));
         }
-        row.into_any_element()
+        tab_rows("settings-web-rows", sections)
     }
 
     /// The sleep setting: a radio group, because exactly one of the three answers
-    /// is true. The answer in effect says so below the heading, so `Agent` with
+    /// is true. The answer in effect says so beside the heading, so `Agent` with
     /// no agent running — the same setting, just not acting — does not read as
     /// broken.
-    fn awake_row(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
+    #[cfg(target_os = "macos")]
+    fn awake_section(&self, colors: &ColorTokens, cx: &mut Context<Self>) -> AnyElement {
         let options: [(&str, ComputerAwakeMode, String, String); 3] = [
             (
                 "settings-computer-awake-on",
@@ -1198,46 +1364,69 @@ impl SettingsView {
             mode_label
         };
 
-        let mut radios = Vec::new();
+        let header = div()
+            .id("settings-computer-awake-header")
+            .test_support()
+            .h_flex()
+            .items_center()
+            .justify_between()
+            .gap_6()
+            .px_4()
+            .py_3()
+            .child(div().text_sm().child(t!("settings.computer_awake")))
+            .child(
+                div()
+                    .id("settings-computer-awake-state")
+                    .test_support()
+                    .aria_label(SharedString::from(state_label.clone()))
+                    .text_xs()
+                    .text_color(colors.muted_foreground)
+                    .child(SharedString::from(state_label)),
+            )
+            .into_any_element();
+
+        let mut rows = vec![header];
         for (id, mode, label, description) in options {
             let chosen = self.computer_awake == mode;
-            radios.push(
+            rows.push(
                 div()
                     .id(id)
                     .test_support()
                     .aria_label(SharedString::from(format!("{label}: {description}")))
                     .aria_selected(chosen)
                     .h_flex()
-                    .items_start()
+                    .items_center()
                     .gap_3()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
+                    .px_4()
+                    .py_2p5()
                     .cursor_pointer()
-                    .when(chosen, |el| el.bg(colors.muted))
-                    .when(!chosen, |el| el.hover(|el| el.bg(colors.muted)))
+                    .hover(|el| el.bg(colors.muted))
                     .child(
-                        // The dot: filled for the answer, an empty ring for the
-                        // other two.
+                        // The dot: a filled ring for the answer, an empty one for
+                        // the other two.
                         div()
-                            .mt(px(3.))
-                            .size(px(12.))
+                            .size(px(14.))
                             .flex_shrink_0()
                             .rounded_full()
                             .border_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .border_color(if chosen {
                                 colors.primary
                             } else {
-                                colors.border
+                                colors.muted_foreground
                             })
-                            .when(chosen, |el| el.bg(colors.primary)),
+                            .when(chosen, |el| {
+                                el.child(div().size(px(6.)).rounded_full().bg(colors.primary))
+                            }),
                     )
                     .child(
                         div()
                             .v_flex()
                             .flex_1()
                             .min_w_0()
-                            .gap_1()
+                            .gap_0p5()
                             .child(div().text_sm().child(SharedString::from(label)))
                             .child(
                                 div()
@@ -1249,39 +1438,65 @@ impl SettingsView {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.computer_awake = mode;
                         this.commit(cx);
-                    })),
+                    }))
+                    .into_any_element(),
             );
         }
+
+        // Display off, machine on: only safe while the assertion is held, or
+        // the dark screen is followed by the machine's own idle sleep.
+        let display_off = setting_row(
+            "display-off",
+            &t!("settings.display_off"),
+            Some(if active {
+                t!("settings.display_off_desc").to_string()
+            } else {
+                t!("settings.display_off_needs_awake").to_string()
+            }),
+            Button::new("settings-display-off-button")
+                .small()
+                .outline()
+                .label(t!("settings.display_off_now"))
+                .disabled(!active)
+                .on_click(|_, _, _| crate::awake::sleep_display())
+                .into_any_element(),
+            colors,
+        );
 
         div()
             .id("settings-computer-awake")
             .test_support()
             .v_flex()
             .w_full()
-            .pt_4()
-            .border_t_1()
-            .border_color(colors.border)
-            .gap_2()
-            .child(
-                div()
-                    .id("settings-computer-awake-header")
-                    .test_support()
-                    .v_flex()
-                    .gap_2()
-                    .child(div().text_sm().child(t!("settings.computer_awake")))
-                    .child(
-                        div()
-                            .id("settings-computer-awake-state")
-                            .test_support()
-                            .aria_label(SharedString::from(state_label.clone()))
-                            .text_sm()
-                            .text_color(colors.muted_foreground)
-                            .child(SharedString::from(state_label)),
-                    ),
-            )
-            .children(radios)
+            .gap_6()
+            .child(section(
+                "power",
+                Some(t!("settings.section_power").to_string()),
+                None,
+                rows,
+                colors,
+            ))
+            .child(section(
+                "display",
+                Some(t!("settings.section_display_power").to_string()),
+                None,
+                vec![display_off],
+                colors,
+            ))
             .into_any_element()
     }
+}
+
+/// A tab's sections, stacked with room between them.
+fn tab_rows(id: &'static str, sections: Vec<AnyElement>) -> AnyElement {
+    div()
+        .id(id)
+        .test_support()
+        .v_flex()
+        .w_full()
+        .gap_6()
+        .children(sections)
+        .into_any_element()
 }
 
 #[cfg(test)]

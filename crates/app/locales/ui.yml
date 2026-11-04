@@ -824,6 +824,66 @@ settings:
   general:
     en: General
     zh-CN: 通用
+  git:
+    en: Git
+    zh-CN: Git
+  general_desc:
+    en: Language and everyday preferences
+    zh-CN: 语言与常用设置
+  terminal_desc:
+    en: Font size and scrollback
+    zh-CN: 字号与回滚行数
+  appearance_desc:
+    en: Theme and window transparency
+    zh-CN: 主题与窗口透明度
+  git_desc:
+    en: How commit messages are written
+    zh-CN: 提交信息的生成方式
+  web_desc:
+    en: Open this workspace from a phone or another device
+    zh-CN: 在手机或其他设备上访问此工作区
+  section_interface:
+    en: Interface
+    zh-CN: 界面
+  section_power:
+    en: Power
+    zh-CN: 电源
+  section_display:
+    en: Display
+    zh-CN: 显示
+  section_theme:
+    en: Theme
+    zh-CN: 主题
+  section_window:
+    en: Window
+    zh-CN: 窗口
+  section_commit:
+    en: Commit messages
+    zh-CN: 提交信息
+  section_connection:
+    en: Connection
+    zh-CN: 连接
+  section_scan:
+    en: Scan to open
+    zh-CN: 扫码访问
+  language_desc:
+    en: The language the app is shown in
+    zh-CN: 应用界面显示的语言
+  appearance_hint:
+    en: Light, dark, or follow the system
+    zh-CN: 浅色、深色或跟随系统
+  opacity_desc:
+    en: How much of the desktop shows through the window
+    zh-CN: 桌面透过窗口显示的程度
+  blur_desc:
+    en: Blurs what is behind a see-through window
+    zh-CN: 模糊透明窗口背后的内容
+  web_link:
+    en: Link
+    zh-CN: 访问链接
+  web_scan:
+    en: Scan with a phone on the same network to open the web panel. The link carries the access token, so share it only with your own devices.
+    zh-CN: 用同一网络下的手机扫码打开网页面板。链接包含访问令牌，请只在自己的设备上使用。
   light:
     en: Light
     zh-CN: 浅色
@@ -872,6 +932,24 @@ settings:
   web_copy:
     en: Copy link
     zh-CN: 复制链接
+  web_qr:
+    en: QR code for the web panel link
+    zh-CN: 网页面板链接二维码
+  section_display_power:
+    en: Display
+    zh-CN: 显示器
+  display_off:
+    en: Turn off display
+    zh-CN: 熄屏
+  display_off_desc:
+    en: Turns the screen off and keeps the computer running; move the mouse or press a key to wake it
+    zh-CN: 关闭屏幕，电脑继续运行；移动鼠标或按任意键即可点亮
+  display_off_needs_awake:
+    en: Available while sleep is being prevented above, so the computer does not sleep after the screen goes dark
+    zh-CN: 需上方防止休眠生效时可用，否则熄屏后电脑会随之休眠
+  display_off_now:
+    en: Turn off now
+    zh-CN: 立即熄屏
   computer_awake_off_desc:
     en: Allow the system to sleep normally
     zh-CN: 允许系统正常进入睡眠状态
