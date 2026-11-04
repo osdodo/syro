@@ -564,6 +564,22 @@ impl AppState {
         cx.notify();
     }
 
+    /// Put the repository `from` where `onto` is in the list, as a drag in the
+    /// sidebar does. The order is the saved one, so it is the order next run too.
+    pub fn move_repo(&mut self, from: &str, onto: &str, cx: &mut Context<Self>) {
+        let position = |id: &str| self.repos.iter().position(|repo| repo.id == id);
+        let (Some(from), Some(to)) = (position(from), position(onto)) else {
+            return;
+        };
+        if from == to {
+            return;
+        }
+        let repo = self.repos.remove(from);
+        self.repos.insert(to, repo);
+        self.persist();
+        cx.notify();
+    }
+
     /// Put every hidden repository back on screen.
     pub fn show_all_repos(&mut self, cx: &mut Context<Self>) {
         if self.hidden_repos.is_empty() {
@@ -2182,6 +2198,49 @@ mod tests {
         assert_eq!(reloaded.active_worktree, Some(wanted));
 
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[gpui_kit::test]
+    fn moving_a_repo_reorders_the_list_and_persists_it(cx: &mut TestAppContext) {
+        let (dir_a, a, _) = scratch_repo("state-move-a");
+        let (dir_b, b, _) = scratch_repo("state-move-b");
+        let (state_path, store_dir) = temp_store("state-move");
+        let store = Store::new(state_path.clone());
+        store
+            .save(&State {
+                repos: vec![a.clone(), b.clone()],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let state = cx.update(|cx| {
+            cx.new(|cx| AppState::open(Store::new(state_path), dir_a.join("workspaces"), cx))
+        });
+        let ids = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                state
+                    .read(cx)
+                    .repos()
+                    .iter()
+                    .map(|r| r.id.clone())
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(ids(cx), vec![a.id.clone(), b.id.clone()]);
+        cx.update(|cx| state.update(cx, |state, cx| state.move_repo(&b.id, &a.id, cx)));
+        assert_eq!(ids(cx), vec![b.id.clone(), a.id.clone()]);
+        let saved: Vec<_> = store
+            .load()
+            .unwrap()
+            .repos
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(saved, vec![b.id.clone(), a.id.clone()]);
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
         let _ = std::fs::remove_dir_all(&store_dir);
     }
 

@@ -13,6 +13,12 @@ use crate::resize::{self, WidthDrag};
 use crate::resource_bar::{ResourceBar, Row, format_bytes};
 use crate::state::{AppState, branch_or_name, scratch, worktree};
 
+/// A repository heading being dragged up or down the list.
+struct DraggedRepo {
+    repo_id: RepoId,
+    name: String,
+}
+
 /// The width a fresh window opens with, and the range the drag handle keeps it
 /// in. The width a files-app sidebar has.
 const WIDTH: f32 = 240.;
@@ -1339,6 +1345,30 @@ impl Render for Sidebar {
                             let repo_id = repo.id.clone();
                             cx.listener(move |this, _event, _window, cx| {
                                 this.toggle_repo(&repo_id, cx)
+                            })
+                        })
+                        // Drag a heading onto another to put the project there.
+                        .on_drag(
+                            DraggedRepo {
+                                repo_id: repo.id.clone(),
+                                name: repo.name.clone(),
+                            },
+                            |dragged, _offset, _window, cx| {
+                                cx.new(|_| crate::file_tree::DragChip {
+                                    name: dragged.name.clone(),
+                                })
+                            },
+                        )
+                        .drag_over::<DraggedRepo>({
+                            let muted = colors.muted;
+                            move |style, _, _, _| style.bg(muted)
+                        })
+                        .on_drop({
+                            let onto = repo.id.clone();
+                            cx.listener(move |this, dragged: &DraggedRepo, _window, cx| {
+                                this.state.update(cx, |state, cx| {
+                                    state.move_repo(&dragged.repo_id, &onto, cx)
+                                });
                             })
                         })
                         .child(
