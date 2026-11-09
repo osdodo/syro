@@ -2027,7 +2027,7 @@ mod window_tests {
         assert_eq!(word_of(None, None, false, false, false), None);
         assert_eq!(word_of(None, None, false, true, false), Some(Word::Running));
         // An agent's terminal has the agent itself in front of it, which is not
-        // work — a fresh qodercli at its prompt says nothing, not `Running`.
+        // work — a fresh agent at its prompt says nothing, not `Running`.
         assert_eq!(word_of(None, None, false, true, true), None);
     }
 

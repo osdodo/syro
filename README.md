@@ -25,7 +25,7 @@ Built in Rust on [GPUI](https://gpui-kit.com). No Electron, Chromium or Node.
 | | |
 |---|---|
 | **Worktree-first** | Create and remove worktrees for any repo from the sidebar. Each one is an isolated workspace for one agent. |
-| **Agent status** | Built-in, configurable presets for Claude Code, Codex, Gemini, OpenCode, Qoder and pi report whether each agent is working, idle or waiting for input. |
+| **Agent status** | Built-in, configurable presets for Claude Code, Codex, Gemini, OpenCode and pi report whether each agent is working, idle or waiting for input. |
 | **Tabs and split panes** | Mix terminals, a syntax-highlighted editor, diffs and images in any layout. Tabs are restored on the next launch. |
 | **Source control** | Changes panel, git graph, and AI-written commit messages through your own agent command. |
 | **Session history** | Browse and resume the agent sessions that belong to a worktree. |

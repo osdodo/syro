@@ -28,30 +28,19 @@ status = [
 ]
 
 [[agent]]
-id = "qoder"
-name = "Qoder CLI"
-command = "qodercli"
-resume_args = ["--resume", "{id}"]
-new_args = ["--session-id", "{id}", "{prompt}"]
+id = "codex"
+name = "Codex"
+command = "codex"
+resume_args = ["resume", "{id}"]
 status = [
-  # Qoder CLI's dynamic title is `<mark> <task> | <state>`: ▲ blocked on the
-  # user, ◇ ready, ✦ working. The `| State` suffix is what tells it apart from
-  # Gemini CLI, whose titles carry the same ✦ and ◇ marks without the suffix.
-  # It is read before the other presets' keyword rules, because the task it
-  # carries may well name another agent.
-  { match = '\|\s*Action Required\s*$', state = "permission" },
-  { match = '\|\s*Ready\s*$', state = "idle" },
-  { match = '\|\s*Working\s*$', state = "working" },
-  # A title that names Qoder itself: the static `Qoder CLI (session)` form, and
-  # a dynamic title whose session is still the brand.
-  { match = '(?i)^\s*qoder(?:cli|\s+cli)?(?:\.(?:exe|cmd|bat|ps1))?\s*$', state = "idle" },
-  { match = '\x{25B2}', requires = "qoder", state = "permission" },
-  { match = '\x{2726}', requires = "qoder", state = "working" },
-  { match = '\x{25C7}', requires = "qoder", state = "idle" },
-  { match = '(?i)(?:action required|permission|waiting)', requires = "qoder", state = "permission" },
-  { match = '(?i)(?:^|[^\w./\\-])(?:ready|idle|done)(?:$|[^\w-])', requires = "qoder", state = "idle" },
-  { match = '(?i)(?:^|[^\w./\\-])(?:working|thinking|running)(?:$|[^\w-])', requires = "qoder", state = "working" },
-  { match = '(?s).', requires = "qoder", state = "idle" },
+  { match = '[\x{2800}-\x{28FF}]', state = "working" },
+  { match = '[\x{25D0}-\x{25D3}]', state = "working" },
+  { match = '(?i)(?:action required|permission|waiting)', requires = "codex", state = "permission" },
+  { match = '(?i)(?:^|[^\w./\\-])(?:ready|idle|done)(?:$|[^\w-])', requires = "codex", state = "idle" },
+  { match = '(?i)(?:^|[^\w./\\-])(?:working|thinking|running)(?:$|[^\w-])', requires = "codex", state = "working" },
+  # A title that names Codex and says nothing else — "Codex: fix cursor offsets"
+  # — is idle, which is the fallback once an agent name is known.
+  { match = '(?s).', requires = "codex", state = "idle" },
 ]
 
 [[agent]]
@@ -80,22 +69,6 @@ status = [
   # agents` is Claude Code's agent-management screen, which is not an agent
   # at all, so the idle fallback may not swallow anything but the bare name.
   { match = '(?i)^\s*claude(?:\s+code)?(?:\.(?:exe|cmd|bat|ps1))?\s*$', state = "idle" },
-]
-
-[[agent]]
-id = "codex"
-name = "Codex"
-command = "codex"
-resume_args = ["resume", "{id}"]
-status = [
-  { match = '[\x{2800}-\x{28FF}]', state = "working" },
-  { match = '[\x{25D0}-\x{25D3}]', state = "working" },
-  { match = '(?i)(?:action required|permission|waiting)', requires = "codex", state = "permission" },
-  { match = '(?i)(?:^|[^\w./\\-])(?:ready|idle|done)(?:$|[^\w-])', requires = "codex", state = "idle" },
-  { match = '(?i)(?:^|[^\w./\\-])(?:working|thinking|running)(?:$|[^\w-])', requires = "codex", state = "working" },
-  # A title that names Codex and says nothing else — "Codex: fix cursor offsets"
-  # — is idle, which is the fallback once an agent name is known.
-  { match = '(?s).', requires = "codex", state = "idle" },
 ]
 
 [[agent]]

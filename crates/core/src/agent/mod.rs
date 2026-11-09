@@ -117,15 +117,6 @@ pub fn task_of(spec: &AgentSpec, title: &str) -> Option<String> {
         let name = name.trim();
         return (!name.is_empty()).then(|| name.to_string());
     }
-    // Qoder CLI appends its state to the task in the dynamic title:
-    // `<task> | Working`. The task is what comes before it.
-    let text = if spec.id == "qoder" {
-        regex::Regex::new(r"\s*\|\s*(?:Action Required|Ready|Working)\s*$")
-            .ok()?
-            .replace(text, "")
-    } else {
-        std::borrow::Cow::Borrowed(text)
-    };
     let brand = format!(
         r"(?i)^(?:{}|{})(?:\.exe)?\s*[-:]?\s*",
         regex::escape(&spec.name),
@@ -236,15 +227,12 @@ mod tests {
     }
 
     #[test]
-    fn builtin_has_six_presets() {
+    fn builtin_has_five_presets() {
         let agents = builtin_agents();
         let ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
         // The order is `builtin.toml`'s, and it is the order every picker lists
         // them in — Pi first, because it is this app's own agent.
-        assert_eq!(
-            ids,
-            ["pi", "qoder", "claude", "codex", "opencode", "gemini"]
-        );
+        assert_eq!(ids, ["pi", "codex", "claude", "opencode", "gemini"]);
     }
 
     /// Every builtin keyword rule must carry `requires`, and must spell its keyword with the boundary guards.
@@ -597,21 +585,6 @@ mod tests {
             ("pi", "OMP - action required", Some(Permission)),
             ("pi", "pi - refactor the runner", None),
             ("pi", "π - gemini-project", Some(Idle)),
-            // Qoder CLI: the `| State` suffix first, then the marks behind it.
-            ("qoder", "✦ Fix the build | Working", Some(Working)),
-            ("qoder", "◇ Fix the build | Ready", Some(Idle)),
-            (
-                "qoder",
-                "▲ Fix the build | Action Required",
-                Some(Permission),
-            ),
-            ("qoder", "✦ Qoder CLI", Some(Working)),
-            ("qoder", "◇ Qoder CLI", Some(Idle)),
-            ("qoder", "Qoder CLI (my-session)", Some(Idle)),
-            ("qoder", "qodercli", Some(Idle)),
-            ("qoder", "~/qoder/working", None),
-            ("qoder", "✳ Claude Code", None),
-            ("qoder", "✦ Gemini CLI", None),
             // Gemini CLI: four glyphs, permission first.
             ("gemini", "✋ Gemini CLI", Some(Permission)),
             ("gemini", "✦ Gemini CLI", Some(Working)),
@@ -664,12 +637,6 @@ mod tests {
             classify_any(&agents, "✳ Claude Code"),
             Some(("claude".to_string(), AgentStatus::Idle))
         );
-        // Qoder's state suffix outranks Gemini's ✦/◇ marks, which the title
-        // would otherwise answer to first.
-        assert_eq!(
-            classify_any(&agents, "✦ Fix the build | Working"),
-            Some(("qoder".to_string(), AgentStatus::Working))
-        );
         assert_eq!(classify_any(&agents, "bash"), None);
     }
 
@@ -700,16 +667,6 @@ mod tests {
             Some("fix cursor offsets")
         );
         assert_eq!(task("codex", "codex working"), None);
-        assert_eq!(
-            task("qoder", "✦ Fix the build        | Working").as_deref(),
-            Some("Fix the build")
-        );
-        assert_eq!(
-            task("qoder", "▲ session name | Action Required").as_deref(),
-            Some("session name")
-        );
-        assert_eq!(task("qoder", "◇ Qoder CLI | Ready"), None);
-        assert_eq!(task("qoder", "Qoder CLI (my-session)"), None);
         assert_eq!(task("gemini", "◇  Ready (syro)"), None);
         assert_eq!(task("gemini", "✦  Working… (syro)"), None);
     }
@@ -787,7 +744,7 @@ mod tests {
             },
         ];
         let resolved = resolve_agents(&user);
-        assert_eq!(resolved.len(), 7);
+        assert_eq!(resolved.len(), 6);
         assert_eq!(resolved[0].id, "pi", "the builtin order leads the list");
         // A user entry replaces its builtin *in place*, so the override sits
         // where the builtin it replaced was — not appended, and not first.

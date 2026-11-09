@@ -2513,15 +2513,6 @@ mod tests {
             manual_agent("/opt/homebrew/bin/codex resume").map(|agent| agent.id),
             Some("codex".into())
         );
-        // Qoder's preset id and command differ; either spelling is the agent.
-        assert_eq!(
-            manual_agent("qodercli --resume abc").map(|agent| agent.id),
-            Some("qoder".into())
-        );
-        assert_eq!(
-            manual_agent("qoder").map(|agent| agent.id),
-            Some("qoder".into())
-        );
         assert_eq!(manual_agent("echo codex").map(|agent| agent.id), None);
         assert_eq!(manual_agent("./codex").map(|agent| agent.id), None);
     }

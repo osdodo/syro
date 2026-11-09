@@ -34,7 +34,6 @@ pub fn agent_logo(id: &str) -> Option<Logo> {
         // theme rather than disappearing into one.
         "opencode" => Some(Logo::Mono(include_bytes!("../assets/logos/opencode.svg"))),
         "gemini" => Some(Logo::Color("logos/gemini.svg")),
-        "qoder" => Some(Logo::Color("logos/qoder.svg")),
         _ => None,
     }
 }
@@ -70,7 +69,6 @@ fn agent_logo_asset(path: &str) -> Option<&'static [u8]> {
         "logos/codex.svg" => Some(include_bytes!("../assets/logos/codex.svg")),
         "logos/opencode.svg" => Some(include_bytes!("../assets/logos/opencode.svg")),
         "logos/gemini.svg" => Some(include_bytes!("../assets/logos/gemini.svg")),
-        "logos/qoder.svg" => Some(include_bytes!("../assets/logos/qoder.svg")),
         "logos/terminal.svg" => Some(include_bytes!("../assets/logos/terminal.svg")),
         _ => None,
     }
@@ -103,7 +101,7 @@ mod tests {
     /// fails here rather than as a blank square in the tab bar.
     #[test]
     fn every_logo_is_a_whole_svg() {
-        for id in ["pi", "claude", "codex", "opencode", "gemini", "qoder"] {
+        for id in ["pi", "claude", "codex", "opencode", "gemini"] {
             let logo = agent_logo(id).unwrap_or_else(|| panic!("{id} has no logo"));
             let svg = match logo {
                 Logo::Color(path) => {
@@ -136,7 +134,7 @@ mod tests {
     fn the_asset_source_serves_the_logos_and_the_icons() {
         use gpui_kit::assets::IconNamed as _;
 
-        for id in ["pi", "claude", "codex", "opencode", "gemini", "qoder"] {
+        for id in ["pi", "claude", "codex", "opencode", "gemini"] {
             if let Some(Logo::Color(path)) = agent_logo(id) {
                 assert!(
                     AppAssets.load(path).is_ok(),
