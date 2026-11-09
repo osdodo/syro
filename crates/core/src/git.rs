@@ -931,7 +931,17 @@ pub fn commit_all(worktree_path: &Path, message: &str) -> Result<String> {
         anyhow::bail!("a commit needs a message");
     }
     run_git_ok(worktree_path, &["add", "-A"])?;
-    run_git_ok(worktree_path, &["commit", "-m", message])?;
+    // The message is the user's text, and it may be several lines. Reporting a
+    // refusal through `run_git_ok` would echo that text back before git's own
+    // reason, and the panel's one-line notice would show the message instead of
+    // why the commit did not happen. So the reason leads.
+    let out = run_git(worktree_path, &["commit", "-m", message])?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git commit failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
     run_git_ok(worktree_path, &["log", "-1", "--pretty=%s"])
 }
 
@@ -1939,6 +1949,31 @@ mod tests {
         assert!(worktree_changes(&repo).unwrap().is_empty());
         let tracked = run_git_ok(&repo, &["ls-files"]).unwrap();
         assert!(tracked.contains("untracked.txt"), "{tracked}");
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_refused_commit_reports_why_rather_than_the_message() {
+        let repo = scratch_repo("commit-refused", "main");
+        std::fs::write(repo.join("README.md"), "changed\n").unwrap();
+        let hook = repo.join(".git").join("hooks").join("pre-commit");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\necho 'the hook said no' >&2\nexit 1\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let error = commit_all(&repo, "a message that must not lead the notice").unwrap_err();
+        let said = format!("{error:#}");
+        assert!(said.starts_with("git commit failed: "), "{said}");
+        assert!(said.contains("the hook said no"), "{said}");
+        assert!(!said.contains("a message that must not lead"), "{said}");
 
         let _ = std::fs::remove_dir_all(&repo);
     }
