@@ -275,6 +275,9 @@ sidebar:
   new_scratch:
     en: New terminal
     zh-CN: 新建终端
+  close_scratch:
+    en: Close terminal
+    zh-CN: 关闭终端
   empty_add:
     en: Add a repository
     zh-CN: 添加一个仓库

@@ -127,6 +127,8 @@ enum Target {
         /// project rather than a worktree: git refuses to remove it as one, so
         /// the menu says what the dialog will ask.
         own_checkout: bool,
+        /// A scratch terminal: removing it only closes the row.
+        scratch: bool,
     },
     Repo {
         repo_id: String,
@@ -201,6 +203,7 @@ impl MenuItem {
                 Target::Worktree {
                     own_checkout: true, ..
                 } => t!("dialog.remove_project"),
+                Target::Worktree { scratch: true, .. } => t!("sidebar.close_scratch"),
                 _ => t!("sidebar.remove_worktree"),
             },
             Self::RemoveRepo => t!("dialog.remove_project"),
@@ -679,6 +682,7 @@ impl Sidebar {
         // Read here rather than in the listener: the menu's word for "remove"
         // depends on it, and the listener cannot borrow the panel.
         let own_checkout = self.state.read(cx).is_own_checkout(&worktree.id);
+        let scratch = worktree.is_scratch();
         // The branch name is the whole line: what the agents are doing and what
         // they cost are on the terminal lines under it, so a status and a total
         // here would only say the same thing twice.
@@ -776,6 +780,7 @@ impl Sidebar {
                         worktree_id: for_menu.clone(),
                         repo_id: for_repo.clone(),
                         own_checkout,
+                        scratch,
                     },
                     at,
                     window,
