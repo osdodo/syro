@@ -667,7 +667,7 @@ impl Sidebar {
         columns: ColumnWidths,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         // What the worktree's terminals cost, from the readout's last sweep. A
         // worktree with nothing running in it has no numbers and draws none, and
         // a sweep that has not answered yet is the same nothing.
@@ -1194,7 +1194,7 @@ impl Render for Sidebar {
         .left(px(0.))
         .size_full();
 
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         let active = self.state.read(cx).active_id().cloned();
         let state_error = self.state.read(cx).state_error().map(str::to_string);
         let hook_error = self.state.read(cx).hook_error().map(str::to_string);

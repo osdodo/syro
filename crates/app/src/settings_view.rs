@@ -322,10 +322,11 @@ pub fn apply_opacity(cx: &mut App, opacity: f32, blur: u32) {
         for fill in [
             &mut highlight.style.editor_background,
             &mut highlight.style.editor_active_line,
-        ] {
-            if let Some(fill) = fill {
-                fill.a = opacity;
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            fill.a = opacity;
         }
         // The gutter is a second fill of the editor's own background: the base editor
         // lays one over that column so text scrolled sideways cannot reach the line
@@ -961,7 +962,7 @@ fn stepper(
 
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
 
         let mut tabs = div()
             .id("settings-tabs")

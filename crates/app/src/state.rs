@@ -947,7 +947,7 @@ impl AppState {
         base: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.repos.iter().find(|r| &r.id == repo_id).cloned() else {
+        let Some(repo) = self.repos.iter().find(|r| r.id == repo_id).cloned() else {
             return;
         };
         // Trimmed once, here: the branch, the directory and the name the sidebar
@@ -964,13 +964,13 @@ impl AppState {
             }
             return;
         };
-        if let Some(parent) = dest.parent() {
-            if let Err(error) = std::fs::create_dir_all(parent) {
-                self.errors
-                    .insert(repo_id.to_string(), format!("{error:#}"));
-                cx.notify();
-                return;
-            }
+        if let Some(parent) = dest.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            self.errors
+                .insert(repo_id.to_string(), format!("{error:#}"));
+            cx.notify();
+            return;
         }
 
         self.pending.insert(
@@ -1480,13 +1480,12 @@ pub fn register_actions(state: &Entity<AppState>, cx: &mut App) {
                 prompt: Some(t!("state.add_git_repository").to_string().into()),
             });
             let state = state.clone();
-            cx.spawn(async move |cx| match picked.await {
-                Ok(Ok(Some(paths))) => {
-                    if let Some(path) = paths.into_iter().next() {
-                        state.update(cx, |state, cx| state.add_repo(path, cx));
-                    }
+            cx.spawn(async move |cx| {
+                if let Ok(Ok(Some(paths))) = picked.await
+                    && let Some(path) = paths.into_iter().next()
+                {
+                    state.update(cx, |state, cx| state.add_repo(path, cx));
                 }
-                _ => {}
             })
             .detach();
         }

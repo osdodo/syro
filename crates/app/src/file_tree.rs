@@ -34,7 +34,7 @@ pub(crate) struct DragChip {
 
 impl Render for DragChip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         div()
             .px_2()
             .py_1()
@@ -220,10 +220,8 @@ impl FileTreeView {
                     worktree_id,
                     status: Some(AgentStatus::Idle),
                     ..
-                } => {
-                    if this.state.read(cx).active_id() == Some(worktree_id) {
-                        this.refresh(cx);
-                    }
+                } if this.state.read(cx).active_id() == Some(worktree_id) => {
+                    this.refresh(cx);
                 }
                 _ => {}
             }
@@ -679,7 +677,7 @@ impl FileTreeView {
                 None => String::new(),
             },
         );
-        let status_color = row.status.map(|status| status_color(status, &colors, cx));
+        let status_color = row.status.map(|status| status_color(status, colors, cx));
         let mut el = div().id(SharedString::from(format!("tree-{}", row.path.display())));
         if is_dir {
             // A file is not a thing that opens and closes; a directory is, and
@@ -1208,7 +1206,7 @@ impl Render for FileTreeView {
             }));
         }
 
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         self.ensure_search_input(window, cx);
         let search = self.search_input.clone().expect("search input initialized");
         let header = div()
@@ -1343,18 +1341,16 @@ impl Render for FileTreeView {
             let starts_at_root = editing.as_ref().is_some_and(|(kind, target, _)| {
                 *kind != EditKind::Rename && self.root.as_deref() == Some(target.as_path())
             });
-            if starts_at_root {
-                if let Some((kind, target, input)) = &editing {
-                    body = body.child(self.edit_row(*kind, target, input, 0, &colors, cx));
-                }
+            if starts_at_root && let Some((kind, target, input)) = &editing {
+                body = body.child(self.edit_row(*kind, target, input, 0, &colors, cx));
             }
             for row in self.rows(cx) {
-                if let Some((kind, target, input)) = &editing {
-                    if *kind == EditKind::Rename && *target == row.path {
-                        body =
-                            body.child(self.edit_row(*kind, target, input, row.depth, &colors, cx));
-                        continue;
-                    }
+                if let Some((kind, target, input)) = &editing
+                    && *kind == EditKind::Rename
+                    && *target == row.path
+                {
+                    body = body.child(self.edit_row(*kind, target, input, row.depth, &colors, cx));
+                    continue;
                 }
                 let new_entry_here = editing.as_ref().is_some_and(|(kind, target, _)| {
                     *kind != EditKind::Rename && *target == row.path
@@ -1363,11 +1359,8 @@ impl Render for FileTreeView {
                 body = body.child(self.row(row, &colors, cx));
                 // A new entry goes under the directory it is going into, which
                 // is where the reader is looking when they typed the name.
-                if new_entry_here {
-                    if let Some((kind, target, input)) = &editing {
-                        body =
-                            body.child(self.edit_row(*kind, target, input, depth + 1, &colors, cx));
-                    }
+                if new_entry_here && let Some((kind, target, input)) = &editing {
+                    body = body.child(self.edit_row(*kind, target, input, depth + 1, &colors, cx));
                 }
             }
         }
@@ -1651,7 +1644,7 @@ mod tests {
             "the file was never created"
         );
         assert!(
-            found(cx, &fixture, &row_id(&fixture.root.join("notes.md"))),
+            found(cx, &fixture, row_id(&fixture.root.join("notes.md"))),
             "the new file is not in the tree"
         );
         // And nothing is left saying otherwise.
@@ -1718,8 +1711,8 @@ mod tests {
 
         assert!(!from.exists(), "the old name is still there");
         assert!(to.is_file(), "the file was never renamed");
-        assert!(found(cx, &fixture, &row_id(&to)), "the row did not follow");
-        assert!(!found(cx, &fixture, &row_id(&from)));
+        assert!(found(cx, &fixture, row_id(&to)), "the row did not follow");
+        assert!(!found(cx, &fixture, row_id(&from)));
     }
 
     #[gpui_kit::test]
@@ -1782,7 +1775,7 @@ mod tests {
         click(cx, &fixture, "tree-delete-confirm".to_string());
         draw(cx, &fixture);
         assert!(!doomed.exists(), "the file survived the confirmation");
-        assert!(!found(cx, &fixture, &row_id(&doomed)));
+        assert!(!found(cx, &fixture, row_id(&doomed)));
     }
 
     /// The sequence a real window sends: press, a frame, release.
@@ -2164,7 +2157,7 @@ mod tests {
         click(cx, &fixture, row_id(&src));
         draw(cx, &fixture);
         assert!(
-            found(cx, &fixture, &row_id(&lib)),
+            found(cx, &fixture, row_id(&lib)),
             "the directory did not expand"
         );
 
@@ -2175,11 +2168,11 @@ mod tests {
         draw(cx, &fixture);
 
         assert!(
-            found(cx, &fixture, &row_id(&src.join("fresh.rs"))),
+            found(cx, &fixture, row_id(&src.join("fresh.rs"))),
             "the refresh missed a new file"
         );
         assert!(
-            found(cx, &fixture, &row_id(&lib)),
+            found(cx, &fixture, row_id(&lib)),
             "the refresh closed the directory it was told to keep open"
         );
     }
@@ -2192,7 +2185,7 @@ mod tests {
 
         std::fs::write(&appeared, "written while the window was away\n").unwrap();
         assert!(
-            !found(cx, &fixture, &row_id(&appeared)),
+            !found(cx, &fixture, row_id(&appeared)),
             "the file was there before the window went away"
         );
 
@@ -2212,7 +2205,7 @@ mod tests {
         draw(cx, &fixture);
 
         assert!(
-            found(cx, &fixture, &row_id(&appeared)),
+            found(cx, &fixture, row_id(&appeared)),
             "coming back to the window did not re-read the directory"
         );
     }
@@ -2226,7 +2219,7 @@ mod tests {
     impl Render for Catcher {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let got = self.got.clone();
-            let colors = Theme::global(cx).tokens.colors.clone();
+            let colors = Theme::global(cx).tokens.colors;
             div()
                 .id("catcher")
                 .test_support()

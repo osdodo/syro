@@ -56,10 +56,10 @@ pub fn classify(spec: &AgentSpec, title: &str) -> Option<AgentStatus> {
         if !re.is_match(title) {
             continue;
         }
-        if let Some(name) = rule.requires.as_deref() {
-            if !names_agent(title, name) {
-                continue;
-            }
+        if let Some(name) = rule.requires.as_deref()
+            && !names_agent(title, name)
+        {
+            continue;
         }
         return Some(rule.state);
     }

@@ -620,7 +620,7 @@ impl Palette {
     }
 
     fn row(&self, position: usize, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         let item = &self.items[index];
         let selected = position == self.selected;
         let mut row = div()
@@ -699,7 +699,7 @@ impl Render for Palette {
             window.focus(&field, cx);
         }
 
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         let drawn = self.shown.len().min(MAX_ROWS);
 
         // The list takes the height the window can spare: it is the tallest part

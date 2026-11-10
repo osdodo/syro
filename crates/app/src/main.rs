@@ -1317,10 +1317,11 @@ impl Workspace {
             }
             None => TermSpec::shell(worktree.path.clone(), size),
         };
-        if action.resume.is_none() && agent.is_some() {
-            if let Some(model) = &action.model {
-                spec.args.extend(["--model".into(), model.clone()]);
-            }
+        if action.resume.is_none()
+            && agent.is_some()
+            && let Some(model) = &action.model
+        {
+            spec.args.extend(["--model".into(), model.clone()]);
         }
         let spec = with_settings(spec, &settings);
         let spec = match startable(spec) {
@@ -2811,7 +2812,7 @@ impl Workspace {
 
     /// The recent agents, up to three a row and two rows.
     fn agent_grid(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         let agents = self.recent_agents(cx);
         if agents.is_empty() {
             return message(t!("workspace.no_recent_agents").to_string(), &colors);
@@ -2925,7 +2926,7 @@ impl Workspace {
         if self.grid {
             return self.agent_grid(cx);
         }
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         let Some(worktree_id) = self.state.read(cx).active_id().cloned() else {
             // Nothing on screen. Which nothing it is decides what to say: no
             // project at all is a different thing from none of them being picked.
@@ -3798,7 +3799,7 @@ impl Render for Workspace {
         self.load_visible_panes(window, cx);
         self.ensure_pane_focus(window, cx);
         self.note_recent(cx);
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         let mut column = div()
             .id("workspace-body")
             .test_support()
@@ -3854,25 +3855,25 @@ impl Render for Workspace {
         // is a column wide. The sidebars and the readout stay where they are —
         // this is the editor area, which is where a log belongs, and the button
         // that opened it is still on screen.
-        if self.graph_visible {
-            if let Some(graph) = self.graph.clone() {
-                column = column.child(
-                    div()
-                        .id("git-graph-overlay")
-                        .test_support()
-                        .bg(colors.background)
-                        // Absolute, so its height is the pane area's — which is the
-                        // height the rows inside it scroll in. A `flex_1` here would
-                        // be a percentage of an auto-sized box, and the rows would be
-                        // as tall as the history instead of the window.
-                        .absolute()
-                        .inset_0()
-                        // A click inside the graph is the graph's: without this it
-                        // would fall through to the pane under it.
-                        .occlude()
-                        .child(graph),
-                );
-            }
+        if self.graph_visible
+            && let Some(graph) = self.graph.clone()
+        {
+            column = column.child(
+                div()
+                    .id("git-graph-overlay")
+                    .test_support()
+                    .bg(colors.background)
+                    // Absolute, so its height is the pane area's — which is the
+                    // height the rows inside it scroll in. A `flex_1` here would
+                    // be a percentage of an auto-sized box, and the rows would be
+                    // as tall as the history instead of the window.
+                    .absolute()
+                    .inset_0()
+                    // A click inside the graph is the graph's: without this it
+                    // would fall through to the pane under it.
+                    .occlude()
+                    .child(graph),
+            );
         }
 
         let root = div()
@@ -4210,8 +4211,7 @@ fn login_path(program: &str) -> Option<String> {
 /// printed. An rc file is free to print something of its own before it.
 fn last_line(text: &str) -> Option<String> {
     text.lines()
-        .filter(|line| !line.trim().is_empty())
-        .next_back()
+        .rfind(|line| !line.trim().is_empty())
         .map(|line| line.trim().to_string())
 }
 
@@ -6268,8 +6268,7 @@ mod window_tests {
                 .flatten()
                 .map(|element| (path, element.bounds().center()))
             })
-            .filter(|(_, center)| menu.contains(center) && center.y > menu.origin.y + px(40.))
-            .next_back()
+            .rfind(|(_, center)| menu.contains(center) && center.y > menu.origin.y + px(40.))
             .expect("no row is under the menu");
         assert!(
             !covered.0.ends_with(NOTES),
@@ -7122,7 +7121,7 @@ mod window_tests {
             spine.origin.y + spine.size.height <= block.origin.y + block.size.height,
             "the spine runs out of the block it belongs to: {spine:?} in {block:?}"
         );
-        assert!(!found(cx, &fixture, &format!("commit-file-README.md")));
+        assert!(!found(cx, &fixture, "commit-file-README.md"));
 
         // One commit at a time: opening the one below closes this one, because
         // the history scrolls inside its own 240 px and two open commits would
@@ -9403,7 +9402,7 @@ mod window_tests {
                 .state
                 .update(cx, |state, cx| state.add_repo(path.clone(), cx))
         });
-        draw(cx, &fixture);
+        draw(cx, fixture);
         path
     }
 
@@ -10682,7 +10681,7 @@ mod window_tests {
             },
         );
         assert!(
-            matches!(refused, Err(_)),
+            refused.is_err(),
             "the stream of an unknown terminal was answered"
         );
     }

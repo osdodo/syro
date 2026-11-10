@@ -114,11 +114,11 @@ impl DiffView {
             self.selected = None;
             self.selected_kind = None;
         }
-        if self.selected.is_none() {
-            if let Some((path, kind)) = paths.into_iter().next() {
-                self.selected = Some(path);
-                self.selected_kind = Some(kind);
-            }
+        if self.selected.is_none()
+            && let Some((path, kind)) = paths.into_iter().next()
+        {
+            self.selected = Some(path);
+            self.selected_kind = Some(kind);
         }
         self.load_selected(window, cx);
         cx.notify();
@@ -331,7 +331,7 @@ impl PaneItem for DiffView {
 
 impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         let mut body = div()
             .id("diff-pane")
             .test_support()

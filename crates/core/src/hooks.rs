@@ -167,7 +167,7 @@ mod tests {
             env.get("SYRO_WORKSPACE_NAME").map(String::as_str),
             Some("my-feature")
         );
-        assert!(env.get("SYRO_AGENT_ID").is_none());
+        assert!(!env.contains_key("SYRO_AGENT_ID"));
     }
 
     #[test]

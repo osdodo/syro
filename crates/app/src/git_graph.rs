@@ -1068,7 +1068,7 @@ impl Render for GitGraph {
         if self.stale {
             self.refresh(cx);
         }
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         let body = div()
             .id("git-graph")
             .test_support()
@@ -1142,16 +1142,16 @@ impl GitGraph {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colors = Theme::global(cx).tokens.colors.clone();
-        if let Some(open) = self.open.as_ref() {
-            if let Some(selected) = self.commits.iter().position(|commit| commit.id == open.id) {
-                if index == selected + 1 {
-                    let commit = self.commits[selected].clone();
-                    return self.commit_details(&commit, open, &self.cells[selected], &colors, cx);
-                }
-                let commit_index = index - usize::from(index > selected + 1);
-                return self.commit_row(commit_index, &self.commits[commit_index], &colors, cx);
+        let colors = Theme::global(cx).tokens.colors;
+        if let Some(open) = self.open.as_ref()
+            && let Some(selected) = self.commits.iter().position(|commit| commit.id == open.id)
+        {
+            if index == selected + 1 {
+                let commit = self.commits[selected].clone();
+                return self.commit_details(&commit, open, &self.cells[selected], &colors, cx);
             }
+            let commit_index = index - usize::from(index > selected + 1);
+            return self.commit_row(commit_index, &self.commits[commit_index], &colors, cx);
         }
         self.commit_row(index, &self.commits[index], &colors, cx)
     }

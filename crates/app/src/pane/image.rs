@@ -68,7 +68,7 @@ fn first_frame(path: &Path) -> Result<Arc<RenderImage>, ImageCacheError> {
     // `load_from_memory` decodes just the first frame of an animation.
     let mut pixels = ::image::load_from_memory(&std::fs::read(path)?)?.into_rgba8();
     // gpui draws BGRA.
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Ok(Arc::new(RenderImage::new([::image::Frame::new(pixels)])))

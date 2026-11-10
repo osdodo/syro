@@ -351,7 +351,7 @@ fn markdown_image_source(uri: &SharedUri, base: Option<&Path>) -> ImageSource {
 
 impl Render for EditorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         // Markdown is the one language with something to render, so it is the
         // one the switch is offered for.
         let previewable = self.state.read(cx).language_name().as_ref() == "markdown";

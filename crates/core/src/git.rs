@@ -115,10 +115,10 @@ pub(crate) fn parse_worktrees_porcelain(text: &str) -> Vec<GitWorktree> {
             if let Some(w) = cur.as_mut() {
                 w.bare = true;
             }
-        } else if line == "detached" {
-            if let Some(w) = cur.as_mut() {
-                w.detached = true;
-            }
+        } else if line == "detached"
+            && let Some(w) = cur.as_mut()
+        {
+            w.detached = true;
         }
     }
     if let Some(w) = cur {
@@ -139,13 +139,12 @@ pub fn default_base_ref(repo: &Path) -> Result<String> {
     if let Ok(out) = run_git(
         repo,
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-    ) {
-        if out.status.success() {
-            let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !name.is_empty() {
-                let name = name.strip_prefix("origin/").unwrap_or(name.as_str());
-                return Ok(name.to_string());
-            }
+    ) && out.status.success()
+    {
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !name.is_empty() {
+            let name = name.strip_prefix("origin/").unwrap_or(name.as_str());
+            return Ok(name.to_string());
         }
     }
 
@@ -522,10 +521,10 @@ fn parse_name_status(line: &str) -> Option<(char, String)> {
     let status_field = parts.next()?;
     let status = status_field.chars().next()?;
     let first = parts.next()?.to_string();
-    if status == 'R' || status == 'C' {
-        if let Some(dest) = parts.next() {
-            return Some((status, dest.to_string()));
-        }
+    if (status == 'R' || status == 'C')
+        && let Some(dest) = parts.next()
+    {
+        return Some((status, dest.to_string()));
     }
     Some((status, first))
 }
@@ -1398,11 +1397,10 @@ mod tests {
             "the remote-tracking ref outlived the branch on the remote"
         );
         assert!(
-            run_git(&origin, &["rev-parse", "--verify", "refs/heads/spike"])
+            !run_git(&origin, &["rev-parse", "--verify", "refs/heads/spike"])
                 .unwrap()
                 .status
-                .success()
-                == false,
+                .success(),
             "the remote still has the branch"
         );
         // And git's own refusal — the remote will not lose its current branch —

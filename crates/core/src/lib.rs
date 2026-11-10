@@ -76,6 +76,15 @@ pub fn worktree_dir(root: &Path, repo: &str, name: &str) -> Result<PathBuf, Work
     Ok(dir)
 }
 
+/// The user's home directory: `$HOME`, else `%USERPROFILE%` on Windows where
+/// `HOME` is usually unset.
+pub fn home_dir() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .expect("neither HOME nor USERPROFILE is set");
+    PathBuf::from(home)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,13 +137,4 @@ mod tests {
             Ok(PathBuf::from("/w/x")),
         );
     }
-}
-
-/// The user's home directory: `$HOME`, else `%USERPROFILE%` on Windows where
-/// `HOME` is usually unset.
-pub fn home_dir() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .expect("neither HOME nor USERPROFILE is set");
-    PathBuf::from(home)
 }

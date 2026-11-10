@@ -1289,7 +1289,7 @@ impl RemoveWorktree {
 
 impl Render for RemoveWorktree {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         let pending = self.state.read(cx).pending_for(&self.repo_id).is_some();
         let refusal = if self.asked && !pending {
             self.state

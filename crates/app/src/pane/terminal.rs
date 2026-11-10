@@ -357,10 +357,10 @@ impl GridLayout {
             ((inner.size.height.as_f32() / cell_height).floor() as usize).max(MIN_SCREEN_LINES);
 
         let current = session.size();
-        if current.columns != columns || current.screen_lines != screen_lines {
-            if let Err(error) = session.resize(columns, screen_lines) {
-                tracing::warn!(%error, "terminal resize failed");
-            }
+        if (current.columns != columns || current.screen_lines != screen_lines)
+            && let Err(error) = session.resize(columns, screen_lines)
+        {
+            tracing::warn!(%error, "terminal resize failed");
         }
 
         Self {
@@ -635,14 +635,14 @@ impl TerminalView {
     /// `PaneStatus`, which is what the readouts already re-read a terminal on.
     fn read_name(&mut self, title: Option<&str>, cx: &mut Context<Self>) {
         let before = (self.agent_name().map(str::to_string), self.task.clone());
-        if self.agent.is_none() && self.manual.is_none() {
-            if let Some(detected) = title.and_then(|title| {
+        if self.agent.is_none()
+            && self.manual.is_none()
+            && let Some(detected) = title.and_then(|title| {
                 let (id, _) = agent::classify_any(builtin_agents(), title)?;
                 builtin_agents().iter().find(|spec| spec.id == id).cloned()
             }) {
                 self.seen = Some(detected);
             }
-        }
         let spec = self
             .agent
             .as_ref()
@@ -1515,10 +1515,10 @@ impl Render for TerminalView {
 
 fn terminal_url_at(term: &Term<EventProxy>, point: GridPoint) -> Option<String> {
     let grid = term.grid();
-    if let Some(url) = grid[point].hyperlink().map(|link| link.uri().to_owned()) {
-        if url.starts_with("https://") || url.starts_with("http://") {
-            return Some(url);
-        }
+    if let Some(url) = grid[point].hyperlink().map(|link| link.uri().to_owned())
+        && (url.starts_with("https://") || url.starts_with("http://"))
+    {
+        return Some(url);
     }
     let row = &grid[point.line];
     let chars: Vec<char> = (0..grid.columns())
@@ -1897,11 +1897,11 @@ fn paint_rows(
 
             let (color, _) = palette.resolve(cell);
             let next = RunStyle::of(cell, color);
-            if style.as_ref() != Some(&next) {
-                if let Some(previous) = style.replace(next) {
-                    runs.push(previous.run(run_len, metrics));
-                    run_len = 0;
-                }
+            if style.as_ref() != Some(&next)
+                && let Some(previous) = style.replace(next)
+            {
+                runs.push(previous.run(run_len, metrics));
+                run_len = 0;
             }
 
             // `HIDDEN` is a cell whose text the child wants unseen; a space in
@@ -2458,7 +2458,7 @@ pub fn shell_escape(path: &Path) -> String {
 }
 
 /// The one place a composition becomes bytes for the child.
-
+///
 /// `committed` is what the input method handed over: the text on commit, and `None` when the
 /// composition ended without one — Escape, a click elsewhere, the input method changing its
 /// mind.

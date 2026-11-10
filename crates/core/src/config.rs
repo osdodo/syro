@@ -190,11 +190,11 @@ impl Settings {
     /// Write the settings back to `path`.
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
         let text = toml::to_string_pretty(self)?;
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("creating {}", parent.display()))?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
         }
         let tmp = temp_sibling(path);
         std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;

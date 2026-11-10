@@ -896,7 +896,7 @@ mod tests {
         assert_eq!(fallback_locale(c), None, "an explicit locale is respected");
 
         // Any one of the three is a locale, even when it is empty of a value.
-        let ctype = |name: &str| (name == "LC_CTYPE").then(|| std::ffi::OsString::new());
+        let ctype = |name: &str| (name == "LC_CTYPE").then(std::ffi::OsString::new);
         assert_eq!(fallback_locale(ctype), Some(("LANG", "en_US.UTF-8")));
     }
 

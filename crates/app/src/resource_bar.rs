@@ -289,7 +289,7 @@ impl ResourceBar {
         // now rather than a second from now.
         let this = cx.entity();
         cx.defer(move |cx| {
-            let _ = this.update(cx, |bar, cx| bar.refresh(cx));
+            this.update(cx, |bar, cx| bar.refresh(cx));
         });
     }
 
@@ -401,20 +401,17 @@ impl ResourceBar {
     /// The same numbers as a sentence, for the chip's aria label.
     fn usage_label(&self) -> String {
         match &self.usage {
-            Some(usage) if usage.total.tokens > 0 => {
-                let label = t!(
-                    "resource.usage_aria",
-                    days = USAGE_DAYS,
-                    tokens = format_tokens(usage.total.tokens),
-                    cost = format_cost(
-                        usage.total.cost,
-                        usage.total.estimated,
-                        usage.total.unpriced
-                    ),
-                )
-                .to_string();
-                label
-            }
+            Some(usage) if usage.total.tokens > 0 => t!(
+                "resource.usage_aria",
+                days = USAGE_DAYS,
+                tokens = format_tokens(usage.total.tokens),
+                cost = format_cost(
+                    usage.total.cost,
+                    usage.total.estimated,
+                    usage.total.unpriced
+                ),
+            )
+            .to_string(),
             // Measuring, or nothing recorded: the short form already reads as one.
             _ => self.usage_text(),
         }
@@ -479,7 +476,7 @@ impl ResourceBar {
     /// deferred pass its content draws in, so a chart's tooltip — which a chart defers
     /// so it can overflow the plot — would end up behind the card it belongs to.
     fn chart_overlay(&self, window: Size<Pixels>, cx: &mut Context<Self>) -> AnyElement {
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         let strip = cx.entity().downgrade();
         // The panel's own size, worked out rather than negotiated: every piece of it is
         // a number this side picks. A strip down the window's trailing side — tall and
@@ -972,7 +969,7 @@ pub struct ToggleGrid;
 
 impl Render for ResourceBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = Theme::global(cx).tokens.colors.clone();
+        let colors = Theme::global(cx).tokens.colors;
         let summary = self.summary();
         // The app process alone, not its subtree: what the terminals cost
         // belongs to their worktrees, and the sidebar's rows are where that is

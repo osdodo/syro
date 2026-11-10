@@ -30,11 +30,10 @@ impl Store {
     /// Write `state` atomically (temp file + rename).
     pub fn save(&self, state: &State) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(state)?;
-        if let Some(parent) = self.path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("creating {}", parent.display()))?;
-            }
+        if let Some(parent) = self.path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         let tmp = temp_sibling(&self.path);
         fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
