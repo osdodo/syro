@@ -346,7 +346,7 @@ fn markdown_image_source(uri: &SharedUri, base: Option<&Path>) -> ImageSource {
     } else {
         return ImageSource::Resource(Resource::Uri(uri.clone()));
     };
-    ImageSource::Resource(Resource::Path(path.into()))
+    crate::pane::image::still(path)
 }
 
 impl Render for EditorView {

@@ -6863,6 +6863,7 @@ dependencies = [
  "data-url",
  "dunce",
  "gpui-kit",
+ "image",
  "objc",
  "qrcode",
  "raw-window-handle",

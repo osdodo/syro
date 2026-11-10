@@ -26,6 +26,9 @@ async-channel = "2"
 serde_json.workspace = true
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Already in the tree through gpui: decodes just the first frame of a GIF/WebP
+# (see `pane::image::still`).
+image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 
 # The blur radius: gpui only knows blurred-or-not, so the app sets the window's
