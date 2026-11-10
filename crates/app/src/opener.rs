@@ -12,8 +12,8 @@ pub const MAX_TEXT_BYTES: u64 = 5 * 1024 * 1024;
 /// other language, and resolves through the same registry.
 pub const DIFF_LANGUAGE: &str = "diff";
 
-/// The menu label for `App::reveal_path`, named after this platform's file
-/// manager — both the file tree and the sidebar's worktree menu show it.
+/// The menu label for [`reveal`], named after this platform's file manager —
+/// both the file tree and the sidebar's worktree menu show it.
 pub fn reveal_label() -> String {
     if cfg!(target_os = "macos") {
         t!("opener.reveal_finder").to_string()
@@ -22,6 +22,24 @@ pub fn reveal_label() -> String {
     } else {
         t!("opener.reveal_file_manager").to_string()
     }
+}
+
+#[cfg(not(windows))]
+pub fn reveal(cx: &gpui_kit::App, path: &Path) {
+    cx.reveal_path(path);
+}
+
+/// Show `path` in this platform's file manager, selecting it.
+///
+/// gpui's Windows branch builds the shell call on a background thread with no
+/// OLE/COM initialized, so `SHGetDesktopFolder` fails and the click does
+/// nothing; `explorer /select` is a plain process and needs none of that.
+#[cfg(windows)]
+pub fn reveal(_cx: &gpui_kit::App, path: &Path) {
+    use std::os::windows::process::CommandExt as _;
+    let _ = std::process::Command::new("explorer")
+        .raw_arg(format!("/select,\"{}\"", path.display()))
+        .spawn();
 }
 
 /// What a file's extension says it is, as a gpui-kit registry identifier.

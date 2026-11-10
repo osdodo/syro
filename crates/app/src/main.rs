@@ -647,6 +647,9 @@ impl Workspace {
                 if self.state.read(cx).worktree(&id).is_none() {
                     return Err(format!("no worktree {id}"));
                 }
+                if !self.state.read(cx).is_own_checkout(&id) {
+                    self.forget_worktree(&id, cx);
+                }
                 self.state
                     .update(cx, |state, cx| state.remove_worktree(&id, force, cx));
                 Ok(web::Payload::Ok)
@@ -1926,8 +1929,8 @@ impl Workspace {
         self.resource_bar
             .update(cx, |bar, cx| bar.set_terminals(live, cx));
     }
-    /// `WorktreeRemoved`: its panes describe a directory that is gone.
-    fn forget_worktree(&mut self, worktree_id: &WorktreeId, cx: &mut Context<Self>) {
+    /// Drop panes whose processes can keep a worktree directory open.
+    pub(crate) fn forget_worktree(&mut self, worktree_id: &WorktreeId, cx: &mut Context<Self>) {
         // Dropping the views hangs their children up — a terminal's view holds
         // the last `Rc<TermSession>` — and the agent statuses go with the
         // worktree, which is what `AppState` forgets on the same event.
@@ -2603,6 +2606,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let state = self.state.clone();
+        let workspace = cx.weak_entity();
         let worktree_id = worktree_id.to_string();
         // The repo's own checkout cannot be removed as a worktree — git will not
         // take the main one — so the dialog for it is the project question, and
@@ -2612,8 +2616,9 @@ impl Workspace {
         } else {
             t!("dialog.remove_worktree")
         };
-        let form =
-            cx.new(|cx| RemoveWorktree::new(state, &worktree_id, window.window_handle(), cx));
+        let form = cx.new(|cx| {
+            RemoveWorktree::new(state, workspace, &worktree_id, window.window_handle(), cx)
+        });
         window.open_dialog(cx, move |dialog, _, cx| {
             let form = form.clone();
             dialog

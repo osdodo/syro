@@ -680,9 +680,9 @@ impl AppState {
     /// with an id before git has run.
     pub fn worktree_target(&self, repo_id: &str, name: &str) -> Option<PathBuf> {
         let repo = self.repos.iter().find(|repo| repo.id == repo_id)?;
-        let root = self
-            .workspaces_root
-            .canonicalize()
+        // `dunce`, not `Path::canonicalize`: Windows would hand back a `\\?\`
+        // path, which the dialog would show and git would refuse to create.
+        let root = dunce::canonicalize(&self.workspaces_root)
             .unwrap_or_else(|_| self.workspaces_root.clone());
         worktree_dir(&root, &repo.name, name).ok()
     }

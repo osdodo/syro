@@ -1208,6 +1208,7 @@ fn field(label: &str, body: AnyElement, colors: &ColorTokens) -> AnyElement {
 /// The removal confirmation.
 pub struct RemoveWorktree {
     state: Entity<AppState>,
+    workspace: WeakEntity<Workspace>,
     /// See [`NewWorktree::window`].
     window: AnyWindowHandle,
     repo_id: RepoId,
@@ -1227,6 +1228,7 @@ pub struct RemoveWorktree {
 impl RemoveWorktree {
     pub fn new(
         state: Entity<AppState>,
+        workspace: WeakEntity<Workspace>,
         worktree_id: &str,
         window: AnyWindowHandle,
         cx: &mut Context<Self>,
@@ -1248,6 +1250,7 @@ impl RemoveWorktree {
         });
         Self {
             state,
+            workspace,
             window,
             repo_id: target
                 .as_ref()
@@ -1267,6 +1270,12 @@ impl RemoveWorktree {
 
     fn ask(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.asked = true;
+        // A terminal's current directory prevents Windows from deleting the worktree.
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                workspace.forget_worktree(&self.worktree_id, cx)
+            });
+        }
         window.dispatch_action(
             Box::new(worktree::Remove {
                 worktree_id: self.worktree_id.clone(),
@@ -2046,6 +2055,9 @@ mod window_tests {
             .expect("a name")
             .to_string_lossy()
             .into_owned();
+        // Windows cannot remove a directory while this terminal has it as its
+        // current directory. Confirming removal closes that terminal first.
+        click(cx, &fixture, &format!("worktree-{}", doomed.display()));
         // A file git did not have: `worktree remove` refuses to throw that away.
         std::fs::write(doomed.join("scratch.txt"), "x").unwrap();
 

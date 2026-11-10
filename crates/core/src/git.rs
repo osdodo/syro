@@ -187,7 +187,9 @@ pub fn branch_from_name(name: &str) -> String {
 
 /// Create a worktree at `path` on a new `branch` from `base`. An existing branch is checked out instead.
 pub fn worktree_add(repo: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
-    let path_arg = path.to_string_lossy().into_owned();
+    // git matches `\\?\C:\...` against neither its own records nor the path
+    // `worktree list` prints; the app keeps canonical paths, so strip it here.
+    let path_arg = dunce::simplified(path).to_string_lossy().into_owned();
     let created = run_git(repo, &["worktree", "add", "-b", branch, &path_arg, base])?;
     if created.status.success() {
         return Ok(());
@@ -286,11 +288,31 @@ fn link(source: &Path, dest: &Path) -> std::io::Result<()> {
 /// Remove the worktree at `path`, and forget the bookkeeping a worktree deleted
 /// out of band leaves behind.
 pub fn worktree_remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
-    let path_arg = path.to_string_lossy().into_owned();
-    if force {
-        run_git_ok(repo, &["worktree", "remove", "--force", &path_arg])?;
-    } else {
-        run_git_ok(repo, &["worktree", "remove", &path_arg])?;
+    // The app keeps canonical paths, which on Windows carry a `\\?\` prefix git
+    // does not recognise as the worktree it recorded.
+    let path_arg = dunce::simplified(path).to_string_lossy().into_owned();
+    // A directory deleted out of band, or one whose `.git` link is gone, is no
+    // longer a worktree git can remove. Clear what is left here and let `prune`
+    // forget the record; for a real worktree let git decide (dirty needs force).
+    if path.join(".git").exists() {
+        let removed = if force {
+            run_git_ok(repo, &["worktree", "remove", "--force", &path_arg])
+        } else {
+            run_git_ok(repo, &["worktree", "remove", &path_arg])
+        };
+        if let Err(error) = removed {
+            // The `.git` link names a worktree git no longer has: nothing for it
+            // to remove, so clear the leftovers. Any other refusal — a dirty
+            // worktree without `--force` — is real and goes to the caller.
+            if !format!("{error:#}").contains("is not a working tree") {
+                return Err(error);
+            }
+            if path.exists() {
+                fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))?;
+            }
+        }
+    } else if path.exists() {
+        fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))?;
     }
     run_git_ok(repo, &["worktree", "prune"])?;
     Ok(())
@@ -2092,7 +2114,10 @@ mod tests {
         );
         assert_eq!(branch_worktree(&repo, "no-such-branch").unwrap(), None);
 
-        worktree_remove(&repo, &first, false).unwrap();
+        // The app keeps canonical paths, which on Windows are `\\?\`-prefixed;
+        // git only knows the plain worktree it recorded.
+        let prefixed = first.canonicalize().unwrap_or_else(|_| first.clone());
+        worktree_remove(&repo, &prefixed, false).unwrap();
         assert!(!first.exists());
         assert_eq!(list_worktrees(&repo).unwrap().len(), 1);
 
@@ -2123,6 +2148,40 @@ mod tests {
 
         worktree_remove(&repo, &wt, true).unwrap();
         assert!(!wt.exists());
+
+        let _ = std::fs::remove_dir_all(&scratch);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn removing_a_worktree_whose_directory_is_gone_succeeds() {
+        let repo = scratch_repo("worktree-gone", "main");
+        let scratch = temp_dir("worktree-gone-paths");
+        let wt = scratch.join("gone");
+        worktree_add(&repo, &wt, "gone-work", "main").unwrap();
+        std::fs::remove_dir_all(&wt).unwrap();
+
+        // git still has the worktree on record; removing a directory that is
+        // already gone is the bookkeeping `prune` fixes, not an error.
+        worktree_remove(&repo, &wt, true).unwrap();
+        assert_eq!(list_worktrees(&repo).unwrap().len(), 1);
+
+        // A directory left behind without its `.git` link is not a worktree
+        // git can remove either; clearing it is the same bookkeeping.
+        let stale = scratch.join("stale");
+        worktree_add(&repo, &stale, "stale-work", "main").unwrap();
+        std::fs::remove_file(stale.join(".git")).unwrap();
+        worktree_remove(&repo, &stale, false).unwrap();
+        assert!(!stale.exists());
+        assert_eq!(list_worktrees(&repo).unwrap().len(), 1);
+
+        // A directory that only *looks* like a worktree — a `.git` link git
+        // does not recognise — is cleared rather than refused.
+        let fake = scratch.join("fake");
+        std::fs::create_dir_all(&fake).unwrap();
+        std::fs::write(fake.join(".git"), "gitdir: /nowhere\n").unwrap();
+        worktree_remove(&repo, &fake, false).unwrap();
+        assert!(!fake.exists());
 
         let _ = std::fs::remove_dir_all(&scratch);
         let _ = std::fs::remove_dir_all(&repo);

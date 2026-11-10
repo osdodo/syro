@@ -6861,6 +6861,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "data-url",
+ "dunce",
  "gpui-kit",
  "objc",
  "qrcode",

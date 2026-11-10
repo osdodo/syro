@@ -7,6 +7,7 @@
 //! are counted through a shallow borrowed struct, so a 27 MB transcript costs a byte scan rather
 //! than a `Value` per line.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::hash::{Hash as _, Hasher as _};
@@ -944,7 +945,7 @@ fn consume(
         SessionAgent::Pi => {
             if record.kind == Some("session") {
                 fold.id = record.id.map(str::to_string).or(fold.id.take());
-                fold.cwd = record.cwd.map(PathBuf::from).or(fold.cwd.take());
+                fold.cwd = record.cwd.as_deref().map(PathBuf::from).or(fold.cwd.take());
             }
             if record.kind == Some("model_change") {
                 fold.provider = record.provider.map(str::to_string).or(fold.provider.take());
@@ -966,7 +967,7 @@ fn consume(
                     .map(str::to_string)
                     .or(fold.id.take());
                 fold.cwd = payload
-                    .and_then(|payload| payload.cwd)
+                    .and_then(|payload| payload.cwd.as_deref())
                     .map(PathBuf::from)
                     .or(fold.cwd.take());
             }
@@ -985,7 +986,7 @@ fn consume(
             }
         }
         SessionAgent::Claude => {
-            if let Some(cwd) = record.cwd
+            if let Some(cwd) = record.cwd.as_deref()
                 && head
             {
                 fold.cwd = Some(PathBuf::from(cwd));
@@ -1519,7 +1520,8 @@ struct Payload<'a> {
     #[serde(rename = "session_id")]
     session_id: Option<&'a str>,
     id: Option<&'a str>,
-    cwd: Option<&'a str>,
+    #[serde(borrow)]
+    cwd: Option<Cow<'a, str>>,
     /// `turn_context`: the model that answered the turn.
     model: Option<&'a str>,
     /// The inner discriminator: `message` for a turn, `token_count` for an event.
@@ -1586,7 +1588,8 @@ struct Record<'a> {
     provider: Option<&'a str>,
     #[serde(rename = "modelId")]
     model_id: Option<&'a str>,
-    cwd: Option<&'a str>,
+    #[serde(borrow)]
+    cwd: Option<Cow<'a, str>>,
     id: Option<&'a str>,
     /// When the record was written, as either agent stamps it: RFC 3339.
     timestamp: Option<&'a str>,
@@ -1746,6 +1749,8 @@ pub fn resume_target<'a>(session: &Session, worktrees: &'a [Worktree]) -> Option
 
 /// Whether `path` is `root` or inside it, by path components — `…/app` must not claim `…/app-secret`.
 fn under(path: &Path, root: &Path) -> bool {
+    let path = dunce::simplified(path);
+    let root = dunce::simplified(root);
     path == root || path.starts_with(root)
 }
 
@@ -2751,6 +2756,45 @@ mod tests {
         assert_eq!(relative_time(now, now - 90 * 86_400_000), "3mo ago");
         // A clock that went backwards is not "in the future".
         assert_eq!(relative_time(now, now + 5_000), "just now");
+    }
+
+    #[test]
+    fn escaped_windows_cwd_is_read_from_codex_meta() {
+        let record: Record<'_> = serde_json::from_str(
+            r#"{"type":"session_meta","payload":{"session_id":"s","cwd":"C:\\Users\\ada\\code"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            record.payload.and_then(|payload| payload.cwd).as_deref(),
+            Some("C:\\Users\\ada\\code")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extended_windows_worktree_paths_match_session_paths() {
+        let session = Session {
+            agent: SessionAgent::Codex,
+            id: "s".into(),
+            path: PathBuf::from("C:\\sessions\\s.jsonl"),
+            cwd: PathBuf::from(r"C:\Users\ada\code\syro"),
+            workspace: "syro".into(),
+            title: "t".into(),
+            preview: String::new(),
+            model: None,
+            provider: None,
+            messages: 1,
+            updated_ms: 0,
+        };
+        let worktree = Worktree {
+            id: r"\\?\C:\Users\ada\code\syro".into(),
+            repo_id: "repo".into(),
+            name: "syro".into(),
+            path: PathBuf::from(r"\\?\C:\Users\ada\code\syro"),
+            branch: "main".into(),
+            base_ref: "main".into(),
+        };
+        assert!(in_active_repo(&session, Some(&worktree), std::slice::from_ref(&worktree)));
     }
 
     #[test]

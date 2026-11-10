@@ -1032,7 +1032,7 @@ impl FileTreeView {
             MenuItem::Delete => self.ask_delete(menu.path.clone(), cx),
             MenuItem::Reveal => {
                 self.menu = None;
-                cx.reveal_path(&menu.path);
+                crate::opener::reveal(cx, &menu.path);
             }
         }
     }

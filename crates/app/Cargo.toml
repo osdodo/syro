@@ -16,6 +16,8 @@ sys-locale.workspace = true
 # types beats copying the grid into a parallel one every frame.
 alacritty_terminal.workspace = true
 syro-core = { path = "../core" }
+# Windows `canonicalize` yields a `\\?\` path git rejects; `dunce` strips it.
+dunce = "1"
 # The web panel's two halves: the accept loop sends a request, the GPUI main
 # thread answers on the other end. `async-channel` is already in the tree
 # through gpui, so this adds no download; serde_json is core's, reused for the

@@ -426,7 +426,7 @@ impl Sidebar {
                     .worktree(worktree_id)
                     .map(|worktree| worktree.path.clone());
                 if let Some(path) = path {
-                    cx.reveal_path(&path);
+                    crate::opener::reveal(cx, &path);
                 }
             }
             // The confirmation, not the removal: `worktree remove` on a dirty
