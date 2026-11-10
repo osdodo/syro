@@ -4054,9 +4054,9 @@ fn saved_session(
     })
 }
 
-/// The default session roots, from `$HOME`; `None` when there is no home to read.
+/// The default session roots, from the home directory.
 fn session_roots() -> Option<session::SessionRoots> {
-    std::env::var_os("HOME").map(|home| session::SessionRoots::from_home(Path::new(&home)))
+    Some(session::SessionRoots::from_home(&syro_core::home_dir()))
 }
 
 /// Why this spec cannot be started, if it cannot.
@@ -4065,9 +4065,48 @@ fn with_settings(mut spec: TermSpec, settings: &syro_core::config::TerminalSetti
     spec
 }
 
+/// The names `program` can take on a disk: on Windows an extensionless file is
+/// not executable, so `codex` really means `codex.cmd` or `codex.exe`.
+#[cfg(windows)]
+fn executable_names(program: &str) -> Vec<PathBuf> {
+    let path = Path::new(program);
+    if path.extension().is_some() {
+        return vec![path.to_path_buf()];
+    }
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    exts.split(';')
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(ext.to_ascii_lowercase());
+            PathBuf::from(name)
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn executable_names(program: &str) -> Vec<PathBuf> {
+    vec![PathBuf::from(program)]
+}
+
+/// The executable `program` names on this system, if any: a path is taken as
+/// given, a bare name is looked up on `PATH` under the platform's executable
+/// names.
+fn resolve_program(program: &str) -> Option<PathBuf> {
+    let names = executable_names(program);
+    if program.contains('/') || program.contains('\\') {
+        return names.into_iter().find(|path| path.is_file());
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|path| path.is_file())
+}
+
 /// Whether `program` is on the `PATH` string `path`.
 fn on_path(path: &str, program: &str) -> bool {
-    std::env::split_paths(path).any(|dir| dir.join(program).is_file())
+    let names = executable_names(program);
+    std::env::split_paths(path).any(|dir| names.iter().any(|name| dir.join(name).is_file()))
 }
 
 /// Why this spec cannot be started, if it cannot. Asked against the app's own
@@ -4076,16 +4115,10 @@ fn unrunnable(spec: &TermSpec) -> Option<String> {
     if !spec.cwd.is_dir() {
         return Some(t!("workspace.gone", path = spec.cwd.display()).to_string());
     }
-    let program = &spec.command;
-    let found = if program.contains('/') || program.contains('\\') {
-        std::path::Path::new(program).is_file()
-    } else {
-        std::env::var_os("PATH").is_some_and(|path| on_path(&path.to_string_lossy(), program))
-    };
-    if found {
+    if resolve_program(&spec.command).is_some() {
         None
     } else {
-        Some(t!("workspace.not_runnable", program = program).to_string())
+        Some(t!("workspace.not_runnable", program = spec.command).to_string())
     }
 }
 
@@ -4096,7 +4129,7 @@ fn unrunnable(spec: &TermSpec) -> Option<String> {
 /// knows where an agent a version manager installed went.
 fn startable(spec: TermSpec) -> Result<TermSpec, String> {
     let Some(reason) = unrunnable(&spec) else {
-        return Ok(spec);
+        return Ok(launchable(spec));
     };
     // A `PATH` can only fix half of what `unrunnable` answers — the command. A
     // worktree that is gone is gone.
@@ -4107,10 +4140,38 @@ fn startable(spec: TermSpec) -> Result<TermSpec, String> {
         Some(path) => {
             let mut spec = spec;
             spec.env.push(("PATH".to_string(), path));
-            Ok(spec)
+            Ok(launchable(spec))
         }
         None => Err(reason),
     }
+}
+
+/// The spec as the OS will actually start it: the resolved executable, or for a
+/// Windows npm shim (`codex.cmd`) `cmd.exe /c` — `CreateProcessW` will not run a
+/// batch file itself.
+#[cfg(windows)]
+fn launchable(mut spec: TermSpec) -> TermSpec {
+    let Some(path) = resolve_program(&spec.command) else {
+        return spec;
+    };
+    let batch = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"));
+    if batch {
+        let mut args = vec!["/c".to_string(), path.to_string_lossy().into_owned()];
+        args.append(&mut spec.args);
+        spec.args = args;
+        spec.command = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+    } else {
+        spec.command = path.to_string_lossy().into_owned();
+    }
+    spec
+}
+
+#[cfg(not(windows))]
+fn launchable(spec: TermSpec) -> TermSpec {
+    spec
 }
 
 /// The login shell's `PATH`, when `program` is on it: what to start a command
@@ -4170,6 +4231,9 @@ mod startable_tests {
     #[test]
     fn a_program_is_looked_up_on_the_path_it_is_given() {
         let dir = std::env::temp_dir();
+        #[cfg(windows)]
+        let name = format!("syro-on-path-test-{}.cmd", std::process::id());
+        #[cfg(not(windows))]
         let name = format!("syro-on-path-test-{}", std::process::id());
         let program = dir.join(&name);
         std::fs::write(&program, "").unwrap();

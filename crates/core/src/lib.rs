@@ -22,8 +22,7 @@ use std::path::{Path, PathBuf};
 
 /// `~/.config/syro` — settings and state, rather than macOS's `~/Library`.
 pub fn config_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").expect("HOME is not set");
-    PathBuf::from(home).join(".config").join("syro")
+    home_dir().join(".config").join("syro")
 }
 
 pub fn settings_path() -> PathBuf {
@@ -36,8 +35,7 @@ pub fn state_path() -> PathBuf {
 
 /// Default worktree root: `~/syro/workspaces/<repo>/<name>`.
 pub fn workspaces_root() -> PathBuf {
-    let home = std::env::var_os("HOME").expect("HOME is not set");
-    PathBuf::from(home).join("syro").join("workspaces")
+    home_dir().join("syro").join("workspaces")
 }
 
 /// Why a name cannot be turned into a worktree directory.
@@ -132,8 +130,11 @@ mod tests {
     }
 }
 
-/// The user's home directory: where the add-project form's folder picker starts.
+/// The user's home directory: `$HOME`, else `%USERPROFILE%` on Windows where
+/// `HOME` is usually unset.
 pub fn home_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").expect("HOME is not set");
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .expect("neither HOME nor USERPROFILE is set");
     PathBuf::from(home)
 }

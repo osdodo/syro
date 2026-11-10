@@ -141,10 +141,9 @@ impl SessionRoots {
 }
 
 impl Default for SessionRoots {
-    /// This user's roots, from `$HOME`.
+    /// This user's roots, from the home directory.
     fn default() -> Self {
-        let home = std::env::var_os("HOME").expect("HOME is not set");
-        Self::from_home(Path::new(&home))
+        Self::from_home(&crate::home_dir())
     }
 }
 
