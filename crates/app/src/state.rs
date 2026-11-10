@@ -1215,14 +1215,26 @@ impl AppState {
         if worktree.is_scratch() {
             return;
         }
-        match git::changed_files(&worktree.path, &worktree.base_ref) {
+        let changes = git::changed_files(&worktree.path, &worktree.base_ref);
+        self.set_changes(worktree.id, changes, cx);
+    }
+
+    /// Store a `git::changed_files` answer read elsewhere — off the UI thread,
+    /// by the git panel — as if [`Self::refresh_changes`] had read it.
+    pub fn set_changes(
+        &mut self,
+        worktree_id: WorktreeId,
+        changes: anyhow::Result<Vec<FileChange>>,
+        cx: &mut Context<Self>,
+    ) {
+        match changes {
             Ok(changes) => {
-                self.changes_error.remove(&worktree.id);
-                self.changes.insert(worktree.id, changes);
+                self.changes_error.remove(&worktree_id);
+                self.changes.insert(worktree_id, changes);
             }
             Err(error) => {
-                self.changes.remove(&worktree.id);
-                self.changes_error.insert(worktree.id, format!("{error:#}"));
+                self.changes.remove(&worktree_id);
+                self.changes_error.insert(worktree_id, format!("{error:#}"));
             }
         }
         cx.notify();

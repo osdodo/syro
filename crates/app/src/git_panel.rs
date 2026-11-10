@@ -15,7 +15,7 @@ use rust_i18n::t;
 use syro_core::commit_message;
 use syro_core::event::CoreEvent;
 use syro_core::git::{self, Branch, BranchStatus, ChangeKind, Commit, FileChange};
-use syro_core::model::{AgentStatus, WorktreeId};
+use syro_core::model::{AgentStatus, Worktree, WorktreeId};
 use syro_core::session;
 
 use crate::state::{AppState, diff, editor};
@@ -273,6 +273,19 @@ pub struct GitPanel {
     drawn: Option<Instant>,
     /// Re-reads when the thing it describes moves.
     _events: Subscription,
+    /// The read in flight, off the UI thread.
+    _read: Option<Task<()>>,
+}
+
+/// What one background read of the worktree found.
+struct Read {
+    changes: anyhow::Result<Vec<FileChange>>,
+    stats: BTreeMap<(ChangeKind, String), (u32, u32)>,
+    status: anyhow::Result<BranchStatus>,
+    commits: anyhow::Result<Vec<Commit>>,
+    dirty: bool,
+    remote: Option<String>,
+    branches: Vec<Branch>,
 }
 
 impl GitPanel {
@@ -342,6 +355,7 @@ impl GitPanel {
             _task: None,
             drawn: None,
             _events: events,
+            _read: None,
         }
     }
 
@@ -354,6 +368,8 @@ impl GitPanel {
             self.notice = None;
             self.notice_worktree = None;
         }
+        self.stale = false;
+        self._read = None;
         let Some(worktree) = self
             .state
             .read(cx)
@@ -378,13 +394,45 @@ impl GitPanel {
             cx.notify();
             return;
         };
+        // Seven `git` processes are tens of milliseconds even in a small
+        // repository: read off the UI thread, apply here. A newer read replaces
+        // the task, which drops (cancels) the older one.
+        let path = worktree.path.clone();
+        let base_ref = worktree.base_ref.clone();
+        let read = cx.background_executor().spawn(async move {
+            let changes = git::changed_files(&path, &base_ref);
+            let stats = changes
+                .as_ref()
+                .ok()
+                .and_then(|changes| git::diff_stat(&path, &base_ref, changes).ok())
+                .unwrap_or_default();
+            Read {
+                changes,
+                stats,
+                status: git::branch_status(&path),
+                commits: git::commits(&path, COMMITS),
+                dirty: git::worktree_changes(&path)
+                    .map(|changes| !changes.is_empty())
+                    .unwrap_or(false),
+                remote: git::remote_url(&path),
+                branches: git::branches(&path).unwrap_or_default(),
+            }
+        });
+        self._read = Some(cx.spawn(async move |this, cx| {
+            let read = read.await;
+            this.update(cx, |panel, cx| panel.apply(worktree, read, cx))
+                .ok();
+        }));
+    }
+
+    fn apply(&mut self, worktree: Worktree, read: Read, cx: &mut Context<Self>) {
+        self._read = None;
         // The changes list is the state's, and it is what the diff tab reads:
         // refreshing it here is what keeps the two panels from disagreeing.
-        self.state.update(cx, |state, cx| state.refresh_changes(cx));
-        match (
-            git::branch_status(&worktree.path),
-            git::commits(&worktree.path, COMMITS),
-        ) {
+        self.state.update(cx, |state, cx| {
+            state.set_changes(worktree.id.clone(), read.changes, cx)
+        });
+        match (read.status, read.commits) {
             (Ok(status), Ok(commits)) => {
                 self.status = Some(status);
                 self.commits = commits;
@@ -414,27 +462,23 @@ impl GitPanel {
         {
             self.open = None;
         }
-        self.stats =
-            git::diff_stat(&worktree.path, &worktree.base_ref, &self.changes).unwrap_or_default();
-        self.dirty = git::worktree_changes(&worktree.path)
-            .map(|changes| !changes.is_empty())
-            .unwrap_or(false);
-        self.base_ref = worktree.base_ref.clone();
-        self.root = worktree.path.clone();
-        self.remote = git::remote_url(&worktree.path);
+        self.stats = read.stats;
+        self.dirty = read.dirty;
+        self.base_ref = worktree.base_ref;
+        self.root = worktree.path;
+        self.remote = read.remote;
         // Read with the rest, and not on the click: whether the branch line is a
         // control at all is a fact about the refs, and the line has to be drawn
         // before anyone can click it. A remote-tracking branch is not one to
         // switch to — checking it out would leave a detached HEAD — so only the
         // local ones are kept. A branch git has no ref for yet (a repository
         // initialized but never committed) has none, and yields nothing here.
-        self.branches = git::branches(&worktree.path)
-            .unwrap_or_default()
+        self.branches = read
+            .branches
             .into_iter()
             .filter(|branch| branch.remote.is_none())
             .collect();
         self.read = true;
-        self.stale = false;
         cx.notify();
     }
 
@@ -2134,7 +2178,7 @@ impl Render for GitPanel {
         // A panel is only rendered while it is the sidebar's selected one, so
         // this frame is when git is asked — the first look, or the first look
         // since something moved under it.
-        if !self.read || self.stale {
+        if (!self.read || self.stale) && self._read.is_none() {
             self.refresh(cx);
         }
         let colors = Theme::global(cx).tokens.colors;
