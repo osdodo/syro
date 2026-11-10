@@ -4,7 +4,7 @@
   <p><strong>在多个 git worktree 中并行运行 CLI 编程代理的原生桌面工作区。</strong></p>
   <p>
     <a href="https://github.com/osdodo/syro/releases/latest"><img src="https://img.shields.io/github/v/release/osdodo/syro?label=release" alt="Latest release"></a>
-    <img src="https://img.shields.io/badge/platform-macOS%2015%2B-lightgrey" alt="Platform: macOS 15+">
+    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platform: macOS | Windows | Linux">
     <img src="https://img.shields.io/badge/built%20with-Rust-orange" alt="Built with Rust">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
   </p>
@@ -44,8 +44,14 @@ brew install --cask osdodo/syro/syro
 
 ### 直接下载
 
-从[最新版本](https://github.com/osdodo/syro/releases/latest)下载适合你的 Mac 的 `.dmg`
-（Apple Silicon 选 `arm64`，Intel 选 `x86_64`），然后将 **syro** 拖入 **应用程序** 文件夹。
+从[最新版本](https://github.com/osdodo/syro/releases/latest)下载对应平台的安装包：
+
+| 平台 | 文件 | 安装方式 |
+| --- | --- | --- |
+| macOS | `syro-<version>-macos-arm64.dmg`（Apple Silicon）/ `-x86_64.dmg`（Intel） | 将 **syro** 拖入 **应用程序** 文件夹 |
+| Windows | `syro-<version>-windows-x64.exe` / `-arm64.exe` | 运行安装程序 |
+| Debian / Ubuntu | `syro_<version>_amd64.deb` / `_arm64.deb` | `sudo apt install ./syro_*.deb` |
+| Fedora / RHEL | `syro-<version>-1.x86_64.rpm` / `.aarch64.rpm` | `sudo dnf install ./syro-*.rpm` |
 
 > [!NOTE]
 > Syro 目前尚未经过 Apple 公证。如果首次启动时 macOS 拒绝打开，请运行：
@@ -56,7 +62,7 @@ brew install --cask osdodo/syro/syro
 
 ### 系统要求
 
-- macOS 15（Sequoia）或更高版本
+- macOS 15（Sequoia）或更高版本、Windows 10 及以上，或支持 Vulkan 的 Linux 桌面（X11 或 Wayland）
 - `git`
 - 需要运行的 CLI 代理（`claude`、`codex`、`gemini` 等）已在 `PATH` 中
 
@@ -90,7 +96,8 @@ Hook 可读取环境变量 `SYRO_WORKTREE_PATH`、`SYRO_WORKSPACE_NAME`，并视
 
 ## 从源码构建
 
-需要较新的稳定版 [Rust](https://rustup.rs) 工具链（edition 2024）。
+需要较新的稳定版 [Rust](https://rustup.rs) 工具链（edition 2024）。Linux 上需先安装
+[`release.yml`](.github/workflows/release.yml) 中列出的系统依赖。
 
 ```sh
 git clone https://github.com/osdodo/syro.git

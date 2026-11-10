@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=syro
+Comment=Multi-repo worktrees with a terminal per agent
+Exec=syro
+Icon=syro
+Terminal=false
+Type=Application
+Categories=Development;

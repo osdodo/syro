@@ -4,7 +4,7 @@
   <p><strong>A native desktop workspace for running CLI coding agents across git worktrees.</strong></p>
   <p>
     <a href="https://github.com/osdodo/syro/releases/latest"><img src="https://img.shields.io/github/v/release/osdodo/syro?label=release" alt="Latest release"></a>
-    <img src="https://img.shields.io/badge/platform-macOS%2015%2B-lightgrey" alt="Platform: macOS 15+">
+    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platform: macOS | Windows | Linux">
     <img src="https://img.shields.io/badge/built%20with-Rust-orange" alt="Built with Rust">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
   </p>
@@ -45,9 +45,15 @@ brew install --cask osdodo/syro/syro
 
 ### Direct download
 
-Download the `.dmg` for your Mac (`arm64` for Apple Silicon, `x86_64` for Intel)
-from the [latest release](https://github.com/osdodo/syro/releases/latest) and drag
-**syro** into **Applications**.
+Get the package for your platform from the
+[latest release](https://github.com/osdodo/syro/releases/latest):
+
+| Platform | File | Install |
+| --- | --- | --- |
+| macOS | `syro-<version>-macos-arm64.dmg` (Apple Silicon) / `-x86_64.dmg` (Intel) | Drag **syro** into **Applications** |
+| Windows | `syro-<version>-windows-x64.exe` / `-arm64.exe` | Run the installer |
+| Debian / Ubuntu | `syro_<version>_amd64.deb` / `_arm64.deb` | `sudo apt install ./syro_*.deb` |
+| Fedora / RHEL | `syro-<version>-1.x86_64.rpm` / `.aarch64.rpm` | `sudo dnf install ./syro-*.rpm` |
 
 > [!NOTE]
 > Syro is not notarized yet. If macOS refuses to open it on first launch, run:
@@ -58,7 +64,7 @@ from the [latest release](https://github.com/osdodo/syro/releases/latest) and dr
 
 ### Requirements
 
-- macOS 15 (Sequoia) or later
+- macOS 15 (Sequoia) or later, Windows 10+, or a Linux desktop (X11 or Wayland) with Vulkan
 - `git`
 - The CLI agents you want to run (`claude`, `codex`, `gemini`, ...) on your `PATH`
 
@@ -94,7 +100,9 @@ event, `SYRO_AGENT_ID` or `SYRO_ROOT_PATH`.
 
 ## Building from source
 
-Requires a recent stable [Rust](https://rustup.rs) toolchain (edition 2024).
+Requires a recent stable [Rust](https://rustup.rs) toolchain (edition 2024). On
+Linux, install the system libraries listed in
+[`release.yml`](.github/workflows/release.yml) first.
 
 ```sh
 git clone https://github.com/osdodo/syro.git

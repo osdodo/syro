@@ -1,0 +1,48 @@
+name: syro
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: devel
+priority: optional
+maintainer: osdodo
+vendor: osdodo
+homepage: https://github.com/osdodo/syro
+license: MIT
+description: Multi-repo worktrees with a terminal per agent.
+contents:
+  - src: target/release/syro
+    dst: /usr/bin/syro
+    file_info:
+      mode: 0755
+  # pixmaps takes any size; the logo is 1024px, which hicolor has no slot for.
+  - src: crates/app/assets/logo.png
+    dst: /usr/share/pixmaps/syro.png
+  - src: packaging/syro.desktop
+    dst: /usr/share/applications/syro.desktop
+overrides:
+  deb:
+    depends:
+      - libc6
+    recommends:
+      - git
+      - libfontconfig1
+      - libfreetype6
+      - libxkbcommon0
+      - libwayland-client0
+      - libx11-6
+      - libxcb1
+      - libssl3 | libssl3t64
+      - libvulkan1
+  rpm:
+    depends:
+      - glibc
+    recommends:
+      - git
+      - fontconfig
+      - freetype
+      - libxkbcommon
+      - libwayland-client
+      - libX11
+      - libxcb
+      - openssl-libs
+      - vulkan-loader
