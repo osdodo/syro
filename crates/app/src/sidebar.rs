@@ -1626,8 +1626,7 @@ impl Sidebar {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
+                    .truncate()
                     .text_xs()
                     .child(t!("palette.search_all_hint")),
             )
