@@ -650,8 +650,8 @@ add_project:
     en: Host
     zh-CN: 主机
   local_mac:
-    en: Local Mac
-    zh-CN: 本机 Mac
+    en: This computer
+    zh-CN: 本机
   other_ways:
     en: Other ways to add
     zh-CN: 其他添加方式
@@ -757,8 +757,8 @@ new_worktree:
     en: "%{name} is the repository's own checkout, so git will not remove it. Removing the project takes it out of the sidebar and leaves its files and the branch %{branch} alone."
     zh-CN: "%{name} 是仓库自身的检出目录，git 不会移除它。移除项目只会把它从侧边栏移除，其文件和分支 %{branch} 保持不变。"
   runs_on:
-    en: "Local Mac · %{target}"
-    zh-CN: "本机 Mac · %{target}"
+    en: "This computer · %{target}"
+    zh-CN: "本机 · %{target}"
   branch:
     en: "branch %{branch}"
     zh-CN: "分支 %{branch}"
@@ -939,8 +939,8 @@ settings:
     en: Scan with a phone signed in to the same Tailscale account to open the panel from anywhere.
     zh-CN: 手机登录同一个 Tailscale 账号后扫码，即可在任何网络下打开网页面板。
   web_remote_none:
-    en: Tailscale is not running. Install it and sign in with the same account on this Mac and your phone to open the panel from anywhere.
-    zh-CN: 未检测到 Tailscale。在这台 Mac 和手机上安装并登录同一账号后，即可在外网访问。
+    en: Tailscale is not running. Install it and sign in with the same account on this computer and your phone to open the panel from anywhere.
+    zh-CN: 未检测到 Tailscale。在这台电脑和手机上安装并登录同一账号后，即可在外网访问。
   web_remote_get:
     en: Get Tailscale
     zh-CN: 获取 Tailscale
