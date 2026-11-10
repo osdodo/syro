@@ -12,15 +12,15 @@ pub const MAX_TEXT_BYTES: u64 = 5 * 1024 * 1024;
 /// other language, and resolves through the same registry.
 pub const DIFF_LANGUAGE: &str = "diff";
 
-/// Point the platform's file manager at a path. `open -R` is macOS's "Reveal in
-/// Finder", and opening a path *with the desktop* rather than with this app's
-/// own editor is the one thing this registry has to say about a path — which is
-/// why both the file tree and the sidebar's worktree menu ask it.
-pub fn reveal(path: &Path) {
-    let mut command = std::process::Command::new("open");
-    command.arg("-R").arg(path);
-    if let Err(error) = command.spawn() {
-        tracing::warn!(%error, path = %path.display(), "reveal failed");
+/// The menu label for `App::reveal_path`, named after this platform's file
+/// manager — both the file tree and the sidebar's worktree menu show it.
+pub fn reveal_label() -> String {
+    if cfg!(target_os = "macos") {
+        t!("opener.reveal_finder").to_string()
+    } else if cfg!(target_os = "windows") {
+        t!("opener.reveal_explorer").to_string()
+    } else {
+        t!("opener.reveal_file_manager").to_string()
     }
 }
 

@@ -78,7 +78,7 @@ impl MenuItem {
             MenuItem::Rename => t!("tree.rename"),
             MenuItem::CopyName => t!("tree.copy_name"),
             MenuItem::Delete => t!("tree.delete"),
-            MenuItem::Reveal => t!("tree.reveal"),
+            MenuItem::Reveal => return crate::opener::reveal_label(),
         }
         .to_string()
     }
@@ -1032,7 +1032,7 @@ impl FileTreeView {
             MenuItem::Delete => self.ask_delete(menu.path.clone(), cx),
             MenuItem::Reveal => {
                 self.menu = None;
-                crate::opener::reveal(&menu.path);
+                cx.reveal_path(&menu.path);
             }
         }
     }

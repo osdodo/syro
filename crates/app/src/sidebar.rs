@@ -192,7 +192,7 @@ impl MenuItem {
             Self::HideAsleep => t!("sidebar.hide_asleep"),
             Self::NewWorktree => t!("sidebar.new_worktree"),
             Self::SharedPaths => t!("sidebar.shared_paths"),
-            Self::Reveal => t!("sidebar.reveal_worktree"),
+            Self::Reveal => return crate::opener::reveal_label(),
             Self::HideRepo => t!("sidebar.hide_repo"),
             // The repository's own checkout is the project itself, and the
             // dialog it opens asks the project question — so the entry says that
@@ -423,7 +423,7 @@ impl Sidebar {
                     .worktree(worktree_id)
                     .map(|worktree| worktree.path.clone());
                 if let Some(path) = path {
-                    crate::opener::reveal(&path);
+                    cx.reveal_path(&path);
                 }
             }
             // The confirmation, not the removal: `worktree remove` on a dirty

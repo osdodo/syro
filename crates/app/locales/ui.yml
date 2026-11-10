@@ -234,9 +234,6 @@ tree:
   delete:
     en: Delete
     zh-CN: 删除
-  reveal:
-    en: Reveal in Finder
-    zh-CN: 在访达中显示
   new_file_name:
     en: New file name
     zh-CN: 新文件名
@@ -305,9 +302,6 @@ sidebar:
   shared_paths:
     en: Worktree shared paths
     zh-CN: 工作树共享路径
-  reveal_worktree:
-    en: Reveal in Finder
-    zh-CN: 在访达中显示
   remove_worktree:
     en: Remove worktree
     zh-CN: 移除工作树
@@ -1061,6 +1055,15 @@ opener:
   not_text:
     en: "%{name} is not text"
     zh-CN: "%{name} 不是文本文件"
+  reveal_finder:
+    en: Reveal in Finder
+    zh-CN: 在访达中显示
+  reveal_explorer:
+    en: Show in Explorer
+    zh-CN: 在资源管理器中显示
+  reveal_file_manager:
+    en: Show in File Manager
+    zh-CN: 在文件管理器中显示
 
 restore:
   terminal_in:
