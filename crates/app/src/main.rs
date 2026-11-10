@@ -12146,7 +12146,7 @@ mod window_tests {
                 cx,
                 &fixture,
                 "settings-scrollback-plus".to_string(),
-                move |cx| cx.update(|cx| state.read(cx).settings().terminal.scrollback) == 6_000
+                move |cx| cx.update(|cx| state.read(cx).settings().terminal.scrollback) == 3_000
             ),
             "the form's change did not reach the state: {}",
             cx.update(|cx| fixture.state.read(cx).settings().terminal.scrollback)

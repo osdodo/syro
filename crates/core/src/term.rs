@@ -84,7 +84,8 @@ impl TermSpec {
             cwd: cwd.into(),
             env: Vec::new(),
             size,
-            scrollback: 5000,
+            // The same as `config::default_scrollback`, and for the same memory reason.
+            scrollback: 2000,
         }
     }
 

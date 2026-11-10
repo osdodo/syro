@@ -17,7 +17,9 @@ pub struct TerminalSettings {
 }
 
 fn default_scrollback() -> u32 {
-    5000
+    // Each line is `columns x 24` bytes: 2000 lines of 200 columns is ~10 MB
+    // per terminal, where 5000 was ~24 MB.
+    2000
 }
 
 fn default_background_opacity() -> f32 {
@@ -54,7 +56,7 @@ fn default_font_size() -> f32 {
 impl Default for TerminalSettings {
     fn default() -> Self {
         Self {
-            scrollback: 5000,
+            scrollback: default_scrollback(),
             font_size: 13.0,
         }
     }
@@ -249,7 +251,7 @@ mod tests {
     #[test]
     fn defaults() {
         let s = Settings::default();
-        assert_eq!(s.terminal.scrollback, 5000);
+        assert_eq!(s.terminal.scrollback, 2000);
         assert_eq!(s.terminal.font_size, 13.0);
         // A window with no transparency in the file is a solid window.
         assert_eq!(s.background_opacity, 1.0);
@@ -311,7 +313,7 @@ mod tests {
     fn parses_sample_toml() {
         let text = r#"
 [terminal]
-scrollback = 2000
+scrollback = 3000
 
 [[agent]]
 id = "claude"
@@ -330,7 +332,7 @@ run = "pnpm install"
 "cmd-t" = "terminal::New"
 "#;
         let s: Settings = toml::from_str(text).unwrap();
-        assert_eq!(s.terminal.scrollback, 2000);
+        assert_eq!(s.terminal.scrollback, 3000);
         assert_eq!(s.computer_awake, ComputerAwakeMode::Off);
         // font_size falls back to the per-field default.
         assert_eq!(s.terminal.font_size, 13.0);
@@ -354,7 +356,7 @@ run = "pnpm install"
         let path = dir.join("settings.toml");
 
         let mut settings = Settings::default();
-        settings.terminal.scrollback = 2_000;
+        settings.terminal.scrollback = 3_000;
         settings.terminal.font_size = 15.0;
         settings.agents = vec![AgentSpec {
             id: "claude".into(),
