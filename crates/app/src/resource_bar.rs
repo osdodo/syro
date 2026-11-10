@@ -182,6 +182,9 @@ pub struct ResourceBar {
     /// The usage sweep in flight. One at a time: two readers would fold into two
     /// caches and the slower one would win.
     _sweep: Option<Task<()>>,
+    /// The `ps` in flight. A newer one replaces it, which drops (cancels) the
+    /// older: its pids are for a terminal list that has since changed.
+    _sample: Option<Task<()>>,
     /// Held while the panel is open, so Escape reaches the scrim: a view's keys only
     /// arrive when something of the view's has the window's focus. `None` in a bar
     /// built outside a context, which the logic tests do.
@@ -226,6 +229,7 @@ impl ResourceBar {
             swept_at: None,
             _poll: poll,
             _sweep: None,
+            _sample: None,
             focus: Some(cx.focus_handle()),
         };
         bar.refresh(cx);
@@ -299,18 +303,29 @@ impl ResourceBar {
             .iter()
             .map(|terminal| terminal.pid.unwrap_or(u32::MAX))
             .collect();
-        match ProcessTable::sample() {
-            Ok(table) => {
-                let snapshot = ResourceSnapshot::of(&table, std::process::id(), &pids);
-                self.snapshot = Some(snapshot);
-                self.error = None;
-            }
-            Err(error) => {
-                self.error = Some(format!("{error}"));
-                self.snapshot = None;
-            }
-        }
-        cx.notify();
+        // `ps` is 10-20 ms with a thousand processes: a dropped frame if it ran here.
+        let sample = cx.background_executor().spawn(async move {
+            ProcessTable::sample()
+                .map(|table| ResourceSnapshot::of(&table, std::process::id(), &pids))
+        });
+        self._sample = Some(cx.spawn(async move |this, cx| {
+            let sample = sample.await;
+            this.update(cx, |bar, cx| {
+                bar._sample = None;
+                match sample {
+                    Ok(snapshot) => {
+                        bar.snapshot = Some(snapshot);
+                        bar.error = None;
+                    }
+                    Err(error) => {
+                        bar.error = Some(format!("{error}"));
+                        bar.snapshot = None;
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// What one worktree's terminals cost, and the terminals that make it up, as
@@ -1197,6 +1212,7 @@ mod tests {
             swept_at: None,
             _poll: Task::ready(()),
             _sweep: None,
+            _sample: None,
             focus: None,
         }
     }
