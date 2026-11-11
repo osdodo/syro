@@ -449,19 +449,34 @@ impl Sidebar {
                 let Some(repo_id) = menu.target.repo_id() else {
                     return;
                 };
-                let state = self.state.read(cx);
-                let own = state
-                    .repos()
-                    .iter()
-                    .find(|repo| repo.id == repo_id)
-                    .and_then(|repo| {
-                        state
-                            .worktrees_of(repo_id)
-                            .find(|worktree| worktree.path == repo.path)
-                            .map(|worktree| worktree.id.clone())
-                    });
-                if let Some(worktree_id) = own {
-                    window.dispatch_action(Box::new(worktree::AskRemove { worktree_id }), cx);
+                let own = {
+                    let state = self.state.read(cx);
+                    state
+                        .repos()
+                        .iter()
+                        .find(|repo| repo.id == repo_id)
+                        .and_then(|repo| {
+                            state
+                                .worktrees_of(repo_id)
+                                .find(|worktree| worktree.path == repo.path)
+                                .map(|worktree| worktree.id.clone())
+                        })
+                };
+                match own {
+                    Some(worktree_id) => {
+                        window.dispatch_action(Box::new(worktree::AskRemove { worktree_id }), cx)
+                    }
+                    // The project's own checkout is missing from the list — git
+                    // no longer sees the directory as a repository. Removing the
+                    // project still has to work, and it is the same answer the
+                    // dialog would have given: unregister it, touch nothing on
+                    // disk.
+                    None => window.dispatch_action(
+                        Box::new(crate::state::repo::Remove {
+                            repo_id: repo_id.to_string(),
+                        }),
+                        cx,
+                    ),
                 }
             }
         }
@@ -1735,7 +1750,7 @@ mod window_tests {
         WindowOptions, div, px, size,
     };
     use syro_core::config::Settings;
-    use syro_core::model::{AgentSpec, AgentStatus, AgentStatusRule, HookSpec, State};
+    use syro_core::model::{AgentSpec, AgentStatus, AgentStatusRule, HookSpec, Repo, State};
     use syro_core::store::Store;
 
     use super::MAX_WIDTH;
@@ -2853,6 +2868,60 @@ mod window_tests {
             draw_until(cx, &fixture, |cx| found(cx, &fixture, &row)),
             "the hidden project never came back"
         );
+    }
+
+    /// A project whose own checkout git cannot list any more — the `.git` was
+    /// removed, or the directory was moved into another repository — still has to
+    /// be removable from its heading's menu. The row-based road needs a worktree
+    /// that matches the repository, and there is none; the project removal does
+    /// not need one and touches nothing on disk.
+    #[gpui_kit::test]
+    fn a_project_with_no_checkout_row_can_still_be_removed(cx: &mut TestAppContext) {
+        let fixture = open_from(cx, "sidebar-remove-orphan", |saved| {
+            let root = saved.repos[0].path.clone();
+            let orphan_path = root.join("orphan-project");
+            std::fs::create_dir_all(&orphan_path).unwrap();
+            saved.repos.push(Repo {
+                id: format!("repo:{}", orphan_path.display()),
+                name: "orphan-project".to_string(),
+                path: orphan_path,
+                shared_paths: Vec::new(),
+            });
+        });
+        let (repo, path) = cx.update(|cx| {
+            let repo = fixture
+                .state
+                .read(cx)
+                .repos()
+                .iter()
+                .find(|repo| repo.name == "orphan-project")
+                .expect("the saved project")
+                .clone();
+            let path = repo.path.clone();
+            (repo, path)
+        });
+        assert!(
+            cx.update(|cx| fixture.state.read(cx).worktrees_of(&repo.id).count() == 0),
+            "the project still owns rows it cannot open"
+        );
+
+        click(cx, &fixture, &format!("repo-menu-{}", repo.id));
+        assert!(
+            draw_until(cx, &fixture, |cx| found(cx, &fixture, "sidebar-menu")),
+            "the heading's menu did not open"
+        );
+        click(cx, &fixture, "repo-menu-delete");
+
+        assert!(
+            draw_until(cx, &fixture, |cx| cx.update(|cx| fixture
+                .state
+                .read(cx)
+                .repos()
+                .iter()
+                .all(|repo| repo.name != "orphan-project"))),
+            "the project is still in the sidebar"
+        );
+        assert!(path.is_dir(), "removing the project took its directory");
     }
 
     /// The sleep filter carries a right-hand check only while enabled; the

@@ -1018,6 +1018,9 @@ state:
   own_checkout:
     en: that is the repository's own checkout
     zh-CN: 这是仓库自身的检出目录
+  not_a_repo:
+    en: "%{path} is not a repository of its own — git reads it as part of %{root}"
+    zh-CN: "%{path} 不是独立仓库 —— git 将其视为 %{root} 的一部分"
   hook_start_failed:
     en: "%{run} could not be started: %{error}"
     zh-CN: "无法启动 %{run}：%{error}"

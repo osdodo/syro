@@ -1282,6 +1282,33 @@ impl AppState {
         let Some(repo) = self.repos.iter().find(|r| r.id == repo_id).cloned() else {
             return;
         };
+        // A project directory that is no longer a checkout of its own — its
+        // `.git` went away, or it was moved under another repository — makes
+        // every git call read the enclosing checkout instead. Those worktrees
+        // are not this project's: a row would open the parent directory, and a
+        // removal would be about the wrong checkout. Say so rather than adopt
+        // them.
+        let expected = repo
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| repo.path.clone());
+        if let Ok(root) = git::repo_root(&repo.path) {
+            let root = root.canonicalize().unwrap_or(root);
+            if root != expected {
+                self.worktrees.retain(|w| w.repo_id != repo_id);
+                self.errors.insert(
+                    repo_id.to_string(),
+                    t!(
+                        "state.not_a_repo",
+                        path = repo.path.display(),
+                        root = root.display()
+                    )
+                    .to_string(),
+                );
+                self.ensure_active_exists(cx);
+                return;
+            }
+        }
         match git::list_worktrees(&repo.path) {
             Ok(listed) => {
                 self.errors.remove(repo_id);
@@ -1734,7 +1761,7 @@ mod tests {
 
     use gpui_kit::{AppContext as _, TestAppContext};
     use syro_core::config::{ComputerAwakeMode, Settings};
-    use syro_core::model::{AgentStatus, HookSpec, State, TabLayout, TabSpec, Worktree};
+    use syro_core::model::{AgentStatus, HookSpec, Repo, State, TabLayout, TabSpec, Worktree};
     use syro_core::store::Store;
 
     use super::{AppState, branch_or_name, wants_awake, wants_notification};
@@ -2163,6 +2190,55 @@ mod tests {
             assert!(!state.worktrees_of(&repo.id).any(|w| w.path == removed));
         });
         assert_eq!(store.load().unwrap().tabs, vec![TabLayout::Pane(tab)]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[gpui_kit::test]
+    fn a_repo_that_is_no_longer_its_own_checkout_does_not_adopt_the_parents_worktrees(
+        cx: &mut TestAppContext,
+    ) {
+        let (dir, repo, _) = scratch_repo("state-orphan");
+        let (state_path, store_dir) = temp_store("state-orphan");
+        // A project saved before it lost its `.git` (or before it was moved into
+        // another checkout): git now answers with the enclosing repository.
+        let orphan_path = repo.path.join("orphan");
+        std::fs::create_dir_all(&orphan_path).unwrap();
+        let orphan = Repo {
+            id: format!("repo:{}", orphan_path.display()),
+            name: "orphan".to_string(),
+            path: orphan_path,
+            shared_paths: Vec::new(),
+        };
+        Store::new(state_path.clone())
+            .save(&State {
+                repos: vec![repo.clone(), orphan.clone()],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let state = cx.update(|cx| {
+            cx.new(|cx| AppState::open(Store::new(state_path), dir.join("workspaces"), cx))
+        });
+
+        cx.update(|cx| {
+            let state = state.read(cx);
+            // Not one row of the parent's checkout is this project's. Without
+            // the guard the rows would open the parent directory, and removing
+            // one would act on the wrong checkout.
+            assert_eq!(
+                state.worktrees_of(&orphan.id).count(),
+                0,
+                "the orphaned project adopted the enclosing repository's worktrees"
+            );
+            assert!(
+                state.error_for(&orphan.id).is_some(),
+                "the sidebar is not told why the project has no rows"
+            );
+            // And the enclosing repository is untouched.
+            assert!(state.worktrees_of(&repo.id).count() >= 1);
+        });
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&store_dir);
