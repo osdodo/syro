@@ -74,7 +74,7 @@ function panel(locale = "en", options = {}) {
     setInterval() {}, setTimeout() {}, confirm: () => false,
   };
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  runInNewContext(script.replace('"__syro_locale__"', JSON.stringify(locale)), context);
+  runInNewContext(script.replace('"__syro_locale__"', JSON.stringify(locale)) + ";globalThis.STRINGS = STRINGS;", context);
   return { ...context, elements, stream: streams[0], streams, instances, pendingScripts, listeners };
 }
 
@@ -246,4 +246,19 @@ test("a dropped connection greys the list out until the next state", () => {
   stream.state({ data: JSON.stringify({ worktrees: [] }) });
   assert.equal(elements.workspace.classList.contains("stale"), false);
   assert.equal(elements.error.hidden, true);
+});
+
+test("every locale has every string English has", () => {
+  const { STRINGS } = panel();
+  const shape = (strings) => Object.entries(strings).flatMap(([key, value]) =>
+    value && typeof value === "object" ? Object.keys(value).map((sub) => `${key}.${sub}`) : [key]).sort();
+  for (const [locale, strings] of Object.entries(STRINGS)) assert.deepEqual(shape(strings), shape(STRINGS.en), locale);
+});
+
+test("the page speaks the app's locale, and maps a browser's regional tag onto a shipped one", () => {
+  for (const [locale, lang, title] of [["ja", "ja", "ワークスペースの概要"], ["zh-TW", "zh-TW", "工作區總覽"], ["de-AT", "de", "Arbeitsbereich im Überblick"], ["zh-SG", "zh-CN", "工作区总览"], ["xx", "en", "Workspace overview"]]) {
+    const { document, elements } = panel(locale);
+    assert.equal(document.documentElement.lang, lang);
+    assert.equal(elements["page-title"].textContent, title);
+  }
 });

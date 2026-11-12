@@ -471,8 +471,12 @@ impl SearchableListItem for LanguageItem {
     fn title(&self) -> SharedString {
         match self.0.as_deref() {
             None => t!("settings.language_system").to_string().into(),
-            Some(i18n::EN) => SharedString::from("English"),
-            _ => SharedString::from("简体中文"),
+            Some(locale) => i18n::LANGUAGES
+                .iter()
+                .find(|(l, _)| *l == locale)
+                .map_or(locale, |(_, name)| name)
+                .to_string()
+                .into(),
         }
     }
 
@@ -620,11 +624,13 @@ impl SettingsView {
             this.blur = (radius.round().max(0.) as u32).min(MAX_BLUR);
             this.slide(done, cx);
         });
-        let items = vec![
-            LanguageItem(None),
-            LanguageItem(Some(i18n::EN.to_string())),
-            LanguageItem(Some(i18n::ZH.to_string())),
-        ];
+        let items: Vec<_> = std::iter::once(LanguageItem(None))
+            .chain(
+                i18n::LANGUAGES
+                    .iter()
+                    .map(|(locale, _)| LanguageItem(Some(locale.to_string()))),
+            )
+            .collect();
         let selected = items
             .iter()
             .position(|item| item.0 == language)

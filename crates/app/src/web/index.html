@@ -284,10 +284,14 @@
 // The server has turned `?token=` into a cookie by now; the token must not stay
 // in the address bar, the history or a screenshot.
 if (/[?&]token=/.test(location.search)) history.replaceState(history.state, "", location.pathname);
-const ZH = String("__syro_locale__" || navigator.language || "")
-  .toLowerCase()
-  .startsWith("zh");
-const T = ZH ? {
+const LOCALE = String("__syro_locale__" || navigator.language || "");
+// The key buttons' names: only Enter, Backspace and Space are words.
+const keyNames = (enter, backspace, space) => ({
+  enter, esc: "Esc", tab: "Tab", backspace, space,
+  up: "↑", down: "↓", left: "←", right: "→", "ctrl-c": "Ctrl-C", "ctrl-d": "Ctrl-D",
+});
+const STRINGS = {
+"zh-CN": {
   poll: "实时连接", updated: "更新于", notUpdated: "连接中断，正在重连", connecting: "正在连接…",
   title: "工作区总览",
   worktrees: "工作树", working: "运行中", attention: "需要关注", tools: "快捷操作",
@@ -305,11 +309,9 @@ const T = ZH ? {
   new: "新建工作树", repo: "仓库（名字或 id）", name: "工作树名字", create: "创建",
   newTerminal: "新建终端", worktree: "工作树", agent: "Agent", start: "启动",
   shell: "普通 shell",
-  keys: {
-    enter: "回车", esc: "Esc", tab: "Tab", backspace: "退格", space: "空格",
-    up: "↑", down: "↓", left: "←", right: "→", "ctrl-c": "Ctrl-C", "ctrl-d": "Ctrl-D",
-  },
-} : {
+  keys: keyNames("回车", "退格", "空格"),
+},
+en: {
   poll: "Live connection", updated: "Updated", notUpdated: "Disconnected · Reconnecting", connecting: "Connecting…",
   title: "Workspace overview",
   worktrees: "Worktrees", working: "Running", attention: "Needs attention", tools: "Quick actions",
@@ -327,11 +329,174 @@ const T = ZH ? {
   new: "New worktree", repo: "Repository (name or id)", name: "Worktree name", create: "Create",
   newTerminal: "New terminal", worktree: "Worktree", agent: "Agent", start: "Start",
   shell: "Plain shell",
-  keys: {
-    enter: "Enter", esc: "Esc", tab: "Tab", backspace: "Backspace", space: "Space",
-    up: "↑", down: "↓", left: "←", right: "→", "ctrl-c": "Ctrl-C", "ctrl-d": "Ctrl-D",
-  },
+  keys: keyNames("Enter", "Backspace", "Space"),
+},
+"zh-TW": {
+  poll: "即時連線", updated: "更新於", notUpdated: "連線中斷，正在重新連線", connecting: "正在連線…",
+  title: "工作區總覽",
+  worktrees: "工作樹", working: "執行中", attention: "需要關注", tools: "快速操作",
+  listCaption: "所有儲存庫 · 即時同步", loading: "正在載入工作區…",
+  noWorktrees: "還沒有工作樹", emptyHint: "建立一個工作樹，開始你的下一個任務。",
+  noTerminals: "沒有終端機，點擊 + 啟動。",
+  statuses: { working: "執行中", idle: "閒置", permission: "等待授權", stalled: "可能卡住", none: "未執行" },
+  input: "向終端機傳送文字…", repoPlaceholder: "選擇或輸入儲存庫", namePlaceholder: "例如：fix-login",
+  open: "進入", remove: "刪除",
+  removeAsk: (name) => "刪除工作樹「" + name + "」？它的 git 工作樹目錄會一併從磁碟移除。",
+  stale: "連線中斷，以下為斷線前的資料。", shellName: "終端機",
+  copy: "複製工作階段指令", copied: "已複製",
+  close: "‹ 返回", send: "傳送",
+  full: "完整終端機", simple: "簡潔檢視", ended: "[終端機已結束]",
+  new: "新增工作樹", repo: "儲存庫（名稱或 id）", name: "工作樹名稱", create: "建立",
+  newTerminal: "新增終端機", worktree: "工作樹", agent: "Agent", start: "啟動",
+  shell: "一般 shell",
+  keys: keyNames("Enter", "退格", "空白"),
+},
+ja: {
+  poll: "ライブ接続", updated: "更新", notUpdated: "切断 · 再接続中", connecting: "接続中…",
+  title: "ワークスペースの概要",
+  worktrees: "ワークツリー", working: "実行中", attention: "要対応", tools: "クイック操作",
+  listCaption: "すべてのリポジトリ · ライブ更新", loading: "ワークスペースを読み込み中…",
+  noWorktrees: "ワークツリーはまだありません", emptyHint: "ワークツリーを作成して次のタスクを始めましょう。",
+  noTerminals: "ターミナルはありません。+ で開始します。",
+  statuses: { working: "実行中", idle: "待機中", permission: "承認待ち", stalled: "停滞？", none: "未実行" },
+  input: "ターミナルにテキストを送信…", repoPlaceholder: "リポジトリを選択または入力", namePlaceholder: "例: fix-login",
+  open: "開く", remove: "削除",
+  removeAsk: (name) => "ワークツリー「" + name + "」を削除しますか？git ワークツリーのディレクトリはディスクから削除されます。",
+  stale: "切断されました。表示内容は切断前のものです。", shellName: "シェル",
+  copy: "再開コマンドをコピー", copied: "コピーしました",
+  close: "‹ 戻る", send: "送信",
+  full: "フルターミナル", simple: "シンプル表示", ended: "[ターミナルは終了しました]",
+  new: "新しいワークツリー", repo: "リポジトリ（名前または id）", name: "ワークツリー名", create: "作成",
+  newTerminal: "新しいターミナル", worktree: "ワークツリー", agent: "エージェント", start: "開始",
+  shell: "シェルのみ",
+  keys: keyNames("Enter", "Backspace", "Space"),
+},
+ko: {
+  poll: "실시간 연결", updated: "업데이트", notUpdated: "연결 끊김 · 다시 연결 중", connecting: "연결 중…",
+  title: "작업 공간 개요",
+  worktrees: "워크트리", working: "실행 중", attention: "확인 필요", tools: "빠른 작업",
+  listCaption: "모든 저장소 · 실시간 업데이트", loading: "작업 공간 불러오는 중…",
+  noWorktrees: "아직 워크트리가 없습니다", emptyHint: "워크트리를 만들어 다음 작업을 시작하세요.",
+  noTerminals: "터미널이 없습니다. +를 눌러 시작하세요.",
+  statuses: { working: "실행 중", idle: "유휴", permission: "승인 대기", stalled: "멈춤?", none: "실행 안 함" },
+  input: "터미널에 텍스트 보내기…", repoPlaceholder: "저장소 선택 또는 입력", namePlaceholder: "예: fix-login",
+  open: "열기", remove: "제거",
+  removeAsk: (name) => "워크트리 ‘" + name + "’을(를) 제거할까요? git 워크트리 디렉터리가 디스크에서 삭제됩니다.",
+  stale: "연결이 끊어졌습니다. 표시된 내용은 끊기기 전 것입니다.", shellName: "셸",
+  copy: "재개 명령 복사", copied: "복사됨",
+  close: "‹ 뒤로", send: "보내기",
+  full: "전체 터미널", simple: "간단히 보기", ended: "[터미널이 종료됨]",
+  new: "새 워크트리", repo: "저장소(이름 또는 id)", name: "워크트리 이름", create: "만들기",
+  newTerminal: "새 터미널", worktree: "워크트리", agent: "에이전트", start: "시작",
+  shell: "일반 셸",
+  keys: keyNames("Enter", "Backspace", "Space"),
+},
+es: {
+  poll: "Conexión en vivo", updated: "Actualizado", notUpdated: "Desconectado · Reconectando", connecting: "Conectando…",
+  title: "Resumen del espacio de trabajo",
+  worktrees: "Worktrees", working: "En curso", attention: "Requiere atención", tools: "Acciones rápidas",
+  listCaption: "Todos los repositorios · En vivo", loading: "Cargando tu espacio de trabajo…",
+  noWorktrees: "Un espacio de trabajo nuevo", emptyHint: "Crea un worktree para empezar tu próxima tarea.",
+  noTerminals: "No hay terminales. Usa + para abrir una.",
+  statuses: { working: "En curso", idle: "Inactivo", permission: "¿Aprobar?", stalled: "¿Atascado?", none: "Sin ejecutar" },
+  input: "Enviar texto a la terminal…", repoPlaceholder: "Elige o escribe un repositorio", namePlaceholder: "p. ej. fix-login",
+  open: "Abrir", remove: "Quitar",
+  removeAsk: (name) => "¿Quitar el worktree «" + name + "»? Su directorio de git worktree se borra del disco.",
+  stale: "Desconectado. Lo que se ve es de antes de perder la conexión.", shellName: "Shell",
+  copy: "Copiar comando para reanudar", copied: "Copiado",
+  close: "‹ Atrás", send: "Enviar",
+  full: "Terminal completa", simple: "Vista simple", ended: "[la terminal terminó]",
+  new: "Nuevo worktree", repo: "Repositorio (nombre o id)", name: "Nombre del worktree", create: "Crear",
+  newTerminal: "Nueva terminal", worktree: "Worktree", agent: "Agente", start: "Iniciar",
+  shell: "Shell simple",
+  keys: keyNames("Intro", "Retroceso", "Espacio"),
+},
+fr: {
+  poll: "Connexion en direct", updated: "Mis à jour", notUpdated: "Déconnecté · Reconnexion", connecting: "Connexion…",
+  title: "Vue d’ensemble de l’espace de travail",
+  worktrees: "Worktrees", working: "En cours", attention: "À traiter", tools: "Actions rapides",
+  listCaption: "Tous les dépôts · En direct", loading: "Chargement de votre espace de travail…",
+  noWorktrees: "Un espace de travail tout neuf", emptyHint: "Créez un worktree pour commencer votre prochaine tâche.",
+  noTerminals: "Aucun terminal. Utilisez + pour en lancer un.",
+  statuses: { working: "En cours", idle: "Inactif", permission: "Approuver ?", stalled: "Bloqué ?", none: "Arrêté" },
+  input: "Envoyer du texte au terminal…", repoPlaceholder: "Choisir ou saisir un dépôt", namePlaceholder: "ex. fix-login",
+  open: "Ouvrir", remove: "Supprimer",
+  removeAsk: (name) => "Supprimer le worktree « " + name + " » ? Son dossier git worktree est effacé du disque.",
+  stale: "Déconnecté. L’affichage date d’avant la coupure.", shellName: "Shell",
+  copy: "Copier la commande de reprise", copied: "Copié",
+  close: "‹ Retour", send: "Envoyer",
+  full: "Terminal complet", simple: "Vue simple", ended: "[le terminal s’est arrêté]",
+  new: "Nouveau worktree", repo: "Dépôt (nom ou id)", name: "Nom du worktree", create: "Créer",
+  newTerminal: "Nouveau terminal", worktree: "Worktree", agent: "Agent", start: "Lancer",
+  shell: "Shell simple",
+  keys: keyNames("Entrée", "Retour arrière", "Espace"),
+},
+de: {
+  poll: "Live-Verbindung", updated: "Aktualisiert", notUpdated: "Getrennt · Verbinde neu", connecting: "Verbinde…",
+  title: "Arbeitsbereich im Überblick",
+  worktrees: "Worktrees", working: "Läuft", attention: "Braucht Aufmerksamkeit", tools: "Schnellaktionen",
+  listCaption: "Alle Repositorys · Live", loading: "Arbeitsbereich wird geladen…",
+  noWorktrees: "Ein frischer Arbeitsbereich", emptyHint: "Erstelle einen Worktree für deine nächste Aufgabe.",
+  noTerminals: "Keine Terminals. Mit + eines starten.",
+  statuses: { working: "Läuft", idle: "Untätig", permission: "Freigeben?", stalled: "Hängt?", none: "Läuft nicht" },
+  input: "Text an das Terminal senden…", repoPlaceholder: "Repository wählen oder eingeben", namePlaceholder: "z. B. fix-login",
+  open: "Öffnen", remove: "Entfernen",
+  removeAsk: (name) => "Worktree „" + name + "“ entfernen? Sein git-Worktree-Verzeichnis wird von der Festplatte gelöscht.",
+  stale: "Getrennt. Die Anzeige stammt von vor dem Verbindungsabbruch.", shellName: "Shell",
+  copy: "Befehl zum Fortsetzen kopieren", copied: "Kopiert",
+  close: "‹ Zurück", send: "Senden",
+  full: "Volles Terminal", simple: "Einfache Ansicht", ended: "[das Terminal wurde beendet]",
+  new: "Neuer Worktree", repo: "Repository (Name oder ID)", name: "Worktree-Name", create: "Erstellen",
+  newTerminal: "Neues Terminal", worktree: "Worktree", agent: "Agent", start: "Starten",
+  shell: "Einfache Shell",
+  keys: keyNames("Enter", "Rücktaste", "Leertaste"),
+},
+"pt-BR": {
+  poll: "Conexão ao vivo", updated: "Atualizado", notUpdated: "Desconectado · Reconectando", connecting: "Conectando…",
+  title: "Visão geral do espaço de trabalho",
+  worktrees: "Worktrees", working: "Rodando", attention: "Precisa de atenção", tools: "Ações rápidas",
+  listCaption: "Todos os repositórios · Ao vivo", loading: "Carregando seu espaço de trabalho…",
+  noWorktrees: "Um espaço de trabalho novinho", emptyHint: "Crie um worktree para começar sua próxima tarefa.",
+  noTerminals: "Nenhum terminal. Use + para abrir um.",
+  statuses: { working: "Rodando", idle: "Ocioso", permission: "Aprovar?", stalled: "Travado?", none: "Parado" },
+  input: "Enviar texto ao terminal…", repoPlaceholder: "Escolha ou digite um repositório", namePlaceholder: "ex.: fix-login",
+  open: "Abrir", remove: "Remover",
+  removeAsk: (name) => "Remover o worktree “" + name + "”? O diretório do git worktree é apagado do disco.",
+  stale: "Desconectado. O que aparece é de antes da queda da conexão.", shellName: "Shell",
+  copy: "Copiar comando para retomar", copied: "Copiado",
+  close: "‹ Voltar", send: "Enviar",
+  full: "Terminal completo", simple: "Visão simples", ended: "[o terminal foi encerrado]",
+  new: "Novo worktree", repo: "Repositório (nome ou id)", name: "Nome do worktree", create: "Criar",
+  newTerminal: "Novo terminal", worktree: "Worktree", agent: "Agente", start: "Iniciar",
+  shell: "Shell simples",
+  keys: keyNames("Enter", "Backspace", "Espaço"),
+},
+ru: {
+  poll: "Живое подключение", updated: "Обновлено", notUpdated: "Нет связи · Переподключение", connecting: "Подключение…",
+  title: "Обзор рабочего пространства",
+  worktrees: "Рабочие деревья", working: "Работают", attention: "Требуют внимания", tools: "Быстрые действия",
+  listCaption: "Все репозитории · В реальном времени", loading: "Загрузка рабочего пространства…",
+  noWorktrees: "Рабочих деревьев пока нет", emptyHint: "Создайте рабочее дерево, чтобы начать следующую задачу.",
+  noTerminals: "Терминалов нет. Нажмите +, чтобы запустить.",
+  statuses: { working: "Работает", idle: "Простой", permission: "Одобрить?", stalled: "Завис?", none: "Не запущен" },
+  input: "Отправить текст в терминал…", repoPlaceholder: "Выберите или введите репозиторий", namePlaceholder: "например, fix-login",
+  open: "Открыть", remove: "Удалить",
+  removeAsk: (name) => "Удалить рабочее дерево «" + name + "»? Его каталог git worktree будет удалён с диска.",
+  stale: "Нет связи. Показаны данные до обрыва соединения.", shellName: "Оболочка",
+  copy: "Копировать команду возобновления", copied: "Скопировано",
+  close: "‹ Назад", send: "Отправить",
+  full: "Полный терминал", simple: "Простой вид", ended: "[терминал завершён]",
+  new: "Новое рабочее дерево", repo: "Репозиторий (имя или id)", name: "Имя рабочего дерева", create: "Создать",
+  newTerminal: "Новый терминал", worktree: "Рабочее дерево", agent: "Агент", start: "Запустить",
+  shell: "Простая оболочка",
+  keys: keyNames("Enter", "Backspace", "Пробел"),
+},
 };
+// The app's locale is always one of these; a browser guess may be a cousin.
+const LANG = STRINGS[LOCALE] ? LOCALE
+  : LOCALE.toLowerCase().startsWith("zh") ? "zh-CN"
+  : STRINGS[LOCALE.split("-")[0]] ? LOCALE.split("-")[0] : "en";
+const T = STRINGS[LANG];
 // The keys the panel offers as buttons, in the order they are drawn.
 const KEYS = ["enter", "esc", "ctrl-c", "y", "n", "tab", "up", "down", "left", "right"];
 const ICONS = {
@@ -839,7 +1004,7 @@ function buildKeys() {
   }
 }
 
-document.documentElement.lang = ZH ? "zh-CN" : "en";
+document.documentElement.lang = LANG;
 for (const [id, text] of Object.entries({
   "page-title": T.title,
   "stat-worktrees-label": T.worktrees, "stat-working-label": T.working,

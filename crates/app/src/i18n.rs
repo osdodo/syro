@@ -1,15 +1,47 @@
-//! The app's two languages, and how one of them is chosen.
+//! The app's languages, and how one of them is chosen.
 
-/// The two languages this app ships. Anything else maps onto [`EN`].
+/// The language anything unknown maps onto.
 pub const EN: &str = "en";
-pub const ZH: &str = "zh-CN";
 
-/// The system's language, as one of [`EN`] or [`ZH`].
+/// Every language this app ships, as (locale, its name in itself). A language
+/// is named in its own language, so its reader can find it.
+pub const LANGUAGES: &[(&str, &str)] = &[
+    (EN, "English"),
+    ("zh-CN", "简体中文"),
+    ("zh-TW", "繁體中文"),
+    ("ja", "日本語"),
+    ("ko", "한국어"),
+    ("es", "Español"),
+    ("fr", "Français"),
+    ("de", "Deutsch"),
+    ("pt-BR", "Português (Brasil)"),
+    ("ru", "Русский"),
+];
+
+/// The shipped locale a BCP 47 / POSIX tag (`zh-Hant-TW`, `pt_PT`, `de-AT`)
+/// asks for, if any.
+fn matching(tag: &str) -> Option<&'static str> {
+    let tag = tag.trim().to_ascii_lowercase().replace('_', "-");
+    let primary = tag.split('-').next().unwrap_or_default();
+    Some(match primary {
+        "zh" if ["hant", "tw", "hk", "mo"]
+            .iter()
+            .any(|part| tag.split('-').skip(1).any(|p| p == *part)) =>
+        {
+            "zh-TW"
+        }
+        "zh" => "zh-CN",
+        "pt" => "pt-BR",
+        _ => LANGUAGES.iter().find(|(locale, _)| *locale == primary)?.0,
+    })
+}
+
+/// The system's language, as one this app ships.
 pub fn system_language() -> &'static str {
-    match os_language().or_else(sys_locale::get_locale) {
-        Some(tag) if tag.to_ascii_lowercase().starts_with("zh") => ZH,
-        _ => EN,
-    }
+    os_language()
+        .or_else(sys_locale::get_locale)
+        .and_then(|tag| matching(&tag))
+        .unwrap_or(EN)
 }
 
 /// The system's preferred language, from the OS itself.
@@ -79,13 +111,7 @@ fn os_language() -> Option<String> {
 /// app ships, and the system's otherwise. An empty or unknown value is not an
 /// error — a hand-edited file should still open.
 pub fn resolve(setting: Option<&str>) -> &'static str {
-    match setting.map(str::trim) {
-        Some(tag) if tag.eq_ignore_ascii_case(ZH) || tag.to_ascii_lowercase().starts_with("zh") => {
-            ZH
-        }
-        Some(tag) if tag.eq_ignore_ascii_case(EN) => EN,
-        _ => system_language(),
-    }
+    setting.and_then(matching).unwrap_or_else(system_language)
 }
 
 /// Make the app speak `settings.language`. Called at start-up and when the
@@ -96,23 +122,57 @@ pub fn apply(setting: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{EN, ZH, resolve};
+    use super::{EN, LANGUAGES, resolve};
     use rust_i18n::t;
+
+    const ZH: &str = "zh-CN";
 
     #[test]
     fn a_named_language_is_the_one_that_was_named() {
-        assert_eq!(resolve(Some("en")), EN);
-        assert_eq!(resolve(Some("zh-CN")), ZH);
+        for (locale, _) in LANGUAGES {
+            assert_eq!(resolve(Some(locale)), *locale);
+        }
         assert_eq!(resolve(Some("zh-Hans-CN")), ZH);
-        assert_eq!(resolve(Some("zh-TW")), ZH);
+        assert_eq!(resolve(Some("zh_CN")), ZH);
+        assert_eq!(resolve(Some("zh-Hant-TW")), "zh-TW");
+        assert_eq!(resolve(Some("zh-HK")), "zh-TW");
+        assert_eq!(resolve(Some("ja-JP")), "ja");
+        assert_eq!(resolve(Some("pt-PT")), "pt-BR");
+        assert_eq!(resolve(Some("de_AT")), "de");
+    }
+
+    /// Every locale has every key English has, and no placeholder English does
+    /// not fill: a missing key falls back to English, an unknown `%{x}` is drawn raw.
+    #[test]
+    fn every_locale_is_complete() {
+        for backend in [crate::_rust_i18n_backend(), syro_core::_rust_i18n_backend()] {
+            let english = backend.messages_for_locale(EN).expect("en");
+            let holes = |text: &str| -> Vec<String> {
+                text.split("%{")
+                    .skip(1)
+                    .filter_map(|rest| rest.split_once('}').map(|(name, _)| name.to_string()))
+                    .collect()
+            };
+            for (locale, _) in LANGUAGES {
+                for (key, text) in &english {
+                    let translated = backend
+                        .translate(locale, key)
+                        .unwrap_or_else(|| panic!("{key} missing in {locale}"));
+                    let known = holes(text);
+                    for hole in holes(&translated) {
+                        assert!(known.contains(&hole), "{key} in {locale}: %{{{hole}}}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
     fn an_absent_or_unknown_language_follows_the_system() {
         // The only assertion that holds on every machine: the answer is one of
-        // the two languages this app ships, and neither path panics.
+        // the languages this app ships, and neither path panics.
         let system = super::system_language();
-        assert!(system == EN || system == ZH);
+        assert!(LANGUAGES.iter().any(|(locale, _)| *locale == system));
         assert_eq!(resolve(None), system);
         assert_eq!(resolve(Some("")), system);
         assert_eq!(resolve(Some("klingon")), system);
