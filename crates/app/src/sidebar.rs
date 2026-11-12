@@ -497,7 +497,9 @@ impl Sidebar {
             .id("sidebar-menu")
             .test_support()
             .v_flex()
-            .w(px(MENU_WIDTH))
+            // A floor, not a size: a label longer than it (ja, de) widens the menu
+            // rather than wrapping out of its fixed-height row.
+            .min_w(px(MENU_WIDTH))
             .p(px(MENU_PADDING))
             .gap(px(MENU_GAP))
             .rounded_lg()
@@ -586,7 +588,7 @@ impl Sidebar {
             })
             .cursor_pointer()
             .hover(|el| el.bg(colors.muted))
-            .child(div().flex_1().min_w_0().child(item.label(target)))
+            .child(div().flex_1().whitespace_nowrap().child(item.label(target)))
             .when(checked, |el| {
                 el.child(
                     div()
