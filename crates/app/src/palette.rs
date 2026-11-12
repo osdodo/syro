@@ -491,7 +491,11 @@ pub fn apply_keymap(cx: &mut App, settings: &BTreeMap<String, String>) -> Vec<St
             unknown.push(name.clone());
             continue;
         }
-        cx.bind_keys([KeyBinding::new(key, Run { name: name.clone() }, None)]);
+        let action = Box::new(Run { name: name.clone() });
+        match KeyBinding::load(key, action, None, false, None, cx) {
+            Ok(binding) => cx.bind_keys([binding]),
+            Err(error) => tracing::warn!("syro: [keymap] cannot parse {key:?}: {error}"),
+        }
     }
     unknown
 }

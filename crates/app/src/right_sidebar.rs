@@ -68,8 +68,8 @@ mod refresh_tests {
             .unwrap();
         draw(cx);
         assert!(next(cx) > 0);
-        // One-shot GPUI animations use wall-clock time, not the executor's test clock.
-        std::thread::sleep(std::time::Duration::from_millis(650));
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(650));
         draw(cx);
         next(cx);
         draw(cx);

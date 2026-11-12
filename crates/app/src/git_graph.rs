@@ -901,7 +901,7 @@ impl GitGraph {
             // The whole panel is the menu, its padding and the pixels between
             // two rows included: a click there is a click on the menu.
             .occlude()
-            .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation())
+            .on_scroll(|_event, _window, cx| cx.stop_propagation())
             .child(
                 div()
                     .id("git-graph-branch-menu-delete")
@@ -1244,7 +1244,7 @@ impl GitGraph {
             .border_color(colors.border)
             .py_1()
             .overflow_y_scroll()
-            .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
+            .on_scroll(|_event, _window, cx| cx.stop_propagation());
         if open.loading {
             files = files.child(
                 div()

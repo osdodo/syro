@@ -1062,7 +1062,7 @@ impl FileTreeView {
             .occlude()
             // The menu is above the tree in a layer, so a wheel event would go
             // to the entries underneath it.
-            .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
+            .on_scroll(|_event, _window, cx| cx.stop_propagation());
         for item in MenuItem::ALL {
             if !menu.background || matches!(item, MenuItem::NewFile | MenuItem::NewDir) {
                 panel = panel.child(self.menu_item(item, colors, cx));

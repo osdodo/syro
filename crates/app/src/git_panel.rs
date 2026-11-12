@@ -1013,7 +1013,7 @@ impl GitPanel {
             // The whole panel is the menu, its padding and the pixels between
             // two rows included: a click there is a click on the menu.
             .occlude()
-            .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
+            .on_scroll(|_event, _window, cx| cx.stop_propagation());
         for sync in Sync::ALL
             .into_iter()
             // Only the ones that can run: a branch git has no upstream for is not
@@ -1079,7 +1079,7 @@ impl GitPanel {
             // The whole panel is the menu, its padding and the pixels between
             // two rows included: a click there is a click on the menu.
             .occlude()
-            .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
+            .on_scroll(|_event, _window, cx| cx.stop_propagation());
         for branch in &self.branches {
             let chosen = current.as_deref() == Some(branch.name.as_str());
             let name = branch.name.clone();

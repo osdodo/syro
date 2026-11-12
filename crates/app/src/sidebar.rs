@@ -514,7 +514,7 @@ impl Sidebar {
             .occlude()
             // The menu is above the list in a layer, so a wheel event would go to
             // the rows underneath it.
-            .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
+            .on_scroll(|_event, _window, cx| cx.stop_propagation());
         for item in MenuItem::for_target(&menu.target) {
             panel = panel.child(self.menu_item(*item, &menu.target, colors, cx));
         }

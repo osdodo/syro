@@ -2,12 +2,11 @@
 
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gpui_kit::base::{TestSupportExt as _, Theme};
 use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::component::input::{
-    Editor, EditorState, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle,
-};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use rust_i18n::t;
 use syro_core::git::{ChangeKind, FileChange};
@@ -15,12 +14,14 @@ use syro_core::model::{TabSpec, Worktree, WorktreeId};
 
 use crate::opener;
 use crate::pane::PaneItem;
-use crate::pane::editor::editor_state;
 use crate::state::AppState;
 
 /// How strong an added/removed line's fill is. A diff is read as text, and a
 /// fill that competes with the text is a fill that hides it.
 const FILL_ALPHA: f32 = 0.16;
+/// The line-number cells of a changed line are a shade stronger than its text,
+/// the way GitHub draws them.
+const GUTTER_ALPHA: f32 = 0.28;
 
 /// The diff tab's contents.
 pub struct DiffView {
@@ -43,10 +44,14 @@ pub struct DiffView {
     /// tab, and this is the field that says which of them is up.
     commit: Option<String>,
     app: Entity<AppState>,
-    editor: Entity<EditorState>,
-    /// The added/removed fills, addressed by handle. Held, because dropping the
-    /// collection would not clear it.
-    fills: RangeDecorationCollection,
+    focus: FocusHandle,
+    /// The raw diff, as git printed it.
+    text: String,
+    /// `text` parsed into what is drawn: headers dropped, line numbers counted.
+    rows: Rc<Vec<Row>>,
+    /// Digits in the largest line number, and the widest row: per text, not per frame.
+    digits: usize,
+    longest: Option<usize>,
     /// Git's complaint, or why there is nothing on the right.
     error: Option<String>,
 }
@@ -61,10 +66,6 @@ impl DiffView {
         app: Entity<AppState>,
         worktree: &Worktree,
     ) -> Self {
-        let editor = editor_state(window, cx, Some(opener::DIFF_LANGUAGE));
-        let fills = editor.update(cx, |editor, cx| {
-            editor.create_range_decorations_collection(Vec::new(), cx)
-        });
         let mut view = Self {
             worktree_id: worktree.id.clone(),
             root: worktree.path.clone(),
@@ -73,8 +74,11 @@ impl DiffView {
             selected_kind: None,
             commit: None,
             app,
-            editor,
-            fills,
+            focus: cx.focus_handle(),
+            text: String::new(),
+            rows: Rc::default(),
+            digits: 1,
+            longest: None,
             error: None,
         };
         view.reload(window, cx);
@@ -208,19 +212,8 @@ impl DiffView {
         dead_code,
         reason = "the view's read surface: what the window tests assert on"
     )]
-    pub fn text(&self, cx: &App) -> String {
-        self.editor.read(cx).value().to_string()
-    }
-
-    /// The language the diff body is parsed as, as the state reports it. A diff
-    /// is not a file with an extension, so this is the one language in the app
-    /// that does not come from `opener::language_for` — and this is what says so.
-    #[allow(
-        dead_code,
-        reason = "the view's read surface: what the window tests assert on"
-    )]
-    pub fn language(&self, cx: &App) -> SharedString {
-        self.editor.read(cx).language_name()
+    pub fn text(&self, _cx: &App) -> String {
+        self.text.clone()
     }
 
     fn load_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -270,43 +263,105 @@ impl DiffView {
         self.set_text(text, window, cx);
     }
 
-    /// Replace the text and its fills together. The fills are byte ranges into
-    /// that text, so setting one without the other is a decoration over the
-    /// wrong line.
-    fn set_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        let fills = changed_lines(&text);
-        let (added, removed) = {
-            let theme = cx.theme();
-            (
-                theme.success.alpha(FILL_ALPHA),
-                theme.danger.alpha(FILL_ALPHA),
-            )
-        };
-        // The text first: `set_value` replaces the rope the tracked ranges were
-        // measured against, so ranges set before it would be clipped to nothing.
-        self.editor
-            .update(cx, |editor, cx| editor.set_value(text, window, cx));
-        let decorations = fills
-            .into_iter()
-            .map(|(kind, range)| {
-                let color = match kind {
-                    Changed::Added => added,
-                    Changed::Removed => removed,
-                };
-                RangeDecoration::new(range)
-                    .with_style(RangeDecorationStyle::Fill)
-                    .with_color(color)
+    /// Replace the text and the rows drawn from it together.
+    fn set_text(&mut self, text: String, _window: &mut Window, _cx: &mut Context<Self>) {
+        let rows = parse(&text);
+        self.digits = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Line { old, new, .. } => old.max(new).map(|n| n.to_string().len()),
+                _ => None,
             })
-            .collect();
-        self.fills.set(decorations, cx);
+            .max()
+            .unwrap_or(1);
+        self.longest = longest(&rows);
+        self.rows = Rc::new(rows);
+        self.text = text;
+    }
+
+    /// The visible rows, GitHub-style: two line-number columns, a `+`/`-`
+    /// marker, and a fill that spans the whole width of the pane.
+    fn render_rows(
+        &mut self,
+        range: Range<usize>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let theme = cx.theme();
+        let (added, removed, info, muted) = (
+            theme.success,
+            theme.danger,
+            theme.info,
+            theme.muted_foreground,
+        );
+        let mono = Theme::global(cx).tokens.typography.mono_md;
+        // Wide enough for the largest line number in the file.
+        let gutter = mono.size * (0.6 * self.digits as f32) + px(16.);
+        let number = move |n: Option<u32>, fill: Option<Hsla>| {
+            div()
+                .flex_none()
+                .w(gutter)
+                .h_full()
+                .px_2()
+                .text_right()
+                .text_color(muted)
+                .when_some(fill, |cell, fill| cell.bg(fill))
+                .child(
+                    n.map(|n| SharedString::from(n.to_string()))
+                        .unwrap_or_default(),
+                )
+        };
+        range
+            .map(|ix| {
+                let row = div()
+                    .id(ix)
+                    .flex()
+                    .min_w_full()
+                    .h(mono.line_height)
+                    .whitespace_nowrap();
+                match &self.rows[ix] {
+                    Row::Hunk(text) => row
+                        .bg(info.alpha(FILL_ALPHA))
+                        .text_color(muted)
+                        .child(number(None, Some(info.alpha(GUTTER_ALPHA))))
+                        .child(number(None, Some(info.alpha(GUTTER_ALPHA))))
+                        .child(div().flex_none().pl_2().child(text.clone())),
+                    Row::Line {
+                        kind,
+                        old,
+                        new,
+                        text,
+                    } => {
+                        let (fill, gutter_fill, marker) = match kind {
+                            LineKind::Added => (
+                                Some(added.alpha(FILL_ALPHA)),
+                                Some(added.alpha(GUTTER_ALPHA)),
+                                "+",
+                            ),
+                            LineKind::Removed => (
+                                Some(removed.alpha(FILL_ALPHA)),
+                                Some(removed.alpha(GUTTER_ALPHA)),
+                                "-",
+                            ),
+                            LineKind::Context | LineKind::Meta => (None, None, ""),
+                        };
+                        row.when_some(fill, |row, fill| row.bg(fill))
+                            .when(*kind == LineKind::Meta, |row| row.text_color(muted))
+                            .child(number(*old, gutter_fill))
+                            .child(number(*new, gutter_fill))
+                            .child(div().flex_none().w(px(20.)).text_center().child(marker))
+                            .child(div().flex_none().pr_4().child(text.clone()))
+                    }
+                }
+                .into_any_element()
+            })
+            .collect()
     }
 }
 
 impl Focusable for DiffView {
-    /// The editor's own focus handle: the state is what takes the keyboard, so
-    /// focusing the tab has to mean focusing what is inside it.
-    fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.editor.read(cx).focus_handle(cx)
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
     }
 }
 
@@ -340,13 +395,20 @@ impl Render for DiffView {
             // The empty state and a git failure are drawn over the pane, so the
             // pane is what they are positioned against.
             .relative()
+            .track_focus(&self.focus)
+            .font_family(Theme::global(cx).tokens.typography.mono.clone())
+            .text_size(Theme::global(cx).tokens.typography.mono_md.size)
             .child(
                 div().id("diff-text").size_full().child(
-                    Editor::new(&self.editor)
-                        .bordered(false)
-                        .readonly(true)
-                        .h(relative(1.))
-                        .into_any_element(),
+                    uniform_list(
+                        "diff-rows",
+                        self.rows.len(),
+                        cx.processor(Self::render_rows),
+                    )
+                    // Measure the widest row, so long lines scroll sideways.
+                    .with_width_from_item(self.longest)
+                    .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+                    .size_full(),
                 ),
             );
 
@@ -387,43 +449,137 @@ impl Render for DiffView {
     }
 }
 
-/// Which way a line changed.
+/// What a diff line is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Changed {
+enum LineKind {
+    Context,
     Added,
     Removed,
+    /// Neither file's content: `\ No newline at end of file`, `Binary files … differ`.
+    Meta,
 }
 
-/// The `+`/`-` lines of a unified diff, as byte ranges into it.
-fn changed_lines(text: &str) -> Vec<(Changed, Range<usize>)> {
-    let mut out = Vec::new();
-    let mut offset = 0;
+/// One drawn row of the diff.
+#[derive(Debug, Clone, PartialEq)]
+enum Row {
+    /// The `@@ … @@` line that starts a hunk.
+    Hunk(SharedString),
+    /// A line with its number in the old and the new file, where it has one.
+    Line {
+        kind: LineKind,
+        old: Option<u32>,
+        new: Option<u32>,
+        text: SharedString,
+    },
+}
+
+/// The index of the row with the most text: what the list measures its width by.
+fn longest(rows: &[Row]) -> Option<usize> {
+    (0..rows.len()).max_by_key(|&ix| match &rows[ix] {
+        Row::Hunk(text) | Row::Line { text, .. } => text.len(),
+    })
+}
+
+/// A unified diff as rows: the per-file header (`diff --git`, `index`,
+/// `---`/`+++`, modes, renames) is dropped, as GitHub does, and every content
+/// line is numbered from its hunk's `@@ -old +new @@`.
+fn parse(text: &str) -> Vec<Row> {
+    const HEADER: &[&str] = &[
+        "diff --git",
+        "index ",
+        "--- ",
+        "+++ ",
+        "new file mode",
+        "deleted file mode",
+        "old mode",
+        "new mode",
+        "similarity index",
+        "dissimilarity index",
+        "rename from",
+        "rename to",
+        "copy from",
+        "copy to",
+    ];
+    let mut rows = Vec::new();
     // Set by `diff --git`, cleared by the first hunk: the lines between them are
-    // never content.
+    // never content, even the ones that start with `+` or `-`.
     let mut in_header = false;
-    for line in text.split_inclusive('\n') {
-        let start = offset;
-        offset += line.len();
-        let body = line.trim_end_matches('\n');
-        if body.starts_with("diff --git") {
+    let (mut old, mut new) = (0u32, 0u32);
+    for line in text.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        // gpui draws a tab as nothing in particular; four spaces is what a reader expects.
+        let shown = |s: &str| SharedString::from(s.replace('\t', "    "));
+        if line.starts_with("diff --git") {
             in_header = true;
             continue;
         }
-        if body.starts_with("@@") {
+        if line.starts_with("@@") {
             in_header = false;
+            (old, new) = hunk_start(line);
+            rows.push(Row::Hunk(shown(line)));
             continue;
         }
-        if in_header {
+        if in_header && HEADER.iter().any(|prefix| line.starts_with(prefix)) {
             continue;
         }
-        let kind = match body.as_bytes().first() {
-            Some(b'+') => Changed::Added,
-            Some(b'-') => Changed::Removed,
-            _ => continue,
+        let meta = |text| Row::Line {
+            kind: LineKind::Meta,
+            old: None,
+            new: None,
+            text,
         };
-        out.push((kind, start..start + body.len()));
+        if in_header {
+            rows.push(meta(shown(line)));
+            continue;
+        }
+        let (marker, body) = line.split_at(line.len().min(1));
+        rows.push(match marker {
+            "+" => {
+                new += 1;
+                Row::Line {
+                    kind: LineKind::Added,
+                    old: None,
+                    new: Some(new - 1),
+                    text: shown(body),
+                }
+            }
+            "-" => {
+                old += 1;
+                Row::Line {
+                    kind: LineKind::Removed,
+                    old: Some(old - 1),
+                    new: None,
+                    text: shown(body),
+                }
+            }
+            " " | "" => {
+                old += 1;
+                new += 1;
+                Row::Line {
+                    kind: LineKind::Context,
+                    old: Some(old - 1),
+                    new: Some(new - 1),
+                    text: shown(body),
+                }
+            }
+            _ => meta(shown(line)),
+        });
     }
-    out
+    rows
+}
+
+/// The first old and new line numbers of `@@ -a,b +c,d @@`.
+fn hunk_start(line: &str) -> (u32, u32) {
+    let mut parts = line.split_whitespace().skip(1);
+    let mut start = |sign: char| {
+        parts
+            .next()
+            .and_then(|part| part.strip_prefix(sign))
+            .and_then(|part| part.split(',').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0)
+    };
+    (start('-'), start('+'))
 }
 
 #[cfg(test)]
@@ -431,176 +587,88 @@ mod tests {
     // Not `use super::*`: the module above globs gpui in, and gpui's own `test`
     // attribute comes with it — under `cfg(test)` it shadows the built-in one,
     // and every `#[test]` below then expands into itself.
-    use super::{Changed, changed_lines};
+    use super::{LineKind, Row, parse};
 
-    /// The ranges, as `(kind, the text they cover)`, so the assertions read like
-    /// the diff they came from.
-    fn lines(text: &str) -> Vec<(Changed, String)> {
-        changed_lines(text)
+    /// The rows as `(kind, old, new, text)`, hunks as `None` kinds.
+    #[allow(clippy::type_complexity, reason = "a tuple reads like the diff")]
+    fn rows(text: &str) -> Vec<(Option<LineKind>, Option<u32>, Option<u32>, String)> {
+        parse(text)
             .into_iter()
-            .map(|(kind, range)| (kind, text[range].to_string()))
+            .map(|row| match row {
+                Row::Hunk(text) => (None, None, None, text.to_string()),
+                Row::Line {
+                    kind,
+                    old,
+                    new,
+                    text,
+                } => (Some(kind), old, new, text.to_string()),
+            })
             .collect()
     }
 
-    const SAMPLE: &str = "\
+    #[test]
+    fn header_is_dropped_and_lines_are_numbered() {
+        let text = "\
 diff --git a/notes.md b/notes.md
 index 1111111..2222222 100644
 --- a/notes.md
 +++ b/notes.md
-@@ -1,3 +1,3 @@
+@@ -9,3 +9,3 @@ fn context
  kept
 -removed line
 +added line
+\\ No newline at end of file
 ";
-
-    #[test]
-    fn only_content_lines_are_ranges() {
+        use LineKind::*;
         assert_eq!(
-            lines(SAMPLE),
+            rows(text),
             vec![
-                (Changed::Removed, "-removed line".to_string()),
-                (Changed::Added, "+added line".to_string()),
-            ],
-            "the file header and the hunk line are not changes"
-        );
-    }
-
-    #[test]
-    fn a_hunk_line_is_not_a_change_anywhere() {
-        // A one-line file: the `@@` comes straight after the header, and `+`
-        // and `-` appear in the header itself.
-        let text = "\
-diff --git a/x b/x
---- a/x
-+++ b/x
-@@ -1 +1 @@
--a
-+b
-";
-        assert_eq!(
-            lines(text),
-            vec![
-                (Changed::Removed, "-a".to_string()),
-                (Changed::Added, "+b".to_string()),
+                (None, None, None, "@@ -9,3 +9,3 @@ fn context".into()),
+                (Some(Context), Some(9), Some(9), "kept".into()),
+                (Some(Removed), Some(10), None, "removed line".into()),
+                (Some(Added), None, Some(10), "added line".into()),
+                (
+                    Some(Meta),
+                    None,
+                    None,
+                    "\\ No newline at end of file".into()
+                ),
             ]
         );
     }
 
     #[test]
-    fn two_files_in_one_diff_are_both_read() {
+    fn a_binary_file_says_so() {
         let text = "\
-diff --git a/a b/a
---- a/a
-+++ b/a
-@@ -1 +1 @@
--one
-+two
+diff --git a/x.png b/x.png
+index 1111111..2222222 100644
+Binary files a/x.png and b/x.png differ
+";
+        assert_eq!(
+            rows(text),
+            vec![(
+                Some(LineKind::Meta),
+                None,
+                None,
+                "Binary files a/x.png and b/x.png differ".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_new_file_counts_from_one() {
+        let text = "\
 diff --git a/b b/b
---- a/b
+new file mode 100644
+--- /dev/null
 +++ b/b
-@@ -0,0 +1 @@
-+fresh
+@@ -0,0 +1,2 @@
++one
++two
 ";
-        assert_eq!(
-            lines(text),
-            vec![
-                (Changed::Removed, "-one".to_string()),
-                (Changed::Added, "+two".to_string()),
-                (Changed::Added, "+fresh".to_string()),
-            ],
-            "the second file's header is skipped again"
-        );
-    }
-
-    #[test]
-    fn a_context_only_diff_has_no_ranges() {
-        let text = "\
-diff --git a/x b/x
---- a/x
-+++ b/x
-@@ -1,2 +1,2 @@
- same
- also the same
-";
-        assert!(lines(text).is_empty());
-    }
-
-    #[test]
-    fn ranges_are_byte_offsets_into_the_whole_text() {
-        // The point of the ranges: they are what the editor's decorations are
-        // measured against, so they have to be offsets into this string and not
-        // into a line.
-        for (kind, range) in changed_lines(SAMPLE) {
-            let expected = match kind {
-                Changed::Added => "+added line",
-                Changed::Removed => "-removed line",
-            };
-            assert_eq!(&SAMPLE[range], expected);
-        }
-    }
-}
-
-/// The view-level half of the highlighting: which language the diff body is
-/// built in. The pure half — that the name resolves to a grammar — is
-/// `opener::tests::names_only_languages_the_registry_has`.
-#[cfg(test)]
-mod view_tests {
-    use gpui_kit::{AppContext as _, Entity};
-
-    use super::DiffView;
-    use crate::pane::editor::tests::open;
-    use crate::state::AppState;
-    use syro_core::config::Settings;
-    use syro_core::model::State;
-    use syro_core::store::Store;
-
-    /// A real workspace's state over a scratch repo, because the view reads its
-    /// file list from it: a diff view over a made-up state would be a test of a
-    /// view nobody ships.
-    fn app(cx: &mut gpui_kit::TestAppContext, tag: &str) -> (Entity<AppState>, std::path::PathBuf) {
-        let (dir, repo, _worktrees) = crate::state::fixture::scratch_repo(tag);
-        let (state_path, _store_dir) = crate::state::fixture::temp_store(tag);
-        Store::new(state_path.clone())
-            .save(&State {
-                repos: vec![repo],
-                ..Default::default()
-            })
-            .unwrap();
-
-        let workspaces = dir.join("workspaces");
-        let state = cx.update(|cx| {
-            cx.new(|cx| {
-                AppState::open(Store::new(state_path), workspaces, cx)
-                    // Not the developer's own settings file: this test is about
-                    // the diff view, and the machine's config is not its input.
-                    .with_settings(Settings::default())
-            })
-        });
-        (state, dir)
-    }
-
-    #[gpui_kit::test]
-    fn the_diff_body_is_parsed_as_a_diff(cx: &mut gpui_kit::TestAppContext) {
-        let (state, _dir) = app(cx, "diff-language");
-        let worktree = cx.update(|cx| {
-            state
-                .read(cx)
-                .active()
-                .cloned()
-                .expect("the scratch repo has a worktree")
-        });
-        let (window, view) = open(cx, |window, cx| {
-            cx.new(|cx| DiffView::new(window, cx, state.clone(), &worktree))
-        });
-        // Drawing runs the frame the highlighter would be built in; the language
-        // assertion is what the colours are a function of.
-        cx.update_window(window.into(), |_, window, cx| {
-            window.draw(cx).clear(cx);
-        })
-        .expect("draw a frame");
-        assert_eq!(
-            cx.update(|cx| view.read(cx).language(cx)),
-            crate::opener::DIFF_LANGUAGE
-        );
+        let rows = rows(text);
+        assert_eq!(rows[1].2, Some(1));
+        assert_eq!(rows[2].2, Some(2));
+        assert_eq!(rows.len(), 3);
     }
 }

@@ -969,7 +969,7 @@ impl TerminalView {
 
     fn handle_scroll_wheel(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1271,7 +1271,7 @@ impl TerminalView {
             .occlude()
             // Above the grid in a layer, so a wheel event would go to the
             // terminal underneath it.
-            .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
+            .on_scroll(|_event, _window, cx| cx.stop_propagation());
         for item in PaneMenu::ALL {
             if item.opens_group() {
                 panel = panel.child(div().my_1().h(px(1.)).w_full().bg(colors.border));
@@ -1447,7 +1447,7 @@ impl Render for TerminalView {
             // bytes.
             .key_context("terminal")
             .on_key_down(cx.listener(Self::handle_key_down))
-            .on_scroll_wheel(cx.listener(Self::handle_scroll_wheel))
+            .on_scroll(cx.listener(Self::handle_scroll_wheel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::handle_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::handle_mouse_up))
             // The split entries live in the pane's context menu, which a right-click in the terminal
@@ -2519,12 +2519,12 @@ mod tests {
 
     /// The parser is the one gpui itself reads a keymap with, so the test table
     /// says the same thing a user's binding would.
-    fn bytes(binding: &str) -> Option<Vec<u8>> {
+    fn bytes(binding: &'static str) -> Option<Vec<u8>> {
         let keystroke = Keystroke::parse(binding).expect("a parsable keystroke");
         key_to_bytes(&keystroke)
     }
 
-    fn text(binding: &str) -> String {
+    fn text(binding: &'static str) -> String {
         String::from_utf8(bytes(binding).expect("bytes")).expect("utf-8")
     }
 
@@ -2560,9 +2560,9 @@ mod tests {
         assert_eq!(bytes("ctrl-\\"), Some(vec![0x1c]));
         // Every letter, not a spot check: the range is the whole point.
         for letter in b'a'..=b'z' {
-            let binding = format!("ctrl-{}", letter as char);
+            let binding: &'static str = format!("ctrl-{}", letter as char).leak();
             assert_eq!(
-                bytes(&binding),
+                bytes(binding),
                 Some(vec![letter - b'a' + 1]),
                 "ctrl-{} should be 0x{:02x}",
                 letter as char,
@@ -2735,7 +2735,7 @@ b.md",
 
     #[test]
     fn only_the_platform_clipboard_keys_are_the_apps() {
-        let key = |binding: &str| clipboard_key(&Keystroke::parse(binding).expect("parsable"));
+        let key = |binding: &'static str| clipboard_key(&Keystroke::parse(binding).expect("parsable"));
 
         assert_eq!(key("cmd-c"), Some(ClipboardKey::Copy));
         assert_eq!(key("cmd-v"), Some(ClipboardKey::Paste));
@@ -3750,7 +3750,7 @@ mod window_tests {
     ) {
         cx.update_window(window.into(), |_, window, cx| {
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position: at,
                     delta,
                     ..Default::default()

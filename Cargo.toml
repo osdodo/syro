@@ -12,7 +12,7 @@ license = "MIT"
 # --- gpui-kit: one git tag, never crates.io ---
 # Every gpui-* crate in the build is the same commit, which is what keeps
 # gpui-base and gpui-kit from being two different versions of each other.
-gpui-kit = { git = "https://github.com/longbridge/gpui-kit", tag = "v0.7.1", features = [
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", tag = "v0.9.1", features = [
   # The editor highlights with these, and only these: one grammar per language
   # `crates/app/src/opener.rs` names. `tree-sitter-languages` would pull the
   # other twenty-odd grammars into the binary for languages this app cannot name.
@@ -21,7 +21,6 @@ gpui-kit = { git = "https://github.com/longbridge/gpui-kit", tag = "v0.7.1", fea
   "tree-sitter-c",
   "tree-sitter-cpp",
   "tree-sitter-css",
-  "tree-sitter-diff",
   "tree-sitter-go",
   "tree-sitter-html",
   "tree-sitter-java",

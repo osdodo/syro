@@ -35,6 +35,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gpui_kit::base::{ColorTokens, StyledExt as _, TestSupportExt as _, Theme};
+use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, WindowExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -304,9 +305,8 @@ pub struct Workspace {
     /// The graph and its selection survive while a diff tab is in front; this is
     /// only whether the graph is currently drawn over the panes.
     graph_visible: bool,
-    /// A file the tree opened and the opener refused. Shown as a line above the
-    /// pane rather than instead of it: the tab that was already open is still
-    /// the one the user is reading.
+    /// A file the tree opened and the opener refused, waiting to be shown as a
+    /// toast on the next frame (see `render`). Taken once it is pushed.
     open_error: Option<String>,
     /// The view's own focus handle.
     focus: FocusHandle,
@@ -1614,7 +1614,7 @@ impl Workspace {
             .shadow_lg()
             .text_xs()
             .text_color(colors.foreground)
-            .on_scroll_wheel(|_event, _window, cx| cx.stop_propagation());
+            .on_scroll(|_event, _window, cx| cx.stop_propagation());
         for (index, (id, label, shortcut, action)) in items.into_iter().enumerate() {
             if index == 1 {
                 // The terminals and the agents are two groups, drawn apart by a line.
@@ -3826,24 +3826,32 @@ impl Render for Workspace {
             column = column.child(self.tab_menu_overlay(at, window, cx));
         }
 
-        if let Some(error) = self.open_error.clone() {
-            column = column.child(
-                div()
-                    .id("open-error")
-                    // Both, because the label is what a screen reader reads and
-                    // gpui does not derive one from the text inside: without it
-                    // the sentence is drawn and never announced.
-                    .role(Role::Alert)
-                    .aria_label(SharedString::from(error.clone()))
-                    .test_support()
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .text_xs()
-                    .bg(colors.muted)
-                    .text_color(colors.destructive)
-                    .child(SharedString::from(error)),
-            );
+        // Handed to the window's toast layer once; the toast hides itself. Deferred because
+        // the layer lives in Root, which is mid-draw right now.
+        if let Some(error) = self.open_error.take() {
+            struct OpenError;
+            let error = SharedString::from(error);
+            window.defer(cx, move |window, cx| {
+                window.push_notification(
+                    Notification::new()
+                        // One at a time: a newer complaint replaces the old one.
+                        .id::<OpenError>()
+                        .with_type(NotificationType::Error)
+                        .content(move |_, _, _| {
+                            div()
+                                .id("open-error")
+                                // gpui does not derive a label from the text inside:
+                                // without it the sentence is never announced.
+                                .role(Role::Alert)
+                                .aria_label(error.clone())
+                                .test_support()
+                                .text_sm()
+                                .child(error.clone())
+                                .into_any_element()
+                        }),
+                    cx,
+                );
+            });
         }
 
         // A transparent graph must not reveal the tabs and panes it replaces.
@@ -5572,8 +5580,7 @@ mod window_tests {
             "a binary file opened a tab"
         );
 
-        // A file that can be opened clears the complaint: it was about the last
-        // click, not about the app.
+        // The complaint is a toast that hides itself; it does not stand in the way.
         click(cx, &fixture, tree_row(&fixture, NOTES));
         assert!(
             draw_until(cx, &fixture, |cx| file_tabs(&active_tabs(cx, &fixture))
@@ -5581,7 +5588,6 @@ mod window_tests {
                 == 1),
             "the refusal stood in the way of a file that opens"
         );
-        assert!(!found(cx, &fixture, "open-error"));
     }
 
     /// The diff tests' changes: one of each kind git reports — a modification to a committed file,
@@ -7659,7 +7665,7 @@ mod window_tests {
         let at = rows.center();
         cx.update_window(fixture.window.into(), |_, window, cx| {
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position: at,
                     delta: gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., -3.)),
                     ..Default::default()
@@ -7924,7 +7930,7 @@ mod window_tests {
         let at = bounds_of(cx, &fixture, "git-graph-detail-files").center();
         cx.update_window(fixture.window.into(), |_, window, cx| {
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position: at,
                     delta: gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., -3.)),
                     ..Default::default()
@@ -8688,16 +8694,16 @@ mod window_tests {
         let panel = open_sessions(cx, &fixture, roots);
         let _ = panel;
 
-        // The row opens first: restarting a conversation is a deliberate click
-        // on the word, not the side effect of looking at the row.
-        click(cx, &fixture, "session-aaaa1111".to_string());
+        // The menu first: restarting a conversation is a deliberate pick, not
+        // the side effect of looking at the row.
+        right_click(cx, &fixture, "session-aaaa1111".to_string());
         assert!(
             draw_until(cx, &fixture, |cx| found(
                 cx,
                 &fixture,
                 "session-aaaa1111-resume"
             )),
-            "the row did not open"
+            "the row's menu did not open"
         );
         click_visible(cx, &fixture, "session-aaaa1111-resume");
         let workspace = fixture.workspace.clone();
@@ -8746,10 +8752,10 @@ mod window_tests {
         );
     }
 
-    /// A row opens onto more of itself — where it worked and which transcript
-    /// it is — and three words: continue, start over, delete.
+    /// A row's actions are a menu, on either button: continue, start over,
+    /// delete. One menu at a time, and a click outside or Escape closes it.
     #[gpui_kit::test]
-    fn a_session_row_opens_onto_its_details_and_its_buttons(cx: &mut TestAppContext) {
+    fn a_session_row_opens_a_menu_of_its_actions(cx: &mut TestAppContext) {
         let fixture = open(cx, "sessions-expand");
         let home = fixture._dir.join("home");
         let roots = pi_history(&home, &fixture.root, "aaaa1111", "carry on");
@@ -8760,45 +8766,39 @@ mod window_tests {
         // list of buttons.
         draw(cx, &fixture);
         assert!(!found(cx, &fixture, "session-aaaa1111-resume"));
-        assert!(!found(cx, &fixture, "session-aaaa1111-cwd"));
 
-        click(cx, &fixture, "session-aaaa1111".to_string());
+        right_click(cx, &fixture, "session-aaaa1111".to_string());
         assert!(
             draw_until(cx, &fixture, |cx| found(
                 cx,
                 &fixture,
                 "session-aaaa1111-resume"
             )),
-            "the row did not open"
+            "the right-click did not open the menu"
         );
         assert!(found(cx, &fixture, "session-aaaa1111-new"));
         assert!(found(cx, &fixture, "session-aaaa1111-delete"));
-        assert!(found(cx, &fixture, "session-aaaa1111-cwd"));
-        assert!(found(cx, &fixture, "session-aaaa1111-id"));
 
-        // Reading another session closes the previous one.
-        click_visible(cx, &fixture, "session-bbbb2222");
+        // A click outside closes it, and does not reach the row underneath.
+        click(cx, &fixture, "session-menu-scrim".to_string());
+        draw(cx, &fixture);
+        assert!(!found(cx, &fixture, "session-menu"));
+
+        // The left button opens the same menu, on the row it was clicked on.
+        click(cx, &fixture, "session-bbbb2222".to_string());
         draw(cx, &fixture);
         assert!(found(cx, &fixture, "session-bbbb2222-resume"));
         assert!(!found(cx, &fixture, "session-aaaa1111-resume"));
-        click_visible(cx, &fixture, "session-aaaa1111");
-        draw(cx, &fixture);
-        assert!(found(cx, &fixture, "session-aaaa1111-resume"));
-        assert!(!found(cx, &fixture, "session-bbbb2222-resume"));
 
-        // And the same click shuts it.
-        click(cx, &fixture, "session-aaaa1111".to_string());
+        // And Escape backs out of it.
+        press(cx, &fixture, "escape");
         assert!(
-            draw_until(cx, &fixture, |cx| !found(
-                cx,
-                &fixture,
-                "session-aaaa1111-resume"
-            )),
-            "the row did not close"
+            draw_until(cx, &fixture, |cx| !found(cx, &fixture, "session-menu")),
+            "escape did not close the menu"
         );
     }
 
-    /// Leaving the session list drops the open row, including project changes
+    /// Leaving the session list drops the open menu, including project changes
     /// dispatched without a mouse click.
     #[gpui_kit::test]
     fn a_session_row_closes_when_leaving_the_list(cx: &mut TestAppContext) {
@@ -8836,9 +8836,13 @@ mod window_tests {
                     });
                 });
             } else {
+                // The first click outside is the menu's: it closes it, like any menu.
                 click_visible(cx, &fixture, destination);
                 draw(cx, &fixture);
+                assert!(!found(cx, &fixture, "session-menu"));
                 if destination == "panel-files" {
+                    click_visible(cx, &fixture, destination);
+                    draw(cx, &fixture);
                     assert!(!found(cx, &fixture, "session-panel"));
                     click_visible(cx, &fixture, "panel-sessions");
                 }
@@ -8879,7 +8883,7 @@ mod window_tests {
         );
         let _ = open_sessions(cx, &fixture, roots);
 
-        click(cx, &fixture, "session-aaaa1111".to_string());
+        right_click(cx, &fixture, "session-aaaa1111".to_string());
         assert!(draw_until(cx, &fixture, |cx| found(
             cx,
             &fixture,
@@ -8952,7 +8956,7 @@ mod window_tests {
         let path = cx.update(|cx| panel.read(cx).sessions()[0].path.clone());
         assert!(path.is_file());
 
-        click(cx, &fixture, "session-aaaa1111".to_string());
+        right_click(cx, &fixture, "session-aaaa1111".to_string());
         assert!(draw_until(cx, &fixture, |cx| found(
             cx,
             &fixture,
@@ -9185,9 +9189,9 @@ mod window_tests {
             "the probe is under the palette: {chip:?}, {palette:?}"
         );
         click(cx, &fixture, "usage-open".to_string());
-        draw(cx, &fixture);
+        // The dialog animates out, so it is gone only after a few frames.
         assert!(
-            !found(cx, &fixture, "palette-input"),
+            draw_until(cx, &fixture, |cx| !found(cx, &fixture, "palette-input")),
             "the palette stayed up on a click outside it"
         );
         assert!(
@@ -9928,7 +9932,7 @@ mod window_tests {
         assert_eq!(tabs.len(), 2, "two of the three could come back: {tabs:?}");
         assert!(matches!(&tabs[0], TabSpec::Diff { .. }), "{tabs:?}");
         assert!(matches!(&tabs[1], TabSpec::Terminal { .. }), "{tabs:?}");
-        // The line above the panes is where the app says what it lost.
+        // The error toast is where the app says what it lost.
         let said = label(cx, &fixture, "open-error").unwrap_or_default();
         assert!(
             said.contains("never-written.md"),
@@ -10106,7 +10110,7 @@ mod window_tests {
         let at = bounds_of(cx, &fixture, "pane").center();
         cx.update_window(fixture.window.into(), |_, window, cx| {
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position: at,
                     delta: gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., 3.)),
                     ..Default::default()
@@ -11826,6 +11830,12 @@ mod window_tests {
                     // surface is centred on it too, and is not this row's.
                     row.contains(&painted.center())
                         && painted.size.height <= row.size.height
+                        // A clip inside the quad is the slider slicing its own track
+                        // into pieces (gpui-kit 0.9), not the pane cutting it off.
+                        && !(clip.left() >= painted.left()
+                            && clip.top() >= painted.top()
+                            && clip.right() <= painted.right()
+                            && clip.bottom() <= painted.bottom())
                         && !(clip.left() <= painted.left()
                             && clip.top() <= painted.top()
                             && clip.right() >= painted.right()

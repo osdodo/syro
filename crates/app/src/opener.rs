@@ -7,11 +7,6 @@ use rust_i18n::t;
 /// The editor's size limit: "> 5 MB 或二进制文件不进编辑器".
 pub const MAX_TEXT_BYTES: u64 = 5 * 1024 * 1024;
 
-/// The language a unified diff is read as. Not from a path — a diff is
-/// synthesised, not opened — so it lives here beside the table that names every
-/// other language, and resolves through the same registry.
-pub const DIFF_LANGUAGE: &str = "diff";
-
 /// The menu label for [`reveal`], named after this platform's file manager —
 /// both the file tree and the sidebar's worktree menu show it.
 pub fn reveal_label() -> String {
@@ -249,13 +244,9 @@ mod tests {
             "a.md",
             "a.html",
             "a.css",
-            DIFF_LANGUAGE,
         ] {
-            let language = language_for(Path::new(name)).unwrap_or_else(|| {
-                // `DIFF_LANGUAGE` is not a path's answer; the rest are.
-                assert_eq!(name, DIFF_LANGUAGE, "{name} should name a language");
-                DIFF_LANGUAGE
-            });
+            let language = language_for(Path::new(name))
+                .unwrap_or_else(|| panic!("{name} should name a language"));
             let config = registry.language(language).unwrap_or_else(|| {
                 panic!("{name} names {language:?}, which the registry does not know")
             });

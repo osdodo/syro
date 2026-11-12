@@ -57,8 +57,12 @@ pub struct SessionPanel {
     input: Option<Entity<InputState>>,
     _input_events: Option<Subscription>,
     collapsed: BTreeSet<String>,
-    /// Only the current row shows its details and buttons.
-    expanded: Option<String>,
+    /// The row menu: the session it is open on, and where it was opened, in
+    /// window coordinates. Drawn in a layer above the panel, so the list's
+    /// scroll clip does not cut it.
+    menu: Option<(Session, Point<Pixels>)>,
+    /// Takes the keyboard while the menu is up, so Escape can close it.
+    focus: FocusHandle,
     /// Whether the panel is picking sessions for a batch rather than reading
     /// them: a click on a row takes it, and the header offers the delete.
     picking: bool,
@@ -78,7 +82,7 @@ impl SessionPanel {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let events = cx.subscribe(&state, |this, _state, event: &CoreEvent, cx| match event {
             CoreEvent::ActiveWorktreeChanged { .. } => {
-                this.expanded = None;
+                this.menu = None;
                 cx.notify();
             }
             CoreEvent::WorktreeCreated { .. } | CoreEvent::WorktreeRemoved { .. } => cx.notify(),
@@ -95,7 +99,8 @@ impl SessionPanel {
             input: None,
             _input_events: None,
             collapsed: BTreeSet::new(),
-            expanded: None,
+            menu: None,
+            focus: cx.focus_handle(),
             picking: false,
             chosen: BTreeSet::new(),
             _scan: None,
@@ -229,9 +234,11 @@ impl SessionPanel {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let session = &self.sessions[index];
-        // Picking is not reading: an opened row would only push the checkmarks
-        // apart, and its buttons would be four ways to hit the wrong one.
-        let expanded = self.expanded.as_ref() == Some(&session.id) && !self.picking;
+        // The row the menu is about stays marked while the menu is up.
+        let marked = self
+            .menu
+            .as_ref()
+            .is_some_and(|(open, _)| open.id == session.id);
         let mut meta = vec![
             session.agent.display().to_string(),
             t!("sessions.messages", count = session.messages).to_string(),
@@ -241,6 +248,8 @@ impl SessionPanel {
             meta.push(model.clone());
         }
         let toggled = session.id.clone();
+        let for_menu = session.clone();
+        let for_aux = session.clone();
         let head = div()
             .id(SharedString::from(format!("session-{}", session.id)))
             .test_support()
@@ -250,7 +259,9 @@ impl SessionPanel {
             .gap_1()
             .px_2()
             .py_1p5()
+            .rounded_sm()
             .cursor_pointer()
+            .when(marked, |el| el.bg(colors.muted))
             .hover(|el| el.bg(colors.muted))
             .child(
                 div()
@@ -281,15 +292,22 @@ impl SessionPanel {
                     .text_color(colors.muted_foreground)
                     .child(SharedString::from(meta.join(" · "))),
             )
-            .on_click(cx.listener(move |this, _event, _window, cx| {
+            // Either button opens the menu: restarting a conversation is a
+            // deliberate pick from it, not the side effect of looking at the row.
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if this.picking {
                     let on = !this.chosen.contains(&toggled);
                     this.set_chosen(&toggled, on);
+                    cx.notify();
                 } else {
-                    this.expanded =
-                        (this.expanded.as_ref() != Some(&toggled)).then(|| toggled.clone());
+                    this.open_menu(for_menu.clone(), event.position(), window, cx);
                 }
-                cx.notify();
+            }))
+            .on_aux_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                if !this.picking {
+                    this.open_menu(for_aux.clone(), event.position(), window, cx);
+                    cx.stop_propagation();
+                }
             }));
 
         // The checkmark sits beside the row rather than inside it, so a click on
@@ -320,136 +338,181 @@ impl SessionPanel {
                 .child(div().flex_1().min_w_0().child(head)),
             None => row.child(head),
         };
-        if expanded {
-            row = row.child(self.expanded_block(session, colors, cx));
-        }
         row.into_any_element()
     }
 
-    /// What an opened row adds: where the agent worked, which transcript it is,
-    /// and the three things to do with it.
-    fn expanded_block(
+    fn open_menu(
+        &mut self,
+        session: Session,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = Some((session, at));
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn close_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Re-enter the session where the agent left it.
+    fn resume(&mut self, session: Session, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        window.dispatch_action(Box::new(Resume { session }), cx);
+    }
+
+    /// A fresh agent in the same worktree, seeded with a compact handoff from
+    /// the transcript, so the new context window starts on the work already done.
+    fn start_new(&mut self, session: Session, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        let Some(worktree_id) = session::resume_target(&session, self.state.read(cx).worktrees())
+            .map(|worktree| worktree.id.clone())
+        else {
+            return;
+        };
+        let seed = session::handoff(session.agent, &session.id, &session.path);
+        let model = session
+            .provider
+            .as_ref()
+            .zip(session.model.as_ref())
+            .map(|(provider, model)| format!("{provider}/{model}"));
+        window.dispatch_action(
+            Box::new(terminal::New {
+                worktree_id,
+                agent: Some(session.agent.id().to_string()),
+                resume: None,
+                seed,
+                model,
+            }),
+            cx,
+        );
+    }
+
+    /// Delete the transcript, after a confirmation.
+    fn ask_delete(&mut self, session: Session, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        let title = session.title.clone();
+        let panel = cx.weak_entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let session = session.clone();
+            let panel = panel.clone();
+            alert
+                .title(t!("sessions.delete_title").to_string())
+                .description(t!("sessions.delete_question", title = title).to_string())
+                .confirm()
+                .ok_text(t!("sessions.delete"))
+                .ok_variant(ButtonVariant::Danger)
+                .on_ok(move |_, _, cx| {
+                    let _ = session::delete(&session);
+                    let _ = panel.update(cx, |panel, cx| panel.refresh(cx));
+                    true
+                })
+        });
+    }
+
+    /// Escape closes the menu, as it closes every other overlay.
+    fn handle_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.is_some() && event.keystroke.key == "escape" {
+            self.close_menu(cx);
+            cx.stop_propagation();
+        }
+    }
+
+    /// The row menu, in a layer above the panel, with a scrim that closes it
+    /// on a click anywhere outside.
+    fn menu_overlay(
         &self,
         session: &Session,
+        at: Point<Pixels>,
+        window_size: Size<Pixels>,
         colors: &ColorTokens,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let id = session.id.clone();
-        let resume = Resume {
-            session: session.clone(),
-        };
-        let for_new = session.clone();
-        let for_delete = session.clone();
-        div()
-            .id(SharedString::from(format!("session-details-{id}")))
+        let id = &session.id;
+        let (for_resume, for_new, for_delete) = (session.clone(), session.clone(), session.clone());
+        let panel = div()
+            .id("session-menu")
+            .test_support()
             .v_flex()
-            .w_full()
-            .gap_1()
-            .px_2()
-            .pb_1p5()
-            .child(detail(
-                format!("session-{id}-cwd"),
-                session.cwd.display().to_string(),
-                colors,
-            ))
-            .child(detail(
-                format!("session-{id}-id"),
-                session.id.clone(),
-                colors,
-            ))
+            .w(px(200.))
+            .p_1()
+            .gap_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border)
+            // A readable tint over the window's native blur.
+            .bg(crate::settings_view::popup_surface(colors.surface))
+            .shadow_lg()
+            // The whole panel is the menu, padding and gaps included.
+            .occlude()
+            .on_scroll(|_event, _window, cx| cx.stop_propagation())
             .child(
-                div()
-                    .h_flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_1()
-                    .w_full()
-                    .pt_1()
-                    .child(
-                        action_button(
-                            format!("session-{id}-resume"),
-                            t!("sessions.continue").to_string(),
-                            colors,
-                        )
-                        .on_click(cx.listener(
-                            move |_this, _event, window, cx| {
-                                window.dispatch_action(Box::new(resume.clone()), cx);
-                            },
-                        )),
-                    )
-                    .child(
-                        action_button(
-                            format!("session-{id}-new"),
-                            t!("sessions.new").to_string(),
-                            colors,
-                        )
-                        .on_click(cx.listener(
-                            move |this, _event, window, cx| {
-                                let agent = for_new.agent.id().to_string();
-                                let target = {
-                                    let state = this.state.read(cx);
-                                    session::resume_target(&for_new, state.worktrees())
-                                        .map(|worktree| worktree.id.clone())
-                                };
-                                let Some(worktree_id) = target else {
-                                    return;
-                                };
-                                // A compact handoff from the transcript, so the
-                                // fresh context window starts on the work already done.
-                                let seed =
-                                    session::handoff(for_new.agent, &for_new.id, &for_new.path);
-                                let model = for_new
-                                    .provider
-                                    .as_ref()
-                                    .zip(for_new.model.as_ref())
-                                    .map(|(provider, model)| format!("{provider}/{model}"));
-                                window.dispatch_action(
-                                    Box::new(terminal::New {
-                                        worktree_id,
-                                        agent: Some(agent),
-                                        resume: None,
-                                        seed,
-                                        model,
-                                    }),
-                                    cx,
-                                );
-                            },
-                        )),
-                    )
-                    .child(
-                        action_button(
-                            format!("session-{id}-delete"),
-                            t!("sessions.delete").to_string(),
-                            colors,
-                        )
-                        .on_click(cx.listener(
-                            move |_this, _event, window, cx| {
-                                let session = for_delete.clone();
-                                let title = session.title.clone();
-                                let panel = cx.weak_entity();
-                                window.open_alert_dialog(cx, move |alert, _, _| {
-                                    let session = session.clone();
-                                    let panel = panel.clone();
-                                    alert
-                                        .title(t!("sessions.delete_title").to_string())
-                                        .description(
-                                            t!("sessions.delete_question", title = title)
-                                                .to_string(),
-                                        )
-                                        .confirm()
-                                        .ok_text(t!("sessions.delete"))
-                                        .ok_variant(ButtonVariant::Danger)
-                                        .on_ok(move |_, _, cx| {
-                                            let _ = session::delete(&session);
-                                            let _ = panel.update(cx, |panel, cx| panel.refresh(cx));
-                                            true
-                                        })
-                                });
-                            },
-                        )),
-                    ),
+                menu_item(
+                    format!("session-{id}-resume"),
+                    IconName::Play,
+                    t!("sessions.continue").to_string(),
+                    false,
+                    colors,
+                )
+                .on_click(cx.listener(move |this, _event, window, cx| {
+                    this.resume(for_resume.clone(), window, cx)
+                })),
             )
-            .into_any_element()
+            .child(
+                menu_item(
+                    format!("session-{id}-new"),
+                    IconName::Plus,
+                    t!("sessions.new").to_string(),
+                    false,
+                    colors,
+                )
+                .on_click(cx.listener(move |this, _event, window, cx| {
+                    this.start_new(for_new.clone(), window, cx)
+                })),
+            )
+            .child(div().h(px(1.)).mx_1().my_0p5().bg(colors.border))
+            .child(
+                menu_item(
+                    format!("session-{id}-delete"),
+                    IconName::Delete,
+                    t!("sessions.delete").to_string(),
+                    true,
+                    colors,
+                )
+                .on_click(cx.listener(move |this, _event, window, cx| {
+                    this.ask_delete(for_delete.clone(), window, cx)
+                })),
+            );
+
+        let dismiss = cx.listener(|this, _event: &MouseDownEvent, _window, cx| this.close_menu(cx));
+        let dismiss_right =
+            cx.listener(|this, _event: &MouseDownEvent, _window, cx| this.close_menu(cx));
+        deferred(
+            anchored().position(point(px(0.), px(0.))).child(
+                div()
+                    .id("session-menu-scrim")
+                    .test_support()
+                    .w(window_size.width)
+                    .h(window_size.height)
+                    // Rows under the menu are neither hovered nor clicked while it is up.
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, dismiss)
+                    .on_mouse_down(MouseButton::Right, dismiss_right)
+                    .child(
+                        anchored()
+                            .position(at)
+                            .anchor(Anchor::TopLeft)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(panel),
+                    ),
+            ),
+        )
+        .with_priority(gpui_kit::base::POPUP_PRIORITY)
+        .into_any_element()
     }
 
     /// A working directory and the sessions under it. Collapsible, because a
@@ -626,6 +689,7 @@ impl Render for SessionPanel {
         )
         .on_click(cx.listener(|this, _event, _window, cx| {
             this.picking = !this.picking;
+            this.menu = None;
             // Leaving the mode drops the batch: a choice carried out of sight is
             // the one that deletes the wrong thing a week later.
             this.chosen.clear();
@@ -725,15 +789,14 @@ impl Render for SessionPanel {
 
         // The sidebar owns the width, the border and the resize handle; this is the panel's content
         // (`crate::right_sidebar`).
+        let menu = self.menu.as_ref().map(|(session, at)| {
+            self.menu_overlay(session, *at, window.viewport_size(), &colors, cx)
+        });
         div()
             .id("session-panel")
             .test_support()
-            .when(self.expanded.is_some() && !self.picking, |el| {
-                el.on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
-                    this.expanded = None;
-                    cx.notify();
-                }))
-            })
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::handle_key_down))
             .v_flex()
             .w_full()
             .flex_1()
@@ -756,6 +819,7 @@ impl Render for SessionPanel {
                 )
             })
             .child(body)
+            .children(menu)
     }
 }
 
@@ -772,23 +836,46 @@ fn matches(session: &Session, needle: &str) -> bool {
     haystacks.iter().any(|text| text.contains(needle))
 }
 
-/// One line of an opened row's details: quiet, small, and never wider than the
-/// panel.
-fn detail(id: String, text: String, colors: &ColorTokens) -> AnyElement {
+/// One row of the session menu: an icon and a label, red when it destroys.
+fn menu_item(
+    id: String,
+    icon: IconName,
+    label: String,
+    danger: bool,
+    colors: &ColorTokens,
+) -> ObservedElement<Stateful<Div>> {
+    let color = if danger {
+        colors.destructive
+    } else {
+        colors.foreground
+    };
     div()
         .id(SharedString::from(id))
         .test_support()
-        .w_full()
-        .overflow_hidden()
-        .text_ellipsis()
+        .aria_label(SharedString::from(label.clone()))
+        .h_flex()
+        .items_center()
+        .gap_2()
+        .px_2()
+        .py_1()
+        .rounded_sm()
         .text_xs()
-        .text_color(colors.muted_foreground)
-        .child(SharedString::from(text))
-        .into_any_element()
+        .text_color(color)
+        .cursor_pointer()
+        .hover(|el| el.bg(colors.muted))
+        .child(
+            Icon::new(icon)
+                .size(px(14.))
+                .text_color(if danger {
+                    color
+                } else {
+                    colors.muted_foreground
+                }),
+        )
+        .child(SharedString::from(label))
 }
 
-/// One of the words an opened row offers, with the caller attaching what it
-/// does.
+/// A header button, with the caller attaching what it does.
 fn action_button(
     id: String,
     label: String,
