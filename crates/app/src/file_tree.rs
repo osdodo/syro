@@ -501,6 +501,31 @@ impl FileTreeView {
         }
     }
 
+    /// Copy files dropped from outside the app (Finder) into `dir`. The first
+    /// refusal is shown; the rest still copy.
+    fn drop_external(&mut self, paths: &ExternalPaths, dir: PathBuf, cx: &mut Context<Self>) {
+        let error = paths
+            .paths()
+            .iter()
+            .filter_map(|src| fs_tree::copy_into(src, &dir).err())
+            .next();
+        if dir.is_dir() {
+            self.expand(dir);
+        }
+        self.set_notice(error.map(|error| format!("{error:#}")), cx);
+        self.refresh(cx);
+    }
+
+    /// Move a row dragged within the tree into `dir`.
+    fn move_dragged(&mut self, src: &Path, dir: PathBuf, cx: &mut Context<Self>) {
+        let result = fs_tree::move_into(src, &dir);
+        if result.is_ok() && dir.is_dir() {
+            self.expand(dir);
+        }
+        self.set_notice(result.err().map(|error| format!("{error:#}")), cx);
+        self.refresh(cx);
+    }
+
     /// Close the menu and the confirmation. A name being typed is left alone:
     fn cancel_overlays(&mut self, cx: &mut Context<Self>) {
         let had = self.menu.take().is_some() | self.confirming_delete.take().is_some();
@@ -624,6 +649,13 @@ impl FileTreeView {
         let path_for_menu = path.clone();
         let path_for_drag = path.clone();
         let is_dir = row.is_dir;
+        // A drop on a directory goes in it; on a file, next to it.
+        let drop_dir = if is_dir {
+            path.clone()
+        } else {
+            path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.clone())
+        };
+        let drop_dir_external = drop_dir.clone();
         // The row the menu is open on stays marked while it is up: a right-click
         // says *which* file the menu is about, and a menu floating over an
         // unmarked row leaves the reader guessing which one the Delete would take.
@@ -633,6 +665,7 @@ impl FileTreeView {
         // glyphs are muted so the name is what the eye lands on — the icons are
         // there to be read at a glance, not to be looked at.
         let muted = colors.muted_foreground;
+        let colors_accent = colors.accent;
         let twisty = if is_dir {
             Icon::new(if row.expanded {
                 IconName::ChevronDown
@@ -758,21 +791,30 @@ impl FileTreeView {
             this.open_menu(path_for_menu.clone(), is_dir, at, window, cx);
             cx.stop_propagation();
         }))
-        // A file row is a drag source. A directory is not: what a drop of a directory would mean is a
-        // question nobody has asked, and the drop target would have to answer it.
-        .when(!is_dir, |el| {
-            el.on_drag(
-                DraggedPath(path_for_drag),
-                |dragged, _offset, _window, cx| {
-                    let name = dragged
-                        .0
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| dragged.0.display().to_string());
-                    cx.new(|_| DragChip { name })
-                },
-            )
-        })
+        .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(colors_accent))
+        .on_drop(cx.listener(move |this, paths: &ExternalPaths, _window, cx| {
+            // The body's own drop would copy into the root as well.
+            cx.stop_propagation();
+            this.drop_external(paths, drop_dir_external.clone(), cx);
+        }))
+        // A row dropped on another row moves into it (or next to it, for a file).
+        .drag_over::<DraggedPath>(move |style, _, _, _| style.bg(colors_accent))
+        .on_drop(cx.listener(move |this, dragged: &DraggedPath, _window, cx| {
+            cx.stop_propagation();
+            this.move_dragged(&dragged.0, drop_dir.clone(), cx);
+        }))
+        // Every row is a drag source: onto another row it moves, onto a terminal it types its path.
+        .on_drag(
+            DraggedPath(path_for_drag),
+            |dragged, _offset, _window, cx| {
+                let name = dragged
+                    .0
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| dragged.0.display().to_string());
+                cx.new(|_| DragChip { name })
+            },
+        )
     }
 
     fn search_result_row(
@@ -1284,6 +1326,17 @@ impl Render for FileTreeView {
                     ClickEvent::Keyboard(_) => return,
                 };
                 this.open_root_menu(at, window, cx);
+            }))
+            // Files dragged in from Finder onto blank space land in the root.
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+                if let Some(root) = this.root.clone() {
+                    this.drop_external(paths, root, cx);
+                }
+            }))
+            .on_drop(cx.listener(|this, dragged: &DraggedPath, _window, cx| {
+                if let Some(root) = this.root.clone() {
+                    this.move_dragged(&dragged.0, root, cx);
+                }
             }));
 
         if self.root.is_none() {
@@ -2264,7 +2317,7 @@ mod tests {
         });
         let got = Rc::new(RefCell::new(Vec::new()));
         let catcher_got = got.clone();
-        let (window, _pair) = open(cx, move |_window, cx| {
+        let (window, pair) = open(cx, move |_window, cx| {
             let tree = cx.new(|cx| FileTreeView::new(state.clone(), cx));
             let catcher = cx.new(|_| Catcher { got: catcher_got });
             cx.new(|_| Pair { tree, catcher })
@@ -2287,5 +2340,18 @@ mod tests {
             [fixture.root.join("my notes.md")],
             "the row did not carry its own path"
         );
+
+        // A row dropped on a directory row moves into it.
+        std::fs::create_dir(fixture.root.join("docs")).unwrap();
+        let tree = pair.read_with(cx, |pair, _| pair.tree.clone());
+        tree.update(cx, |tree, cx| tree.refresh(cx));
+        draw(cx, &fixture);
+        let docs = row_id(&fixture.root.join("docs"));
+        cx.update_window(fixture.window.into(), |_, window, cx| {
+            window.drag_to(row_id(&fixture.root.join("my notes.md")), docs, cx);
+        })
+        .expect("drag");
+        assert!(fixture.root.join("docs/my notes.md").is_file(), "the file did not move");
+        assert!(!fixture.root.join("my notes.md").exists());
     }
 }

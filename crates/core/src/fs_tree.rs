@@ -98,6 +98,51 @@ pub fn rename(path: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Copy `src` (a file, or a directory with everything under it) into `dir`,
+/// keeping its name. Never replaces an existing entry.
+pub fn copy_into(src: &Path, dir: &Path) -> Result<()> {
+    // A directory copied into itself would recurse forever.
+    let Some(name) = src.file_name().filter(|_| !dir.starts_with(src)) else {
+        anyhow::bail!(t!("git.share_failed", path = src.display()).to_string());
+    };
+    let to = dir.join(name);
+    if to.exists() {
+        anyhow::bail!(t!("fs.already_exists", path = to.display()).to_string());
+    }
+    copy_recursive(src, &to)
+}
+
+/// Move `src` into `dir`, keeping its name. A move to where it already is does
+/// nothing; an existing entry is never replaced.
+pub fn move_into(src: &Path, dir: &Path) -> Result<()> {
+    if src.parent() == Some(dir) || src == dir {
+        return Ok(());
+    }
+    // A directory moved into itself would vanish into its own subtree.
+    let Some(name) = src.file_name().filter(|_| !dir.starts_with(src)) else {
+        anyhow::bail!(t!("fs.not_same_dir", to = dir.display(), path = src.display()).to_string());
+    };
+    let to = dir.join(name);
+    if to.exists() {
+        anyhow::bail!(t!("fs.already_exists", path = to.display()).to_string());
+    }
+    fs::rename(src, to)?;
+    Ok(())
+}
+
+fn copy_recursive(src: &Path, to: &Path) -> Result<()> {
+    if fs::symlink_metadata(src)?.is_dir() {
+        fs::create_dir(to)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            copy_recursive(&entry.path(), &to.join(entry.file_name()))?;
+        }
+    } else {
+        fs::copy(src, to)?;
+    }
+    Ok(())
+}
+
 /// Delete a file, or a directory and everything under it.
 pub fn remove(path: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(path)?;
@@ -148,6 +193,23 @@ mod tests {
         remove(&dir.join("sub")).unwrap();
         assert!(!dir.join("sub").exists());
         remove(&dir.join("c.txt")).unwrap();
+
+        let outside = temp_dir("fs-copy-src");
+        std::fs::create_dir_all(outside.join("pkg/inner")).unwrap();
+        std::fs::write(outside.join("pkg/inner/f.txt"), "hi").unwrap();
+        copy_into(&outside.join("pkg"), &dir).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("pkg/inner/f.txt")).unwrap(), "hi");
+        assert!(copy_into(&outside.join("pkg"), &dir).is_err(), "no clobbering");
+        assert!(copy_into(&dir.join("pkg"), &dir.join("pkg/inner")).is_err());
+
+        create_dir(&dir.join("dest")).unwrap();
+        move_into(&dir.join("pkg"), &dir.join("dest")).unwrap();
+        assert!(!dir.join("pkg").exists() && dir.join("dest/pkg/inner/f.txt").is_file());
+        move_into(&dir.join("dest/pkg"), &dir.join("dest")).unwrap();
+        assert!(move_into(&dir.join("dest"), &dir.join("dest/pkg")).is_err());
+        create_file(&dir.join("pkg")).unwrap();
+        assert!(move_into(&dir.join("pkg"), &dir.join("dest")).is_err(), "no clobbering");
+        let _ = std::fs::remove_dir_all(&outside);
         assert!(!dir.join("c.txt").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
